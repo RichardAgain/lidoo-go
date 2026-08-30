@@ -7,6 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
+)
+
+const (
+	hostPortStart = 49000
+	hostPortEnd   = 49999
+	odooPort      = 8069
 )
 
 var odooVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
@@ -45,7 +52,7 @@ func Up(args []string) error {
 		if err := docker("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
-		return nil
+		return reportContainerPort(containerName)
 	}
 
 	dockerfile := filepath.Join("docker", "Dockerfile."+*version)
@@ -71,9 +78,25 @@ func Up(args []string) error {
 		"--network", networkName,
 		"--env-file", databaseEnvFile,
 		"--label", containerNameLabel+"="+*name,
+		"-p", fmt.Sprintf("%d-%d:%d", hostPortStart, hostPortEnd, odooPort),
 		image,
 	); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
+	return reportContainerPort(containerName)
+}
+
+func reportContainerPort(containerName string) error {
+	format := fmt.Sprintf(`{{(index (index .NetworkSettings.Ports "%d/tcp") 0).HostPort}}`, odooPort)
+	output, err := dockerOutput("inspect", "--format", format, containerName)
+	if err != nil {
+		return fmt.Errorf("inspect container %q port: %w", containerName, err)
+	}
+
+	port := strings.TrimSpace(string(output))
+	if port == "" {
+		return fmt.Errorf("container %q has no published Odoo port", containerName)
+	}
+	fmt.Printf("container running on port %s\n", port)
 	return nil
 }

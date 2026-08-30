@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -72,18 +73,76 @@ func Up(args []string) error {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
 
+	hostPort, err := findAvailableHostPort()
+	if err != nil {
+		return err
+	}
 	if err := docker(
 		"run", "--detach",
 		"--name", containerName,
 		"--network", networkName,
 		"--env-file", databaseEnvFile,
 		"--label", containerNameLabel+"="+*name,
-		"-p", fmt.Sprintf("%d-%d:%d", hostPortStart, hostPortEnd, odooPort),
+		"-p", fmt.Sprintf("%d:%d", hostPort, odooPort),
 		image,
 	); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
 	return reportContainerPort(containerName)
+}
+
+func findAvailableHostPort() (int, error) {
+	output, err := dockerOutput("ps", "--all", "--quiet")
+	if err != nil {
+		return 0, fmt.Errorf("find Docker containers: %w", err)
+	}
+
+	used := make(map[int]bool)
+	format := `{{if .State.Running}}{{range $port, $bindings := .NetworkSettings.Ports}}{{range $binding := $bindings}}{{println $binding.HostPort}}{{end}}{{end}}{{else}}{{range $port, $bindings := .HostConfig.PortBindings}}{{range $binding := $bindings}}{{println $binding.HostPort}}{{end}}{{end}}{{end}}`
+	for _, containerID := range strings.Fields(string(output)) {
+		output, err := dockerOutput("inspect", "--format", format, containerID)
+		if err != nil {
+			return 0, fmt.Errorf("inspect Docker container %q ports: %w", containerID, err)
+		}
+		for _, binding := range strings.Fields(string(output)) {
+			if err := markUsedHostPorts(used, binding); err != nil {
+				return 0, fmt.Errorf("inspect Docker container %q port %q: %w", containerID, binding, err)
+			}
+		}
+	}
+
+	for port := hostPortStart; port <= hostPortEnd; port++ {
+		if !used[port] {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no available host port in range %d-%d", hostPortStart, hostPortEnd)
+}
+
+func markUsedHostPorts(used map[int]bool, binding string) error {
+	parts := strings.Split(binding, "-")
+	if len(parts) > 2 || parts[0] == "" {
+		return fmt.Errorf("invalid host port %q", binding)
+	}
+
+	start, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid host port %q: %w", binding, err)
+	}
+	end := start
+	if len(parts) == 2 {
+		end, err = strconv.Atoi(parts[1])
+		if err != nil || end < start {
+			return fmt.Errorf("invalid host port range %q", binding)
+		}
+	}
+
+	for port := start; port <= end; port++ {
+		if port >= hostPortStart && port <= hostPortEnd {
+			used[port] = true
+		}
+	}
+	return nil
 }
 
 func reportContainerPort(containerName string) error {

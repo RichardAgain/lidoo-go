@@ -38,12 +38,12 @@ func Up(args []string) error {
 	}
 
 	containerName := "lidoo-" + *name
-	exists, err := findContainerByName(containerName)
+	exists, err := findContainerByName(*name)
 	if err != nil {
 		return err
 	}
 	if exists {
-		running, err := containerIsRunning(containerName)
+		running, err := containerIsRunning(*name)
 		if err != nil {
 			return err
 		}

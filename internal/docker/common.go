@@ -29,17 +29,17 @@ func containerIDs(filter string, all bool) ([]string, error) {
 }
 
 func findContainerByName(name string) (bool, error) {
-	containers, err := containerIDs("name="+name, true)
+	containers, err := containerIDs("label="+containerNameLabel+"="+name, true)
 	if err != nil {
-		return false, fmt.Errorf("find container %q: %w", name, err)
+		return false, fmt.Errorf("find container with label %q: %w", name, err)
 	}
 	return len(containers) > 0, nil
 }
 
 func containerIsRunning(name string) (bool, error) {
-	containers, err := containerIDs("name="+name, false)
+	containers, err := containerIDs("label="+containerNameLabel+"="+name, false)
 	if err != nil {
-		return false, fmt.Errorf("check container %q: %w", name, err)
+		return false, fmt.Errorf("check container with label %q: %w", name, err)
 	}
 	return len(containers) > 0, nil
 }

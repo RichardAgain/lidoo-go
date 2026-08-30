@@ -18,6 +18,8 @@ func main() {
 		err = docker.Up(os.Args[2:])
 	case "stop":
 		err = docker.Stop(os.Args[2:])
+	case "restart":
+		err = docker.Restart(os.Args[2:])
 	default:
 		usage()
 	}
@@ -28,6 +30,6 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <up|stop> --name <container name> [--version <odoo version>]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <up|stop|restart> --name <container name> [--version <odoo version>]")
 	os.Exit(2)
 }

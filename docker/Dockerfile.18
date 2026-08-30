@@ -1,0 +1,6 @@
+FROM odoo:18
+
+LABEL io.lidoo.managed="true"
+LABEL io.lidoo.odoo-version="18.0"
+
+CMD ["odoo", "--dev=all"]

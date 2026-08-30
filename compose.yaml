@@ -1,0 +1,24 @@
+services:
+  db:
+    restart: "no"
+    image: postgres:17
+    container_name: lidoo-postgres
+
+    environment:
+      POSTGRES_USER: lidoo
+      POSTGRES_PASSWORD: lidoo
+
+    volumes:
+      - lidoo-postgres-data:/var/lib/postgresql/data
+
+    networks:
+      - lidoo-net
+
+volumes:
+  lidoo-postgres-data:
+    name: lidoo-postgres-data 
+
+networks:
+  lidoo-net:
+    name: lidoo-net
+    driver: bridge

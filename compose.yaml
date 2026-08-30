@@ -4,9 +4,11 @@ services:
     image: postgres:17
     container_name: lidoo-postgres
 
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: lidoo
-      POSTGRES_PASSWORD: lidoo
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
 
     volumes:
       - lidoo-postgres-data:/var/lib/postgresql/data

@@ -1,7 +1,33 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+
+	"lidoo/internal/docker"
+)
 
 func main() {
-	fmt.Printf("Hello!")
+	if len(os.Args) < 2 {
+		usage()
+	}
+
+	var err error
+	switch os.Args[1] {
+	case "up":
+		err = docker.Up(os.Args[2:])
+	case "stop":
+		err = docker.Stop(os.Args[2:])
+	default:
+		usage()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: lidoo <up|stop> --name <container name> [--version <odoo version>]")
+	os.Exit(2)
 }

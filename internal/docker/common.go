@@ -44,6 +44,16 @@ func containerIsRunning(name string) (bool, error) {
 	return len(containers) > 0, nil
 }
 
+func containerHasTraefikRoute(containerName, profileName string) (bool, error) {
+	format := fmt.Sprintf(`{{index .Config.Labels "traefik.http.routers.%s.rule"}}`, profileName)
+	output, err := dockerOutput("inspect", "--format", format, containerName)
+	if err != nil {
+		return false, fmt.Errorf("inspect container %q routing: %w", containerName, err)
+	}
+	want := "Host(`" + profileHostname(profileName) + "`)"
+	return strings.TrimSpace(string(output)) == want, nil
+}
+
 func networkExists() error {
 	cmd := exec.Command("docker", "network", "inspect", networkName)
 	cmd.Stdout = io.Discard

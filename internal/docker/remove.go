@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"lidoo/internal/hosts"
 )
 
 func Remove(args []string) error {
@@ -56,6 +58,9 @@ func Remove(args []string) error {
 		if err := docker("rm", container); err != nil {
 			return fmt.Errorf("remove container %s: %w", container, err)
 		}
+	}
+	if err := hosts.Remove(profileHostname(*name)); err != nil {
+		return err
 	}
 	return nil
 }

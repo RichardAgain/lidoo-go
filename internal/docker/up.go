@@ -7,17 +7,42 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
-	"strings"
+
+	"lidoo/internal/hosts"
 )
 
 const (
-	hostPortStart = 49000
-	hostPortEnd   = 49999
 	odooPort      = 8069
+	profileDomain = "lidoo.test"
 )
 
-var odooVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
+var (
+	odooVersion        = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
+	profileNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+)
+
+func validateProfileName(name string) error {
+	if len(name) > 63 || !profileNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid profile name %q: use 1-63 lowercase letters, numbers, and hyphens", name)
+	}
+	return nil
+}
+
+func profileHostname(name string) string {
+	return name + "." + profileDomain
+}
+
+func traefikLabels(name string) []string {
+	hostname := profileHostname(name)
+	return []string{
+		"traefik.enable=true",
+		"traefik.docker.network=" + networkName,
+		"traefik.http.routers." + name + ".rule=Host(`" + hostname + "`)",
+		"traefik.http.routers." + name + ".entrypoints=web",
+		"traefik.http.routers." + name + ".service=" + name,
+		"traefik.http.services." + name + ".loadbalancer.server.port=" + fmt.Sprint(odooPort),
+	}
+}
 
 func Up(args []string) error {
 	flags := flag.NewFlagSet("up", flag.ContinueOnError)
@@ -33,6 +58,9 @@ func Up(args []string) error {
 	if *name == "" || *version == "" {
 		return errors.New("up requires --name and --version")
 	}
+	if err := validateProfileName(*name); err != nil {
+		return err
+	}
 	if !odooVersion.MatchString(*version) {
 		return fmt.Errorf("invalid Odoo version %q", *version)
 	}
@@ -43,6 +71,17 @@ func Up(args []string) error {
 		return err
 	}
 	if exists {
+		routingConfigured, err := containerHasTraefikRoute(containerName, *name)
+		if err != nil {
+			return err
+		}
+		if !routingConfigured {
+			return fmt.Errorf("container %q uses legacy port routing; remove and recreate it before opening %s", containerName, profileHostname(*name))
+		}
+
+		if _, err := hosts.Ensure(profileHostname(*name)); err != nil {
+			return err
+		}
 		running, err := containerIsRunning(*name)
 		if err != nil {
 			return err
@@ -53,7 +92,7 @@ func Up(args []string) error {
 		if err := docker("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
-		return reportContainerPort(containerName)
+		return reportContainerURL(*name)
 	}
 
 	dockerfile := filepath.Join("docker", "Dockerfile."+*version)
@@ -73,89 +112,34 @@ func Up(args []string) error {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
 
-	hostPort, err := findAvailableHostPort()
+	hostname := profileHostname(*name)
+	hostChanged, err := hosts.Ensure(hostname)
 	if err != nil {
 		return err
 	}
-	if err := docker(
+
+	dockerArgs := []string{
 		"run", "--detach",
 		"--name", containerName,
 		"--network", networkName,
 		"--env-file", databaseEnvFile,
-		"--label", containerNameLabel+"="+*name,
-		"-p", fmt.Sprintf("%d:%d", hostPort, odooPort),
-		image,
-	); err != nil {
+		"--label", containerNameLabel + "=" + *name,
+	}
+	for _, label := range traefikLabels(*name) {
+		dockerArgs = append(dockerArgs, "--label", label)
+	}
+	dockerArgs = append(dockerArgs, image)
+	if err := docker(dockerArgs...); err != nil {
+		if hostChanged {
+			_ = hosts.Remove(hostname)
+		}
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
-	return reportContainerPort(containerName)
+	return reportContainerURL(*name)
 }
 
-func findAvailableHostPort() (int, error) {
-	output, err := dockerOutput("ps", "--all", "--quiet")
-	if err != nil {
-		return 0, fmt.Errorf("find Docker containers: %w", err)
-	}
-
-	used := make(map[int]bool)
-	format := `{{if .State.Running}}{{range $port, $bindings := .NetworkSettings.Ports}}{{range $binding := $bindings}}{{println $binding.HostPort}}{{end}}{{end}}{{else}}{{range $port, $bindings := .HostConfig.PortBindings}}{{range $binding := $bindings}}{{println $binding.HostPort}}{{end}}{{end}}{{end}}`
-	for _, containerID := range strings.Fields(string(output)) {
-		output, err := dockerOutput("inspect", "--format", format, containerID)
-		if err != nil {
-			return 0, fmt.Errorf("inspect Docker container %q ports: %w", containerID, err)
-		}
-		for _, binding := range strings.Fields(string(output)) {
-			if err := markUsedHostPorts(used, binding); err != nil {
-				return 0, fmt.Errorf("inspect Docker container %q port %q: %w", containerID, binding, err)
-			}
-		}
-	}
-
-	for port := hostPortStart; port <= hostPortEnd; port++ {
-		if !used[port] {
-			return port, nil
-		}
-	}
-	return 0, fmt.Errorf("no available host port in range %d-%d", hostPortStart, hostPortEnd)
-}
-
-func markUsedHostPorts(used map[int]bool, binding string) error {
-	parts := strings.Split(binding, "-")
-	if len(parts) > 2 || parts[0] == "" {
-		return fmt.Errorf("invalid host port %q", binding)
-	}
-
-	start, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return fmt.Errorf("invalid host port %q: %w", binding, err)
-	}
-	end := start
-	if len(parts) == 2 {
-		end, err = strconv.Atoi(parts[1])
-		if err != nil || end < start {
-			return fmt.Errorf("invalid host port range %q", binding)
-		}
-	}
-
-	for port := start; port <= end; port++ {
-		if port >= hostPortStart && port <= hostPortEnd {
-			used[port] = true
-		}
-	}
-	return nil
-}
-
-func reportContainerPort(containerName string) error {
-	format := fmt.Sprintf(`{{(index (index .NetworkSettings.Ports "%d/tcp") 0).HostPort}}`, odooPort)
-	output, err := dockerOutput("inspect", "--format", format, containerName)
-	if err != nil {
-		return fmt.Errorf("inspect container %q port: %w", containerName, err)
-	}
-
-	port := strings.TrimSpace(string(output))
-	if port == "" {
-		return fmt.Errorf("container %q has no published Odoo port", containerName)
-	}
-	fmt.Printf("container running on port %s\n", port)
+func reportContainerURL(name string) error {
+	hostname := profileHostname(name)
+	fmt.Printf("profile running at http://%s\n", hostname)
 	return nil
 }

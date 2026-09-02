@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"lidoo/internal/addons"
 	"lidoo/internal/docker"
 )
 
@@ -22,6 +23,8 @@ func main() {
 		err = docker.Restart(os.Args[2:])
 	case "remove":
 		err = docker.Remove(os.Args[2:])
+	case "addons":
+		err = addons.Run(os.Args[2:])
 	default:
 		usage()
 	}
@@ -33,5 +36,6 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: lidoo <up|stop|restart|remove> --name <container name> [--version <odoo version>]")
+	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	os.Exit(2)
 }

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -49,5 +50,32 @@ func TestTraefikLabels(t *testing.T) {
 		if !strings.Contains(labelText, want) {
 			t.Errorf("Traefik labels missing %q; got %v", want, labels)
 		}
+	}
+}
+
+func TestBuildImageArgs(t *testing.T) {
+	tests := []struct {
+		name   string
+		buildx bool
+		want   []string
+	}{
+		{
+			name:   "BuildKit",
+			buildx: true,
+			want:   []string{"buildx", "build", "--load", "--file", "docker/Dockerfile.18", "--tag", "lidoo-odoo:18", "."},
+		},
+		{
+			name:   "legacy compatibility",
+			buildx: false,
+			want:   []string{"build", "--file", "docker/Dockerfile.18", "--tag", "lidoo-odoo:18", "."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := buildImageArgs("docker/Dockerfile.18", "lidoo-odoo:18", tt.buildx); !slices.Equal(got, tt.want) {
+				t.Fatalf("buildImageArgs() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

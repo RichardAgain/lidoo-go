@@ -29,7 +29,7 @@ func Stop(args []string) error {
 		return fmt.Errorf("no running container with name %q", *name)
 	}
 	for _, container := range containers {
-		if err := docker("stop", container); err != nil {
+		if err := dockerQuiet("stop", container); err != nil {
 			return fmt.Errorf("stop container %s: %w", container, err)
 		}
 	}

@@ -50,12 +50,12 @@ func Remove(args []string) error {
 		}
 	}
 	for _, container := range running {
-		if err := docker("stop", container); err != nil {
+		if err := dockerQuiet("stop", container); err != nil {
 			return fmt.Errorf("stop container %s: %w", container, err)
 		}
 	}
 	for _, container := range containers {
-		if err := docker("rm", container); err != nil {
+		if err := dockerQuiet("rm", container); err != nil {
 			return fmt.Errorf("remove container %s: %w", container, err)
 		}
 	}

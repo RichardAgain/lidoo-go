@@ -44,6 +44,18 @@ func traefikLabels(name string) []string {
 	}
 }
 
+func buildImageArgs(dockerfile, image string, buildx bool) []string {
+	if buildx {
+		return []string{"buildx", "build", "--load", "--file", dockerfile, "--tag", image, "."}
+	}
+	return []string{"build", "--file", dockerfile, "--tag", image, "."}
+}
+
+func buildImage(dockerfile, image string) error {
+	buildx := dockerCommandAvailable("buildx", "version")
+	return dockerQuiet(buildImageArgs(dockerfile, image, buildx)...)
+}
+
 func Up(args []string) error {
 	flags := flag.NewFlagSet("up", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -89,7 +101,7 @@ func Up(args []string) error {
 		if running {
 			return fmt.Errorf("container %q already exists", containerName)
 		}
-		if err := docker("start", containerName); err != nil {
+		if err := dockerQuiet("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
 		return reportContainerURL(*name)
@@ -108,7 +120,8 @@ func Up(args []string) error {
 	}
 
 	image := "lidoo-odoo:" + *version
-	if err := docker("build", "--file", dockerfile, "--tag", image, "."); err != nil {
+	fmt.Printf("building Odoo %s image\n", *version)
+	if err := buildImage(dockerfile, image); err != nil {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
 
@@ -123,13 +136,16 @@ func Up(args []string) error {
 		"--name", containerName,
 		"--network", networkName,
 		"--env-file", databaseEnvFile,
+		"--env", "HOST=lidoo-postgres",
+		"--env", "PORT=5432",
 		"--label", containerNameLabel + "=" + *name,
 	}
 	for _, label := range traefikLabels(*name) {
 		dockerArgs = append(dockerArgs, "--label", label)
 	}
 	dockerArgs = append(dockerArgs, image)
-	if err := docker(dockerArgs...); err != nil {
+	fmt.Printf("starting profile %q\n", *name)
+	if err := dockerQuiet(dockerArgs...); err != nil {
 		if hostChanged {
 			_ = hosts.Remove(hostname)
 		}

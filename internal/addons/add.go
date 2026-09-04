@@ -1,34 +1,32 @@
 package addons
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"lidoo/internal/files"
 )
 
-const (
-	addonsDir     = "addons"
-	workspaceFile = ".workspace.json"
-)
+const addonsDir = "addons"
 
-func Run(args []string) error {
+func Run(args []string, workspace files.Workspace) error {
 	if len(args) == 0 {
 		return errors.New("addons requires a subcommand")
 	}
 
 	switch args[0] {
 	case "add":
-		return Add(args[1:])
+		return Add(args[1:], workspace)
 	default:
 		return fmt.Errorf("unknown addons command %q", args[0])
 	}
 }
 
-func Add(args []string) error {
+func Add(args []string, workspace files.Workspace) error {
 	if len(args) != 2 {
 		return errors.New("usage: lidoo addons add <addon name> <git url>")
 	}
@@ -58,53 +56,10 @@ func Add(args []string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("clone addon %q: %w", name, err)
 	}
-	if err := updateWorkspace(name, url, destination); err != nil {
+	if err := files.UpdateWorkspace(workspace, name, url, destination); err != nil {
 		return fmt.Errorf("update workspace: %w", err)
 	}
 	return nil
-}
-
-type workspaceAddon struct {
-	Path   string `json:"path"`
-	Source string `json:"source"`
-}
-
-func updateWorkspace(name, source, path string) error {
-	data, err := os.ReadFile(workspaceFile)
-	if err != nil {
-		return err
-	}
-
-	workspace := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(data, &workspace); err != nil {
-		return err
-	}
-	if workspace == nil {
-		workspace = make(map[string]json.RawMessage)
-	}
-
-	addons := make(map[string]workspaceAddon)
-	if raw, ok := workspace["addons"]; ok {
-		if err := json.Unmarshal(raw, &addons); err != nil {
-			return fmt.Errorf("read addons: %w", err)
-		}
-		if addons == nil {
-			addons = make(map[string]workspaceAddon)
-		}
-	}
-	addons[name] = workspaceAddon{Path: filepath.ToSlash(path), Source: source}
-
-	rawAddons, err := json.Marshal(addons)
-	if err != nil {
-		return err
-	}
-	workspace["addons"] = rawAddons
-
-	output, err := json.MarshalIndent(workspace, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(workspaceFile, append(output, '\n'), 0o644)
 }
 
 func validAddonName(name string) bool {

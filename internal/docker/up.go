@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"lidoo/internal/files"
 )
 
 const (
@@ -19,7 +21,7 @@ const (
 
 var odooVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
 
-func Up(args []string) error {
+func Up(args []string, workspace files.Workspace) error {
 	flags := flag.NewFlagSet("up", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	name := flags.String("name", "", "container name")
@@ -35,6 +37,11 @@ func Up(args []string) error {
 	}
 	if !odooVersion.MatchString(*version) {
 		return fmt.Errorf("invalid Odoo version %q", *version)
+	}
+
+	addonNames, err := files.ContainerAddons(workspace, *name)
+	if err != nil {
+		return err
 	}
 
 	containerName := "lidoo-" + *name
@@ -77,15 +84,29 @@ func Up(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := docker(
+
+	containerArgs := []string{
 		"run", "--detach",
 		"--name", containerName,
 		"--network", networkName,
 		"--env-file", databaseEnvFile,
-		"--label", containerNameLabel+"="+*name,
+		"--label", containerNameLabel + "=" + *name,
 		"-p", fmt.Sprintf("%d:%d", hostPort, odooPort),
-		image,
-	); err != nil {
+	}
+	addonPaths := []string{"/usr/lib/python3/dist-packages/odoo/addons"}
+	for _, addonName := range addonNames {
+		containerArgs = append(containerArgs,
+			"-v", "./"+filepath.ToSlash(filepath.Join("addons", addonName))+":/opt/addons/"+addonName,
+		)
+		addonPaths = append(addonPaths, "/opt/addons/"+addonName)
+	}
+	containerArgs = append(containerArgs, image)
+	if len(addonNames) > 0 {
+		containerArgs = append(containerArgs,
+			"odoo", "--dev=all", "--addons-path="+strings.Join(addonPaths, ","),
+		)
+	}
+	if err := docker(containerArgs...); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
 	return reportContainerPort(containerName)

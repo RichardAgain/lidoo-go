@@ -26,6 +26,28 @@ func Run(args []string, workspace files.Workspace) error {
 	}
 }
 
+func RunForContainer(args []string, workspace files.Workspace) error {
+	if len(args) < 4 || args[1] != "addons" || args[2] != "add" {
+		return errors.New("usage: lidoo <container> addons add <addon name> [<addon name> ...]")
+	}
+	return AddToContainer(args[0], args[3:], workspace)
+}
+
+func AddToContainer(container string, names []string, workspace files.Workspace) error {
+	if strings.TrimSpace(container) == "" {
+		return errors.New("container name cannot be empty")
+	}
+	for _, name := range names {
+		if !validAddonName(name) {
+			return fmt.Errorf("invalid addon name %q", name)
+		}
+	}
+	if err := files.AddAddonsToContainer(workspace, container, names); err != nil {
+		return fmt.Errorf("update container %q: %w", container, err)
+	}
+	return nil
+}
+
 func Add(args []string, workspace files.Workspace) error {
 	if len(args) != 2 {
 		return errors.New("usage: lidoo addons add <addon name> <git url>")

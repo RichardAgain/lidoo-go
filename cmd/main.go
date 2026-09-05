@@ -23,7 +23,7 @@ func main() {
 	} else {
 		switch os.Args[1] {
 		case "up":
-			err = docker.Up(os.Args[2:])
+			err = docker.Up(os.Args[2:], workspace)
 		case "stop":
 			err = docker.Stop(os.Args[2:])
 		case "restart":
@@ -33,8 +33,12 @@ func main() {
 		case "addons":
 			err = addons.Run(os.Args[2:], workspace)
 		default:
-			usage()
-			exitCode = 2
+			if len(os.Args) >= 5 && os.Args[2] == "addons" {
+				err = addons.RunForContainer(os.Args[1:], workspace)
+			} else {
+				usage()
+				exitCode = 2
+			}
 		}
 	}
 
@@ -54,4 +58,5 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: lidoo <up|stop|restart|remove> --name <container name> [--version <odoo version>]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
+	fmt.Fprintln(os.Stderr, "       lidoo <container> addons add <addon name> [<addon name> ...]")
 }

@@ -147,6 +147,9 @@ func Run(args []string, state files.State) error {
 	if err := networkExists(); err != nil {
 		return err
 	}
+	if err := EnsureVolume(); err != nil {
+		return fmt.Errorf("ensure filestore volume: %w", err)
+	}
 
 	image := "lidoo-odoo:" + selectedVersion
 	fmt.Printf("building Odoo %s image\n", selectedVersion)
@@ -168,6 +171,7 @@ func Run(args []string, state files.State) error {
 		"--env", "HOST=lidoo-postgres",
 		"--env", "PORT=5432",
 		"--label", containerNameLabel + "=" + *name,
+		"-v", FilestoreVolumeName + ":/var/lib/odoo",
 	}
 
 	addonPaths := []string{"/usr/lib/python3/dist-packages/odoo/addons"}

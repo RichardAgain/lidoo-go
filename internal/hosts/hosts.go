@@ -53,20 +53,16 @@ func Remove(hostname string) error {
 
 // RunElevated applies a hosts-file operation for the hidden elevated command
 // used when Ensure or Remove has to relaunch the CLI with higher privileges.
-func RunElevated(args []string) error {
-	if len(args) != 2 {
-		return errors.New("hosts write requires add/remove and hostname")
-	}
-
+func RunElevated(operation, hostname string) error {
 	var add bool
-	switch args[0] {
+	switch operation {
 	case "add":
 		add = true
 	case "remove":
 	default:
-		return fmt.Errorf("invalid hosts operation %q", args[0])
+		return fmt.Errorf("invalid hosts operation %q", operation)
 	}
-	_, err := updateDefault(args[1], add)
+	_, err := updateDefault(hostname, add)
 	return err
 }
 

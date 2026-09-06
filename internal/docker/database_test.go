@@ -130,14 +130,14 @@ func TestValidateDropDatabaseProtectsSystemDatabases(t *testing.T) {
 }
 
 func TestDropRequiresExplicitConfirmation(t *testing.T) {
-	err := Drop([]string{"--name", "testing", "--database", "testing_db"})
+	err := Drop("testing", "testing_db", false)
 	if err == nil || !strings.Contains(err.Error(), "requires --yes") {
 		t.Fatalf("Drop without confirmation error = %v, want --yes error", err)
 	}
 }
 
 func TestDropRejectsProtectedDatabaseBeforeDocker(t *testing.T) {
-	err := Drop([]string{"--name", "testing", "--database", "postgres", "--yes"})
+	err := Drop("testing", "postgres", true)
 	if err == nil || !strings.Contains(err.Error(), "protected database") {
 		t.Fatalf("Drop of postgres error = %v, want protected database error", err)
 	}

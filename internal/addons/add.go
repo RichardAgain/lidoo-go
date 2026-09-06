@@ -13,26 +13,6 @@ import (
 
 const addonsDir = "addons"
 
-func Run(args []string, state files.State) error {
-	if len(args) == 0 {
-		return errors.New("addons requires a subcommand")
-	}
-
-	switch args[0] {
-	case "add":
-		return Add(args[1:], state)
-	default:
-		return fmt.Errorf("unknown addons command %q", args[0])
-	}
-}
-
-func RunForContainer(args []string, state files.State) error {
-	if len(args) < 4 || args[1] != "addons" || args[2] != "add" {
-		return errors.New("usage: lidoo <container> addons add <addon name> [<addon name> ...]")
-	}
-	return AddToContainer(args[0], args[3:], state)
-}
-
 func AddToContainer(container string, names []string, state files.State) error {
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")
@@ -51,12 +31,7 @@ func AddToContainer(container string, names []string, state files.State) error {
 	return nil
 }
 
-func Add(args []string, state files.State) error {
-	if len(args) != 2 {
-		return errors.New("usage: lidoo addons add <addon name> <git url>")
-	}
-
-	name, url := args[0], args[1]
+func Add(name, url string, state files.State) error {
 	if !validAddonName(name) {
 		return fmt.Errorf("invalid addon name %q", name)
 	}

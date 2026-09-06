@@ -2,9 +2,7 @@ package docker
 
 import (
 	"errors"
-	"flag"
 	"fmt"
-	"os"
 	"regexp"
 )
 
@@ -31,107 +29,72 @@ fi
 `, binary, binary)
 }
 
-func Init(args []string) error {
-	flags := flag.NewFlagSet("init", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	name := flags.String("name", "", "profile name")
-	database := flags.String("database", "", "database name")
-	modules := flags.String("modules", "base", "comma-separated modules to install")
-	if err := flags.Parse(args); err != nil {
+func Init(name, database, modules string) error {
+	if err := validateDatabaseOperationInputs(name, database); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 {
-		return errors.New("init does not accept positional arguments")
-	}
-	if err := validateDatabaseOperationInputs(*name, *database); err != nil {
-		return err
-	}
-	if *modules == "" {
-		return errors.New("init requires a non-empty --modules value")
+	if modules == "" {
+		return errors.New("init requires a non-empty modules value")
 	}
 
-	container, err := requireRunningProfile(*name)
+	container, err := requireRunningProfile(name)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("initializing database %q in profile %q (modules: %s)\n", *database, *name, *modules)
-	if err := dockerCleanDatabaseOutput(databaseCommand(container, databaseOperationInit, *database, *modules, false)...); err != nil {
-		return fmt.Errorf("initialize database %q: %w", *database, err)
+	fmt.Printf("initializing database %q in profile %q (modules: %s)\n", database, name, modules)
+	if err := dockerCleanDatabaseOutput(databaseCommand(container, databaseOperationInit, database, modules, false)...); err != nil {
+		return fmt.Errorf("initialize database %q: %w", database, err)
 	}
-	fmt.Printf("database %q initialized\n", *database)
+	fmt.Printf("database %q initialized\n", database)
 	return nil
 }
 
-func Update(args []string) error {
-	flags := flag.NewFlagSet("update", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	name := flags.String("name", "", "profile name")
-	database := flags.String("database", "", "database name")
-	updateAll := flags.Bool("update-all", false, "force a complete module update")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("update does not accept positional arguments")
-	}
-	if err := validateDatabaseOperationInputs(*name, *database); err != nil {
+func Update(name, database string, updateAll bool) error {
+	if err := validateDatabaseOperationInputs(name, database); err != nil {
 		return err
 	}
 
-	container, err := requireRunningProfile(*name)
+	container, err := requireRunningProfile(name)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("updating database %q in profile %q\n", *database, *name)
-	if err := dockerCleanDatabaseOutput(databaseCommand(container, databaseOperationUpdate, *database, "", *updateAll)...); err != nil {
-		return fmt.Errorf("update database %q: %w", *database, err)
+	fmt.Printf("updating database %q in profile %q\n", database, name)
+	if err := dockerCleanDatabaseOutput(databaseCommand(container, databaseOperationUpdate, database, "", updateAll)...); err != nil {
+		return fmt.Errorf("update database %q: %w", database, err)
 	}
-	fmt.Printf("database %q updated\n", *database)
+	fmt.Printf("database %q updated\n", database)
 	return nil
 }
 
-func Drop(args []string) error {
-	flags := flag.NewFlagSet("drop", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	name := flags.String("name", "", "profile name")
-	database := flags.String("database", "", "database name")
-	var yes bool
-	flags.BoolVar(&yes, "y", false, "confirm dropping the database")
-	flags.BoolVar(&yes, "yes", false, "confirm dropping the database")
-	if err := flags.Parse(args); err != nil {
+func Drop(name, database string, yes bool) error {
+	if name == "" {
+		return errors.New("database operation requires name")
+	}
+	if err := validateProfileName(name); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 {
-		return errors.New("drop does not accept positional arguments")
-	}
-	if *name == "" {
-		return errors.New("database operation requires --name")
-	}
-	if err := validateProfileName(*name); err != nil {
-		return err
-	}
-	if err := validateDropDatabase(*database); err != nil {
+	if err := validateDropDatabase(database); err != nil {
 		return err
 	}
 	if !yes {
-		return errors.New("drop requires --yes")
+		return errors.New("drop requires yes")
 	}
 
-	container, err := requireRunningProfile(*name)
+	container, err := requireRunningProfile(name)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("dropping database %q from profile %q\n", *database, *name)
-	if err := dockerCleanDatabaseOutput(databaseCommand(container, databaseOperationDrop, *database, "", false)...); err != nil {
-		return fmt.Errorf("drop database %q: %w", *database, err)
+	fmt.Printf("dropping database %q from profile %q\n", database, name)
+	if err := dockerCleanDatabaseOutput(databaseCommand(container, databaseOperationDrop, database, "", false)...); err != nil {
+		return fmt.Errorf("drop database %q: %w", database, err)
 	}
-	fmt.Printf("database %q dropped\n", *database)
+	fmt.Printf("database %q dropped\n", database)
 	return nil
 }
 
 func validateDatabaseOperationInputs(profile, database string) error {
 	if profile == "" {
-		return errors.New("database operation requires --name")
+		return errors.New("database operation requires name")
 	}
 	if err := validateProfileName(profile); err != nil {
 		return err

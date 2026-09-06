@@ -2,7 +2,6 @@ package docker
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,69 +57,55 @@ func buildImage(dockerfile, image string) error {
 	return dockerQuiet(buildImageArgs(dockerfile, image, buildx)...)
 }
 
-func Run(args []string, state files.State) error {
-	flags := flag.NewFlagSet("run", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	name := flags.String("name", "", "container name")
-	version := flags.String("version", "", "Odoo version")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("run does not accept positional arguments")
-	}
-	if *name == "" {
-		return errors.New("run requires --name")
+func Run(name, version string, state files.State) error {
+	if name == "" {
+		return errors.New("run requires name")
 	}
 
-	versionProvided := false
-	flags.Visit(func(f *flag.Flag) {
-		versionProvided = versionProvided || f.Name == "version"
-	})
-	storedVersion, err := files.ContainerVersion(state, *name)
+	storedVersion, err := files.ContainerVersion(state, name)
 	if err != nil {
 		return err
 	}
-	selectedVersion := *version
+	selectedVersion := version
 	if storedVersion != nil {
 		selectedVersion = *storedVersion
-		if versionProvided {
-			fmt.Fprintf(os.Stderr, "warning: container %q uses version %q; ignoring --version %q\n", *name, selectedVersion, *version)
+		if version != "" {
+			fmt.Fprintf(os.Stderr, "warning: container %q uses version %q; ignoring --version %q\n", name, selectedVersion, version)
 		}
-	} else if !versionProvided {
-		return fmt.Errorf("run requires --version because container %q has no stored version", *name)
+	} else if version == "" {
+		return fmt.Errorf("run requires --version because container %q has no stored version", name)
 	}
 	if !odooVersion.MatchString(selectedVersion) {
 		return fmt.Errorf("invalid Odoo version %q", selectedVersion)
 	}
 
-	addonNames, err := files.ContainerAddons(state, *name)
+	addonNames, err := files.ContainerAddons(state, name)
 	if err != nil {
 		return err
 	}
-	prefix, err := files.ContainerPrefix(state, *name)
+	prefix, err := files.ContainerPrefix(state, name)
 	if err != nil {
 		return err
 	}
 
-	containerName := "lidoo-" + *name
-	exists, err := findContainerByName(*name)
+	containerName := "lidoo-" + name
+	exists, err := findContainerByName(name)
 	if err != nil {
 		return err
 	}
 	if exists {
-		routingConfigured, err := containerHasTraefikRoute(containerName, *name)
+		routingConfigured, err := containerHasTraefikRoute(containerName, name)
 		if err != nil {
 			return err
 		}
 		if !routingConfigured {
-			return fmt.Errorf("container %q uses legacy port routing; remove and recreate it before opening %s", containerName, profileHostname(*name))
+			return fmt.Errorf("container %q uses legacy port routing; remove and recreate it before opening %s", containerName, profileHostname(name))
 		}
 
-		if _, err := hosts.Ensure(profileHostname(*name)); err != nil {
+		if _, err := hosts.Ensure(profileHostname(name)); err != nil {
 			return err
 		}
-		running, err := containerIsRunning(*name)
+		running, err := containerIsRunning(name)
 		if err != nil {
 			return err
 		}
@@ -130,10 +115,10 @@ func Run(args []string, state files.State) error {
 		if err := dockerQuiet("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
-		if err := files.AddContainer(state, *name); err != nil {
+		if err := files.AddContainer(state, name); err != nil {
 			return fmt.Errorf("update state: %w", err)
 		}
-		return reportContainerURL(*name)
+		return reportContainerURL(name)
 	}
 
 	dockerfile := filepath.Join("docker", "Dockerfile."+selectedVersion)
@@ -157,7 +142,7 @@ func Run(args []string, state files.State) error {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
 
-	hostname := profileHostname(*name)
+	hostname := profileHostname(name)
 	hostChanged, err := hosts.Ensure(hostname)
 	if err != nil {
 		return err
@@ -170,7 +155,7 @@ func Run(args []string, state files.State) error {
 		"--env-file", databaseEnvFile,
 		"--env", "HOST=lidoo-postgres",
 		"--env", "PORT=5432",
-		"--label", containerNameLabel + "=" + *name,
+		"--label", containerNameLabel + "=" + name,
 		"-v", FilestoreVolumeName + ":/var/lib/odoo",
 	}
 
@@ -182,7 +167,7 @@ func Run(args []string, state files.State) error {
 		addonPaths = append(addonPaths, "/opt/addons/"+addonName)
 	}
 
-	for _, label := range traefikLabels(*name) {
+	for _, label := range traefikLabels(name) {
 		containerArgs = append(containerArgs, "--label", label)
 	}
 	containerArgs = append(containerArgs, image, "odoo", "--dev=all")
@@ -190,20 +175,20 @@ func Run(args []string, state files.State) error {
 		containerArgs = append(containerArgs, "--addons-path="+strings.Join(addonPaths, ","))
 	}
 	containerArgs = append(containerArgs, databaseFilter(prefix))
-	fmt.Printf("starting profile %q\n", *name)
+	fmt.Printf("starting profile %q\n", name)
 	if err := dockerQuiet(containerArgs...); err != nil {
 		if hostChanged {
 			_ = hosts.Remove(hostname)
 		}
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
-	if err := files.AddContainer(state, *name); err != nil {
+	if err := files.AddContainer(state, name); err != nil {
 		return fmt.Errorf("update workspace: %w", err)
 	}
-	if err := files.SetContainerVersion(state, *name, selectedVersion); err != nil {
+	if err := files.SetContainerVersion(state, name, selectedVersion); err != nil {
 		return fmt.Errorf("update workspace: %w", err)
 	}
-	return reportContainerURL(*name)
+	return reportContainerURL(name)
 }
 
 func databaseFilter(prefix string) string {

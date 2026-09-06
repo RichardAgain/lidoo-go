@@ -1,8 +1,6 @@
 package docker
 
 import (
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,16 +14,7 @@ type profileRow struct {
 	status string
 }
 
-func List(args []string) error {
-	flags := flag.NewFlagSet("list", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("list does not accept positional arguments")
-	}
-
+func List() error {
 	output, err := dockerOutput(
 		"ps", "--all",
 		"--filter", "label="+containerNameLabel,

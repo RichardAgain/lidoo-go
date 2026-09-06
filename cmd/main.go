@@ -10,9 +10,9 @@ import (
 )
 
 func main() {
-	workspace, err := files.ReadWorkspace()
+	state, err := files.ReadState()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "read workspace:", err)
+		fmt.Fprintln(os.Stderr, "read state:", err)
 		os.Exit(1)
 	}
 
@@ -23,9 +23,9 @@ func main() {
 	} else {
 		switch os.Args[1] {
 		case "run":
-			err = docker.Run(os.Args[2:], workspace)
+			err = docker.Run(os.Args[2:], state)
 		case "recreate":
-			err = docker.Recreate(os.Args[2:], workspace)
+			err = docker.Recreate(os.Args[2:], state)
 		case "stop":
 			err = docker.Stop(os.Args[2:])
 		case "restart":
@@ -33,10 +33,10 @@ func main() {
 		case "remove":
 			err = docker.Remove(os.Args[2:])
 		case "addons":
-			err = addons.Run(os.Args[2:], workspace)
+			err = addons.Run(os.Args[2:], state)
 		default:
 			if len(os.Args) >= 5 && os.Args[2] == "addons" {
-				err = addons.RunForContainer(os.Args[1:], workspace)
+				err = addons.RunForContainer(os.Args[1:], state)
 			} else {
 				usage()
 				exitCode = 2
@@ -44,8 +44,8 @@ func main() {
 		}
 	}
 
-	if saveErr := files.SaveWorkspace(workspace); saveErr != nil {
-		fmt.Fprintln(os.Stderr, "save workspace:", saveErr)
+	if saveErr := files.SaveState(state); saveErr != nil {
+		fmt.Fprintln(os.Stderr, "save state:", saveErr)
 		exitCode = 1
 	}
 	if err != nil {

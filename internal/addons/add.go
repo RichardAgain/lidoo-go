@@ -13,27 +13,27 @@ import (
 
 const addonsDir = "addons"
 
-func Run(args []string, workspace files.Workspace) error {
+func Run(args []string, state files.State) error {
 	if len(args) == 0 {
 		return errors.New("addons requires a subcommand")
 	}
 
 	switch args[0] {
 	case "add":
-		return Add(args[1:], workspace)
+		return Add(args[1:], state)
 	default:
 		return fmt.Errorf("unknown addons command %q", args[0])
 	}
 }
 
-func RunForContainer(args []string, workspace files.Workspace) error {
+func RunForContainer(args []string, state files.State) error {
 	if len(args) < 4 || args[1] != "addons" || args[2] != "add" {
 		return errors.New("usage: lidoo <container> addons add <addon name> [<addon name> ...]")
 	}
-	return AddToContainer(args[0], args[3:], workspace)
+	return AddToContainer(args[0], args[3:], state)
 }
 
-func AddToContainer(container string, names []string, workspace files.Workspace) error {
+func AddToContainer(container string, names []string, state files.State) error {
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")
 	}
@@ -42,16 +42,16 @@ func AddToContainer(container string, names []string, workspace files.Workspace)
 			return fmt.Errorf("invalid addon name %q", name)
 		}
 	}
-	if err := files.AddContainer(workspace, container); err != nil {
-		return fmt.Errorf("add container %q to workspace: %w", container, err)
+	if err := files.AddContainer(state, container); err != nil {
+		return fmt.Errorf("add container %q to state: %w", container, err)
 	}
-	if err := files.AddAddonsToContainer(workspace, container, names); err != nil {
+	if err := files.AddAddonsToContainer(state, container, names); err != nil {
 		return fmt.Errorf("update container %q: %w", container, err)
 	}
 	return nil
 }
 
-func Add(args []string, workspace files.Workspace) error {
+func Add(args []string, state files.State) error {
 	if len(args) != 2 {
 		return errors.New("usage: lidoo addons add <addon name> <git url>")
 	}
@@ -81,8 +81,8 @@ func Add(args []string, workspace files.Workspace) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("clone addon %q: %w", name, err)
 	}
-	if err := files.UpdateWorkspace(workspace, name, url, destination); err != nil {
-		return fmt.Errorf("update workspace: %w", err)
+	if err := files.RegisterAddon(state, name, url, destination); err != nil {
+		return fmt.Errorf("register addon: %w", err)
 	}
 	return nil
 }

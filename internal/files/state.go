@@ -9,92 +9,92 @@ import (
 	"strings"
 )
 
-const workspacePath = ".workspace.json"
+const statePath = ".lidoo.json"
 
-type Workspace map[string]json.RawMessage
+type State map[string]json.RawMessage
 
-func ReadWorkspace() (Workspace, error) {
-	data, err := os.ReadFile(workspacePath)
+func ReadState() (State, error) {
+	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, err
 	}
 
-	workspace := make(Workspace)
-	if err := json.Unmarshal(data, &workspace); err != nil {
+	state := make(State)
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
-	if workspace == nil {
-		workspace = make(Workspace)
+	if state == nil {
+		state = make(State)
 	}
-	return workspace, nil
+	return state, nil
 }
 
-func SaveWorkspace(workspace Workspace) error {
-	output, err := json.MarshalIndent(workspace, "", "  ")
+func SaveState(state State) error {
+	output, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(workspacePath, append(output, '\n'), 0o644)
+	return os.WriteFile(statePath, append(output, '\n'), 0o644)
 }
 
-type workspaceAddon struct {
+type addonEntry struct {
 	Path   string `json:"path"`
 	Source string `json:"source"`
 }
 
-type workspaceContainer struct {
+type containerEntry struct {
 	Addons []string `json:"addons"`
 }
 
-func UpdateWorkspace(workspace Workspace, name, source, path string) error {
-	addons := make(map[string]workspaceAddon)
-	if raw, ok := workspace["addons"]; ok {
+func RegisterAddon(state State, name, source, path string) error {
+	addons := make(map[string]addonEntry)
+	if raw, ok := state["addons"]; ok {
 		if err := json.Unmarshal(raw, &addons); err != nil {
 			return fmt.Errorf("read addons: %w", err)
 		}
 		if addons == nil {
-			addons = make(map[string]workspaceAddon)
+			addons = make(map[string]addonEntry)
 		}
 	}
-	addons[name] = workspaceAddon{Path: filepath.ToSlash(path), Source: source}
+	addons[name] = addonEntry{Path: filepath.ToSlash(path), Source: source}
 
 	rawAddons, err := json.Marshal(addons)
 	if err != nil {
 		return err
 	}
-	workspace["addons"] = rawAddons
+	state["addons"] = rawAddons
 	return nil
 }
 
-func AddContainer(workspace Workspace, container string) error {
+func AddContainer(state State, container string) error {
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")
 	}
 
-	containers := make(map[string]workspaceContainer)
-	if raw, ok := workspace["containers"]; ok {
+	containers := make(map[string]containerEntry)
+	if raw, ok := state["containers"]; ok {
 		if err := json.Unmarshal(raw, &containers); err != nil {
 			return fmt.Errorf("read containers: %w", err)
 		}
 		if containers == nil {
-			containers = make(map[string]workspaceContainer)
+			containers = make(map[string]containerEntry)
 		}
 	}
 	if _, ok := containers[container]; ok {
 		return nil
 	}
 
-	containers[container] = workspaceContainer{Addons: []string{}}
+	containers[container] = containerEntry{Addons: []string{}}
 	rawContainers, err := json.Marshal(containers)
 	if err != nil {
 		return err
 	}
-	workspace["containers"] = rawContainers
-	fmt.Printf("\033[32mworkspace entry for container %q created\033[0m\n", container)
+	state["containers"] = rawContainers
+	fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", container)
 	return nil
 }
 
-func AddAddonsToContainer(workspace Workspace, container string, names []string) error {
+func AddAddonsToContainer(state State, container string, names []string) error {
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")
 	}
@@ -102,13 +102,13 @@ func AddAddonsToContainer(workspace Workspace, container string, names []string)
 		return errors.New("at least one addon is required")
 	}
 
-	containers := make(map[string]workspaceContainer)
-	if raw, ok := workspace["containers"]; ok {
+	containers := make(map[string]containerEntry)
+	if raw, ok := state["containers"]; ok {
 		if err := json.Unmarshal(raw, &containers); err != nil {
 			return fmt.Errorf("read containers: %w", err)
 		}
 		if containers == nil {
-			containers = make(map[string]workspaceContainer)
+			containers = make(map[string]containerEntry)
 		}
 	}
 
@@ -130,13 +130,13 @@ func AddAddonsToContainer(workspace Workspace, container string, names []string)
 	if err != nil {
 		return err
 	}
-	workspace["containers"] = rawContainers
+	state["containers"] = rawContainers
 	return nil
 }
 
-func ContainerAddons(workspace Workspace, container string) ([]string, error) {
-	if raw, ok := workspace["containers"]; ok {
-		containers := make(map[string]workspaceContainer)
+func ContainerAddons(state State, container string) ([]string, error) {
+	if raw, ok := state["containers"]; ok {
+		containers := make(map[string]containerEntry)
 		if err := json.Unmarshal(raw, &containers); err != nil {
 			return nil, fmt.Errorf("read containers: %w", err)
 		}

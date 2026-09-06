@@ -9,7 +9,7 @@ import (
 	"lidoo/internal/files"
 )
 
-func Recreate(args []string, workspace files.Workspace) error {
+func Recreate(args []string, state files.State) error {
 	flags := flag.NewFlagSet("recreate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	name := flags.String("name", "", "container name")
@@ -31,7 +31,7 @@ func Recreate(args []string, workspace files.Workspace) error {
 	if err := Remove(containerArgs); err != nil {
 		return fmt.Errorf("remove container %q: %w", *name, err)
 	}
-	if err := Run(args, workspace); err != nil {
+	if err := Run(args, state); err != nil {
 		return fmt.Errorf("recreate container %q: %w", *name, err)
 	}
 	return nil

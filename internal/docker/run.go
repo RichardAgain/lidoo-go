@@ -21,7 +21,7 @@ const (
 
 var odooVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
 
-func Run(args []string, workspace files.Workspace) error {
+func Run(args []string, state files.State) error {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	name := flags.String("name", "", "container name")
@@ -39,7 +39,7 @@ func Run(args []string, workspace files.Workspace) error {
 		return fmt.Errorf("invalid Odoo version %q", *version)
 	}
 
-	addonNames, err := files.ContainerAddons(workspace, *name)
+	addonNames, err := files.ContainerAddons(state, *name)
 	if err != nil {
 		return err
 	}
@@ -60,8 +60,8 @@ func Run(args []string, workspace files.Workspace) error {
 		if err := docker("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
-		if err := files.AddContainer(workspace, *name); err != nil {
-			return fmt.Errorf("update workspace: %w", err)
+		if err := files.AddContainer(state, *name); err != nil {
+			return fmt.Errorf("update state: %w", err)
 		}
 		return reportContainerPort(containerName)
 	}
@@ -112,8 +112,8 @@ func Run(args []string, workspace files.Workspace) error {
 	if err := docker(containerArgs...); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
-	if err := files.AddContainer(workspace, *name); err != nil {
-		return fmt.Errorf("update workspace: %w", err)
+	if err := files.AddContainer(state, *name); err != nil {
+		return fmt.Errorf("update state: %w", err)
 	}
 	return reportContainerPort(containerName)
 }

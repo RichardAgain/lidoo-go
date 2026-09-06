@@ -17,6 +17,25 @@ services:
     networks:
       - lidoo-net
 
+  traefik:
+    image: traefik:v3.7
+    restart: unless-stopped
+    container_name: lidoo-traefik
+
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+
+    ports:
+      - "80:80"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    networks:
+      - lidoo-net
+
 volumes:
   lidoo-postgres-data:
     name: lidoo-postgres-data 

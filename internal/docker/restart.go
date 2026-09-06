@@ -29,7 +29,7 @@ func Restart(args []string) error {
 		return fmt.Errorf("no running container with name %q", *name)
 	}
 	for _, container := range containers {
-		if err := docker("restart", container); err != nil {
+		if err := dockerQuiet("restart", container); err != nil {
 			return fmt.Errorf("restart container %s: %w", container, err)
 		}
 	}

@@ -1,5 +1,13 @@
 FROM odoo:18
 
+USER root
+RUN pip3 install --no-cache-dir --break-system-packages click-odoo-contrib==1.23.1
+# Odoo 18 expects ReportLab's Courier Type 1 alias during startup. The
+# bundled Nimbus Mono font is the same fixed-width fallback Odoo uses when
+# the alias is absent, so link it instead of installing another font package.
+RUN ln -sf NimbusMonoPS-Regular.pfb /usr/lib/python3/dist-packages/reportlab/fonts/n022003l.pfb
+USER odoo
+
 LABEL io.lidoo.managed="true"
 LABEL io.lidoo.odoo-version="18.0"
 

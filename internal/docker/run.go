@@ -60,6 +60,9 @@ func Run(args []string, workspace files.Workspace) error {
 		if err := docker("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
+		if err := files.AddContainer(workspace, *name); err != nil {
+			return fmt.Errorf("update workspace: %w", err)
+		}
 		return reportContainerPort(containerName)
 	}
 
@@ -108,6 +111,9 @@ func Run(args []string, workspace files.Workspace) error {
 	}
 	if err := docker(containerArgs...); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
+	}
+	if err := files.AddContainer(workspace, *name); err != nil {
+		return fmt.Errorf("update workspace: %w", err)
 	}
 	return reportContainerPort(containerName)
 }

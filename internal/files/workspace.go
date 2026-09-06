@@ -66,6 +66,34 @@ func UpdateWorkspace(workspace Workspace, name, source, path string) error {
 	return nil
 }
 
+func AddContainer(workspace Workspace, container string) error {
+	if strings.TrimSpace(container) == "" {
+		return errors.New("container name cannot be empty")
+	}
+
+	containers := make(map[string]workspaceContainer)
+	if raw, ok := workspace["containers"]; ok {
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			return fmt.Errorf("read containers: %w", err)
+		}
+		if containers == nil {
+			containers = make(map[string]workspaceContainer)
+		}
+	}
+	if _, ok := containers[container]; ok {
+		return nil
+	}
+
+	containers[container] = workspaceContainer{Addons: []string{}}
+	rawContainers, err := json.Marshal(containers)
+	if err != nil {
+		return err
+	}
+	workspace["containers"] = rawContainers
+	fmt.Printf("\033[32mworkspace entry for container %q created\033[0m\n", container)
+	return nil
+}
+
 func AddAddonsToContainer(workspace Workspace, container string, names []string) error {
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")

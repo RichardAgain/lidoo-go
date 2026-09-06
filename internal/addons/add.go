@@ -42,6 +42,9 @@ func AddToContainer(container string, names []string, workspace files.Workspace)
 			return fmt.Errorf("invalid addon name %q", name)
 		}
 	}
+	if err := files.AddContainer(workspace, container); err != nil {
+		return fmt.Errorf("add container %q to workspace: %w", container, err)
+	}
 	if err := files.AddAddonsToContainer(workspace, container, names); err != nil {
 		return fmt.Errorf("update container %q: %w", container, err)
 	}

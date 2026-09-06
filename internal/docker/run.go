@@ -69,11 +69,29 @@ func Run(args []string, state files.State) error {
 	if flags.NArg() != 0 {
 		return errors.New("run does not accept positional arguments")
 	}
-	if *name == "" || *version == "" {
-		return errors.New("run requires --name and --version")
+	if *name == "" {
+		return errors.New("run requires --name")
 	}
-	if !odooVersion.MatchString(*version) {
-		return fmt.Errorf("invalid Odoo version %q", *version)
+
+	versionProvided := false
+	flags.Visit(func(f *flag.Flag) {
+		versionProvided = versionProvided || f.Name == "version"
+	})
+	storedVersion, err := files.ContainerVersion(state, *name)
+	if err != nil {
+		return err
+	}
+	selectedVersion := *version
+	if storedVersion != nil {
+		selectedVersion = *storedVersion
+		if versionProvided {
+			fmt.Fprintf(os.Stderr, "warning: container %q uses version %q; ignoring --version %q\n", *name, selectedVersion, *version)
+		}
+	} else if !versionProvided {
+		return fmt.Errorf("run requires --version because container %q has no stored version", *name)
+	}
+	if !odooVersion.MatchString(selectedVersion) {
+		return fmt.Errorf("invalid Odoo version %q", selectedVersion)
 	}
 
 	addonNames, err := files.ContainerAddons(state, *name)
@@ -118,9 +136,9 @@ func Run(args []string, state files.State) error {
 		return reportContainerURL(*name)
 	}
 
-	dockerfile := filepath.Join("docker", "Dockerfile."+*version)
+	dockerfile := filepath.Join("docker", "Dockerfile."+selectedVersion)
 	if _, err := os.Stat(dockerfile); err != nil {
-		return fmt.Errorf("Dockerfile for Odoo %s not found: %s", *version, dockerfile)
+		return fmt.Errorf("Dockerfile for Odoo %s not found: %s", selectedVersion, dockerfile)
 	}
 
 	if _, err := os.Stat(databaseEnvFile); err != nil {
@@ -130,8 +148,8 @@ func Run(args []string, state files.State) error {
 		return err
 	}
 
-	image := "lidoo-odoo:" + *version
-	fmt.Printf("building Odoo %s image\n", *version)
+	image := "lidoo-odoo:" + selectedVersion
+	fmt.Printf("building Odoo %s image\n", selectedVersion)
 	if err := buildImage(dockerfile, image); err != nil {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
@@ -176,6 +194,9 @@ func Run(args []string, state files.State) error {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
 	if err := files.AddContainer(state, *name); err != nil {
+		return fmt.Errorf("update workspace: %w", err)
+	}
+	if err := files.SetContainerVersion(state, *name, selectedVersion); err != nil {
 		return fmt.Errorf("update workspace: %w", err)
 	}
 	return reportContainerURL(*name)

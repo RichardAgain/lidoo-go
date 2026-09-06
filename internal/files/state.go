@@ -43,8 +43,9 @@ type addonEntry struct {
 }
 
 type containerEntry struct {
-	Addons []string `json:"addons"`
-	Prefix string   `json:"prefix"`
+	Addons  []string `json:"addons"`
+	Prefix  string   `json:"prefix"`
+	Version *string  `json:"version,omitempty"`
 }
 
 func RegisterAddon(state State, name, source, path string) error {
@@ -94,6 +95,32 @@ func AddContainer(state State, container string) error {
 	}
 	state["containers"] = rawContainers
 	fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", container)
+	return nil
+}
+
+func SetContainerVersion(state State, container, version string) error {
+	if strings.TrimSpace(version) == "" {
+		return errors.New("container version cannot be empty")
+	}
+
+	containers := make(map[string]containerEntry)
+	if raw, ok := state["containers"]; ok {
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			return fmt.Errorf("read containers: %w", err)
+		}
+	}
+	config, ok := containers[container]
+	if !ok {
+		return fmt.Errorf("container %q not found", container)
+	}
+	config.Version = &version
+	containers[container] = config
+
+	rawContainers, err := json.Marshal(containers)
+	if err != nil {
+		return err
+	}
+	state["containers"] = rawContainers
 	return nil
 }
 
@@ -162,4 +189,17 @@ func ContainerPrefix(state State, container string) (string, error) {
 		}
 	}
 	return container + "__", nil
+}
+
+func ContainerVersion(state State, container string) (*string, error) {
+	if raw, ok := state["containers"]; ok {
+		containers := make(map[string]containerEntry)
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			return nil, fmt.Errorf("read containers: %w", err)
+		}
+		if config, ok := containers[container]; ok {
+			return config.Version, nil
+		}
+	}
+	return nil, nil
 }

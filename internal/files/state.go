@@ -44,6 +44,7 @@ type addonEntry struct {
 
 type containerEntry struct {
 	Addons []string `json:"addons"`
+	Prefix string   `json:"prefix"`
 }
 
 func RegisterAddon(state State, name, source, path string) error {
@@ -83,8 +84,10 @@ func AddContainer(state State, container string) error {
 	if _, ok := containers[container]; ok {
 		return nil
 	}
-
-	containers[container] = containerEntry{Addons: []string{}}
+	containers[container] = containerEntry{
+		Addons: []string{},
+		Prefix: container + "__",
+	}
 	rawContainers, err := json.Marshal(containers)
 	if err != nil {
 		return err
@@ -112,7 +115,10 @@ func AddAddonsToContainer(state State, container string, names []string) error {
 		}
 	}
 
-	config := containers[container]
+	config, ok := containers[container]
+	if !ok {
+		config = containerEntry{Prefix: container + "__"}
+	}
 	seen := make(map[string]bool, len(config.Addons))
 	for _, name := range config.Addons {
 		seen[name] = true
@@ -143,4 +149,17 @@ func ContainerAddons(state State, container string) ([]string, error) {
 		return containers[container].Addons, nil
 	}
 	return nil, nil
+}
+
+func ContainerPrefix(state State, container string) (string, error) {
+	if raw, ok := state["containers"]; ok {
+		containers := make(map[string]containerEntry)
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			return "", fmt.Errorf("read containers: %w", err)
+		}
+		if config, ok := containers[container]; ok {
+			return config.Prefix, nil
+		}
+	}
+	return container + "__", nil
 }

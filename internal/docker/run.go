@@ -70,13 +70,17 @@ func Run(args []string, state files.State) error {
 		return errors.New("run does not accept positional arguments")
 	}
 	if *name == "" || *version == "" {
-		return errors.New("up requires --name and --version")
+		return errors.New("run requires --name and --version")
 	}
 	if !odooVersion.MatchString(*version) {
 		return fmt.Errorf("invalid Odoo version %q", *version)
 	}
 
 	addonNames, err := files.ContainerAddons(state, *name)
+	if err != nil {
+		return err
+	}
+	prefix, err := files.ContainerPrefix(state, *name)
 	if err != nil {
 		return err
 	}
@@ -156,17 +160,14 @@ func Run(args []string, state files.State) error {
 		addonPaths = append(addonPaths, "/opt/addons/"+addonName)
 	}
 
-	containerArgs = append(containerArgs, image)
-	if len(addonNames) > 0 {
-		containerArgs = append(containerArgs,
-			"odoo", "--dev=all", "--addons-path="+strings.Join(addonPaths, ","),
-		)
-	}
-
 	for _, label := range traefikLabels(*name) {
 		containerArgs = append(containerArgs, "--label", label)
 	}
-	containerArgs = append(containerArgs, image)
+	containerArgs = append(containerArgs, image, "odoo", "--dev=all")
+	if len(addonNames) > 0 {
+		containerArgs = append(containerArgs, "--addons-path="+strings.Join(addonPaths, ","))
+	}
+	containerArgs = append(containerArgs, databaseFilter(prefix))
 	fmt.Printf("starting profile %q\n", *name)
 	if err := dockerQuiet(containerArgs...); err != nil {
 		if hostChanged {
@@ -178,6 +179,10 @@ func Run(args []string, state files.State) error {
 		return fmt.Errorf("update workspace: %w", err)
 	}
 	return reportContainerURL(*name)
+}
+
+func databaseFilter(prefix string) string {
+	return "--db-filter=^" + regexp.QuoteMeta(prefix) + ".*$"
 }
 
 func reportContainerURL(name string) error {

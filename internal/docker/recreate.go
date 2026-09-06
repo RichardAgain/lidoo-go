@@ -13,15 +13,14 @@ func Recreate(args []string, state files.State) error {
 	flags := flag.NewFlagSet("recreate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	name := flags.String("name", "", "container name")
-	version := flags.String("version", "", "Odoo version")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return errors.New("recreate does not accept positional arguments")
 	}
-	if *name == "" || *version == "" {
-		return errors.New("recreate requires --name and --version")
+	if *name == "" {
+		return errors.New("recreate requires container name")
 	}
 
 	containerArgs := []string{"--name", *name}

@@ -21,8 +21,8 @@ const (
 
 var odooVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
 
-func Up(args []string, workspace files.Workspace) error {
-	flags := flag.NewFlagSet("up", flag.ContinueOnError)
+func Run(args []string, workspace files.Workspace) error {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	name := flags.String("name", "", "container name")
 	version := flags.String("version", "", "Odoo version")
@@ -30,10 +30,10 @@ func Up(args []string, workspace files.Workspace) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("up does not accept positional arguments")
+		return errors.New("run does not accept positional arguments")
 	}
 	if *name == "" || *version == "" {
-		return errors.New("up requires --name and --version")
+		return errors.New("run requires --name and --version")
 	}
 	if !odooVersion.MatchString(*version) {
 		return fmt.Errorf("invalid Odoo version %q", *version)

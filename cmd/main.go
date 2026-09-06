@@ -22,8 +22,8 @@ func main() {
 		exitCode = 2
 	} else {
 		switch os.Args[1] {
-		case "up":
-			err = docker.Up(os.Args[2:], workspace)
+		case "run":
+			err = docker.Run(os.Args[2:], workspace)
 		case "recreate":
 			err = docker.Recreate(os.Args[2:], workspace)
 		case "stop":
@@ -58,7 +58,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <up|recreate|stop|restart|remove> --name <container name> [--version <odoo version>]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <run|recreate|stop|restart|remove> --name <container name> [--version <odoo version>]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo <container> addons add <addon name> [<addon name> ...]")
 }

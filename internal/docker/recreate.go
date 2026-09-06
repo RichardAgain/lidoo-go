@@ -31,7 +31,7 @@ func Recreate(args []string, workspace files.Workspace) error {
 	if err := Remove(containerArgs); err != nil {
 		return fmt.Errorf("remove container %q: %w", *name, err)
 	}
-	if err := Up(args, workspace); err != nil {
+	if err := Run(args, workspace); err != nil {
 		return fmt.Errorf("recreate container %q: %w", *name, err)
 	}
 	return nil

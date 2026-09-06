@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
+	"lidoo/internal/files"
 	"lidoo/internal/hosts"
 )
 
@@ -56,8 +58,8 @@ func buildImage(dockerfile, image string) error {
 	return dockerQuiet(buildImageArgs(dockerfile, image, buildx)...)
 }
 
-func Up(args []string) error {
-	flags := flag.NewFlagSet("up", flag.ContinueOnError)
+func Run(args []string, state files.State) error {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	name := flags.String("name", "", "container name")
 	version := flags.String("version", "", "Odoo version")
@@ -65,16 +67,18 @@ func Up(args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("up does not accept positional arguments")
+		return errors.New("run does not accept positional arguments")
 	}
 	if *name == "" || *version == "" {
 		return errors.New("up requires --name and --version")
 	}
-	if err := validateProfileName(*name); err != nil {
-		return err
-	}
 	if !odooVersion.MatchString(*version) {
 		return fmt.Errorf("invalid Odoo version %q", *version)
+	}
+
+	addonNames, err := files.ContainerAddons(state, *name)
+	if err != nil {
+		return err
 	}
 
 	containerName := "lidoo-" + *name
@@ -104,6 +108,9 @@ func Up(args []string) error {
 		if err := dockerQuiet("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
+		if err := files.AddContainer(state, *name); err != nil {
+			return fmt.Errorf("update state: %w", err)
+		}
 		return reportContainerURL(*name)
 	}
 
@@ -131,7 +138,7 @@ func Up(args []string) error {
 		return err
 	}
 
-	dockerArgs := []string{
+	containerArgs := []string{
 		"run", "--detach",
 		"--name", containerName,
 		"--network", networkName,
@@ -140,16 +147,35 @@ func Up(args []string) error {
 		"--env", "PORT=5432",
 		"--label", containerNameLabel + "=" + *name,
 	}
-	for _, label := range traefikLabels(*name) {
-		dockerArgs = append(dockerArgs, "--label", label)
+
+	addonPaths := []string{"/usr/lib/python3/dist-packages/odoo/addons"}
+	for _, addonName := range addonNames {
+		containerArgs = append(containerArgs,
+			"-v", "./"+filepath.ToSlash(filepath.Join("addons", addonName))+":/opt/addons/"+addonName,
+		)
+		addonPaths = append(addonPaths, "/opt/addons/"+addonName)
 	}
-	dockerArgs = append(dockerArgs, image)
+
+	containerArgs = append(containerArgs, image)
+	if len(addonNames) > 0 {
+		containerArgs = append(containerArgs,
+			"odoo", "--dev=all", "--addons-path="+strings.Join(addonPaths, ","),
+		)
+	}
+
+	for _, label := range traefikLabels(*name) {
+		containerArgs = append(containerArgs, "--label", label)
+	}
+	containerArgs = append(containerArgs, image)
 	fmt.Printf("starting profile %q\n", *name)
-	if err := dockerQuiet(dockerArgs...); err != nil {
+	if err := dockerQuiet(containerArgs...); err != nil {
 		if hostChanged {
 			_ = hosts.Remove(hostname)
 		}
 		return fmt.Errorf("create Odoo container: %w", err)
+	}
+	if err := files.AddContainer(state, *name); err != nil {
+		return fmt.Errorf("update workspace: %w", err)
 	}
 	return reportContainerURL(*name)
 }

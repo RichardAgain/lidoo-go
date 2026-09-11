@@ -3,7 +3,8 @@ package odoo
 import (
 	"errors"
 	"os"
-	"os/exec"
+
+	"lidoo/internal/docker"
 )
 
 const execScript = `set -eu
@@ -18,21 +19,17 @@ fi
 exec "$@"
 `
 
-func dockerExecArgs(container string, command ...string) []string {
-	args := []string{"exec", container, "sh", "-c", execScript, "lidoo"}
-	return append(args, command...)
-}
-
 func run(container string, command ...string) error {
 	if len(command) == 0 {
 		return errors.New("cannot execute an empty command")
 	}
 
-	cmd := exec.Command("docker", dockerExecArgs(container, command...)...)
+	args := make([]string, 0, len(command)+4)
+	args = append(args, "sh", "-c", execScript, "lidoo")
+	args = append(args, command...)
+
 	writer := newCleanOutputWriter(os.Stdout)
-	cmd.Stdout = writer
-	cmd.Stderr = writer
-	err := cmd.Run()
+	err := docker.ExecWithOutput(container, writer, writer, args...)
 	if flushErr := writer.Flush(); err == nil {
 		err = flushErr
 	}

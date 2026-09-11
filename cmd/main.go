@@ -10,6 +10,7 @@ import (
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 	"lidoo/internal/hosts"
+	"lidoo/internal/odoo"
 )
 
 func main() {
@@ -68,11 +69,11 @@ func main() {
 	case "list":
 		err = docker.List()
 	case "init":
-		err = docker.Init(name, database, modules)
+		err = odoo.Init(name, database, modules)
 	case "update":
-		err = docker.Update(name, database, updateAll)
+		err = odoo.Update(name, database, updateAll)
 	case "drop":
-		err = docker.Drop(name, database, yes)
+		err = odoo.Drop(name, database, yes)
 	case "run":
 		err = docker.Run(name, version, state)
 	case "recreate":

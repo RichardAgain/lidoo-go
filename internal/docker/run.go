@@ -22,7 +22,7 @@ var (
 	profileNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 )
 
-func validateProfileName(name string) error {
+func ValidateProfileName(name string) error {
 	if len(name) > 63 || !profileNamePattern.MatchString(name) {
 		return fmt.Errorf("invalid profile name %q: use 1-63 lowercase letters, numbers, and hyphens", name)
 	}

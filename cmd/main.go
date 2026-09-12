@@ -95,12 +95,13 @@ func main() {
 			}
 		case len(positional) > 0 && positional[0] == "worktree":
 			var source, name, branch string
-			source, name, branch, err = parseWorktreeArgs(positional[1:])
+			var worktreeYes bool
+			source, name, branch, worktreeYes, err = parseWorktreeArgs(positional[1:])
 			if err == nil {
-				err = addons.Worktree(source, name, branch, state)
+				err = addons.WorktreeWithConfirmation(source, name, branch, yes || worktreeYes, state)
 			}
 		default:
-			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons worktree <source> <name> --branch <branch>")
+			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 		}
 	default:
 		if len(positional) >= 3 && positional[0] == "addons" && positional[1] == "add" {
@@ -124,37 +125,40 @@ func main() {
 	}
 }
 
-func parseWorktreeArgs(args []string) (string, string, string, error) {
+func parseWorktreeArgs(args []string) (string, string, string, bool, error) {
 	var positional []string
 	var branch string
+	var yes bool
 	branchSet := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--branch":
 			if branchSet || i+1 >= len(args) {
-				return "", "", "", errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
+				return "", "", "", false, errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
 			}
 			i++
 			branch = args[i]
 			branchSet = true
 		case strings.HasPrefix(args[i], "--branch="):
 			if branchSet {
-				return "", "", "", errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
+				return "", "", "", false, errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
 			}
 			branch = strings.TrimPrefix(args[i], "--branch=")
 			branchSet = true
-		case strings.HasPrefix(args[i], "-") && len(positional) >= 2:
-			return "", "", "", fmt.Errorf("unknown addons worktree option %q", args[i])
+		case args[i] == "--yes" || args[i] == "-y":
+			yes = true
+		case strings.HasPrefix(args[i], "-"):
+			return "", "", "", false, fmt.Errorf("unknown addons worktree option %q", args[i])
 		default:
 			positional = append(positional, args[i])
 		}
 	}
 
 	if len(positional) != 2 || !branchSet {
-		return "", "", "", errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
+		return "", "", "", false, errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
 	}
-	return positional[0], positional[1], branch, nil
+	return positional[0], positional[1], branch, yes, nil
 }
 
 func commandRejectsPositionals(command string) bool {
@@ -181,6 +185,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
-	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch>")
+	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo <container> addons add <addon name> [<addon name> ...]")
 }

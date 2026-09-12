@@ -37,9 +37,11 @@ func SaveState(state State) error {
 	return os.WriteFile(statePath, append(output, '\n'), 0o644)
 }
 
-type addonEntry struct {
-	Path   string `json:"path"`
-	Source string `json:"source"`
+type AddonEntry struct {
+	Path       string `json:"path"`
+	Source     string `json:"source,omitempty"`
+	WorktreeOf string `json:"worktreeOf,omitempty"`
+	Branch     string `json:"branch,omitempty"`
 }
 
 type containerEntry struct {
@@ -48,24 +50,57 @@ type containerEntry struct {
 	Version *string  `json:"version,omitempty"`
 }
 
-func RegisterAddon(state State, name, source, path string) error {
-	addons := make(map[string]addonEntry)
+func loadAddons(state State) (map[string]AddonEntry, error) {
+	addons := make(map[string]AddonEntry)
 	if raw, ok := state["addons"]; ok {
 		if err := json.Unmarshal(raw, &addons); err != nil {
-			return fmt.Errorf("read addons: %w", err)
+			return nil, fmt.Errorf("read addons: %w", err)
 		}
 		if addons == nil {
-			addons = make(map[string]addonEntry)
+			addons = make(map[string]AddonEntry)
 		}
 	}
-	addons[name] = addonEntry{Path: filepath.ToSlash(path), Source: source}
+	return addons, nil
+}
 
+func saveAddons(state State, addons map[string]AddonEntry) error {
 	rawAddons, err := json.Marshal(addons)
 	if err != nil {
 		return err
 	}
 	state["addons"] = rawAddons
 	return nil
+}
+
+func LookupAddon(state State, name string) (AddonEntry, bool, error) {
+	addons, err := loadAddons(state)
+	if err != nil {
+		return AddonEntry{}, false, err
+	}
+	addon, ok := addons[name]
+	return addon, ok, nil
+}
+
+func RegisterAddon(state State, name, source, path string) error {
+	addons, err := loadAddons(state)
+	if err != nil {
+		return err
+	}
+	addons[name] = AddonEntry{Path: filepath.ToSlash(path), Source: source}
+	return saveAddons(state, addons)
+}
+
+func RegisterWorktree(state State, name, path, parent, branch string) error {
+	addons, err := loadAddons(state)
+	if err != nil {
+		return err
+	}
+	addons[name] = AddonEntry{
+		Path:       filepath.ToSlash(path),
+		WorktreeOf: parent,
+		Branch:     branch,
+	}
+	return saveAddons(state, addons)
 }
 
 func AddContainer(state State, container string) error {

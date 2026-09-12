@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"lidoo/internal/addons"
 	"lidoo/internal/docker"
@@ -85,10 +86,21 @@ func main() {
 	case "remove":
 		err = docker.Remove(name, yes)
 	case "addons":
-		if len(positional) != 3 || positional[0] != "add" {
-			err = errors.New("usage: lidoo addons add <addon name> <git url>")
-		} else {
-			err = addons.Add(positional[1], positional[2], state)
+		switch {
+		case len(positional) > 0 && positional[0] == "add":
+			if len(positional) != 3 {
+				err = errors.New("usage: lidoo addons add <addon name> <git url>")
+			} else {
+				err = addons.Add(positional[1], positional[2], state)
+			}
+		case len(positional) > 0 && positional[0] == "worktree":
+			var source, name, branch string
+			source, name, branch, err = parseWorktreeArgs(positional[1:])
+			if err == nil {
+				err = addons.Worktree(source, name, branch, state)
+			}
+		default:
+			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons worktree <source> <name> --branch <branch>")
 		}
 	default:
 		if len(positional) >= 3 && positional[0] == "addons" && positional[1] == "add" {
@@ -110,6 +122,39 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func parseWorktreeArgs(args []string) (string, string, string, error) {
+	var positional []string
+	var branch string
+	branchSet := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--branch":
+			if branchSet || i+1 >= len(args) {
+				return "", "", "", errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
+			}
+			i++
+			branch = args[i]
+			branchSet = true
+		case strings.HasPrefix(args[i], "--branch="):
+			if branchSet {
+				return "", "", "", errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
+			}
+			branch = strings.TrimPrefix(args[i], "--branch=")
+			branchSet = true
+		case strings.HasPrefix(args[i], "-") && len(positional) >= 2:
+			return "", "", "", fmt.Errorf("unknown addons worktree option %q", args[i])
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+
+	if len(positional) != 2 || !branchSet {
+		return "", "", "", errors.New("usage: lidoo addons worktree <source> <name> --branch <branch>")
+	}
+	return positional[0], positional[1], branch, nil
 }
 
 func commandRejectsPositionals(command string) bool {
@@ -136,5 +181,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
+	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch>")
 	fmt.Fprintln(os.Stderr, "       lidoo <container> addons add <addon name> [<addon name> ...]")
 }

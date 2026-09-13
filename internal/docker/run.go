@@ -9,40 +9,18 @@ import (
 	"strings"
 
 	"lidoo/internal/files"
-	"lidoo/internal/hosts"
+	"lidoo/internal/profile"
+	"lidoo/internal/proxy"
 )
 
-const (
-	odooPort      = 8069
-	profileDomain = "lidoo.test"
-)
-
-var (
-	odooVersion        = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
-	profileNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
-)
+var odooVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
 
 func ValidateProfileName(name string) error {
-	if len(name) > 63 || !profileNamePattern.MatchString(name) {
-		return fmt.Errorf("invalid profile name %q: use 1-63 lowercase letters, numbers, and hyphens", name)
-	}
-	return nil
+	return profile.ValidateName(name)
 }
 
 func profileHostname(name string) string {
-	return name + "." + profileDomain
-}
-
-func traefikLabels(name string) []string {
-	hostname := profileHostname(name)
-	return []string{
-		"traefik.enable=true",
-		"traefik.docker.network=" + networkName,
-		"traefik.http.routers." + name + ".rule=Host(`" + hostname + "`)",
-		"traefik.http.routers." + name + ".entrypoints=web",
-		"traefik.http.routers." + name + ".service=" + name,
-		"traefik.http.services." + name + ".loadbalancer.server.port=" + fmt.Sprint(odooPort),
-	}
+	return profile.Hostname(name)
 }
 
 func buildImageArgs(dockerfile, image string, buildx bool) []string {
@@ -60,6 +38,9 @@ func buildImage(dockerfile, image string) error {
 func Run(name, version string, state files.State) error {
 	if name == "" {
 		return errors.New("run requires name")
+	}
+	if err := ValidateProfileName(name); err != nil {
+		return err
 	}
 
 	storedVersion, err := files.ContainerVersion(state, name)
@@ -88,35 +69,40 @@ func Run(name, version string, state files.State) error {
 		return err
 	}
 
-	containerName := "lidoo-" + name
+	containerName := profile.ContainerName(name)
 	exists, err := findContainerByName(name)
 	if err != nil {
 		return err
 	}
 	if exists {
-		routingConfigured, err := containerHasTraefikRoute(containerName, name)
-		if err != nil {
-			return err
-		}
-		if !routingConfigured {
-			return fmt.Errorf("container %q uses legacy port routing; remove and recreate it before opening %s", containerName, profileHostname(name))
-		}
-
-		if _, err := hosts.Ensure(profileHostname(name)); err != nil {
-			return err
-		}
+		previousState := cloneState(state)
 		running, err := containerIsRunning(name)
 		if err != nil {
 			return err
 		}
 		if running {
+			if err := files.AddContainer(state, name); err != nil {
+				restoreState(state, previousState)
+				return fmt.Errorf("update state: %w", err)
+			}
+			if err := proxy.Sync(state); err != nil {
+				restoreState(state, previousState)
+				return fmt.Errorf("synchronize Caddy routing: %w", err)
+			}
 			return fmt.Errorf("container %q already exists", containerName)
 		}
 		if err := dockerQuiet("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
 		if err := files.AddContainer(state, name); err != nil {
+			_ = dockerQuiet("stop", containerName)
+			restoreState(state, previousState)
 			return fmt.Errorf("update state: %w", err)
+		}
+		if err := proxy.Sync(state); err != nil {
+			_ = dockerQuiet("stop", containerName)
+			restoreState(state, previousState)
+			return fmt.Errorf("synchronize Caddy routing: %w", err)
 		}
 		return reportContainerURL(name)
 	}
@@ -142,12 +128,6 @@ func Run(name, version string, state files.State) error {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
 
-	hostname := profileHostname(name)
-	hostChanged, err := hosts.Ensure(hostname)
-	if err != nil {
-		return err
-	}
-
 	containerArgs := []string{
 		"run", "--detach",
 		"--name", containerName,
@@ -167,9 +147,6 @@ func Run(name, version string, state files.State) error {
 		addonPaths = append(addonPaths, "/opt/addons/"+addonName)
 	}
 
-	for _, label := range traefikLabels(name) {
-		containerArgs = append(containerArgs, "--label", label)
-	}
 	containerArgs = append(containerArgs, image, "odoo", "--dev=all")
 	if len(addonNames) > 0 {
 		containerArgs = append(containerArgs, "--addons-path="+strings.Join(addonPaths, ","))
@@ -177,16 +154,24 @@ func Run(name, version string, state files.State) error {
 	containerArgs = append(containerArgs, databaseFilter(prefix))
 	fmt.Printf("starting profile %q\n", name)
 	if err := dockerQuiet(containerArgs...); err != nil {
-		if hostChanged {
-			_ = hosts.Remove(hostname)
-		}
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
+
+	previousState := cloneState(state)
 	if err := files.AddContainer(state, name); err != nil {
-		return fmt.Errorf("update workspace: %w", err)
+		cleanupErr := removeCreatedContainer(containerName)
+		restoreState(state, previousState)
+		return combineErrors(fmt.Errorf("update workspace: %w", err), cleanupErr)
 	}
 	if err := files.SetContainerVersion(state, name, selectedVersion); err != nil {
-		return fmt.Errorf("update workspace: %w", err)
+		cleanupErr := removeCreatedContainer(containerName)
+		restoreState(state, previousState)
+		return combineErrors(fmt.Errorf("update workspace: %w", err), cleanupErr)
+	}
+	if err := proxy.Sync(state); err != nil {
+		cleanupErr := removeCreatedContainer(containerName)
+		restoreState(state, previousState)
+		return combineErrors(fmt.Errorf("synchronize Caddy routing: %w", err), cleanupErr)
 	}
 	return reportContainerURL(name)
 }
@@ -199,4 +184,35 @@ func reportContainerURL(name string) error {
 	hostname := profileHostname(name)
 	fmt.Printf("profile running at http://%s\n", hostname)
 	return nil
+}
+
+func removeCreatedContainer(name string) error {
+	if err := dockerQuiet("rm", "-f", name); err != nil {
+		return fmt.Errorf("remove created container %q: %w", name, err)
+	}
+	return nil
+}
+
+func cloneState(state files.State) files.State {
+	clone := make(files.State, len(state))
+	for key, value := range state {
+		clone[key] = append([]byte(nil), value...)
+	}
+	return clone
+}
+
+func restoreState(state, snapshot files.State) {
+	for key := range state {
+		delete(state, key)
+	}
+	for key, value := range snapshot {
+		state[key] = append([]byte(nil), value...)
+	}
+}
+
+func combineErrors(primary, cleanup error) error {
+	if cleanup == nil {
+		return primary
+	}
+	return fmt.Errorf("%w; cleanup failed: %v", primary, cleanup)
 }

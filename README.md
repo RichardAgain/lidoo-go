@@ -4,8 +4,8 @@ Create the shared database configuration before starting the services:
 
 ```sh
 cp .env.example .env
-docker compose up -d
-go run ./cmd up --name testing --version 18
+docker compose up -d db caddy
+go run ./cmd run --name testing --version 18
 ```
 
 To list all profiles discovered through Docker labels, including stopped
@@ -15,23 +15,20 @@ profiles:
 go run ./cmd list
 ```
 
-The CLI automatically adds `testing.lidoo.test` to the system hosts file. The
-first run may ask for administrator permission (`sudo` on Unix or UAC on
-Windows). Then open Odoo at:
+Lidoo generates the shared Caddy configuration for each profile and routes
+requests through `lidoo-net` to the container's internal port `8069`. The
+CLI generates routes such as `testing.lidoo.localhost`. The `.localhost`
+domain resolves to the local machine without DNS or hosts-file configuration.
+Then open:
 
 ```text
-http://testing.lidoo.test
+http://testing.lidoo.localhost
 ```
 
-If the profile was created before Traefik routing was enabled, it must be
-recreated so it receives the new routing labels. For an empty profile:
-
-```sh
-go run ./cmd remove --name testing --yes
-go run ./cmd up --name testing --version 18
-```
-
-The `remove` command also removes the profile's Lidoo-managed hosts entry.
+Caddy must be running before a profile is created or removed. Lidoo validates
+and reloads Caddy after each route change; it does not give Caddy access to
+the Docker socket. Lidoo does not modify `/etc/hosts`, configure `dnsmasq`, or
+implement custom DNS handling.
 
 Profile builds use Docker BuildKit/Buildx when available. On Docker
 installations that do not include the Buildx plugin, Lidoo falls back to the
@@ -42,7 +39,7 @@ builds; build failures still print the complete Docker output.
 
 The Odoo image includes `click-odoo-contrib==1.23.1`, which provides the
 database maintenance commands used by Lidoo. Rebuild/recreate the profile
-after changing the Dockerfile so the new tools are available. `up` starts an
+after changing the Dockerfile so the new tools are available. `run` starts an
 existing container; it does not replace that container when its image tag has
 been rebuilt.
 
@@ -52,7 +49,7 @@ the container and run the operation again:
 
 ```sh
 go run ./cmd remove --name testing --yes
-go run ./cmd up --name testing --version 18
+go run ./cmd run --name testing --version 18
 go run ./cmd init --name testing --database testing_db --modules base,sale
 ```
 

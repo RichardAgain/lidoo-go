@@ -16,10 +16,10 @@
 - For browser session isolation, use a profile-level hostname routed through
   the shared entrypoint. Do not use a different port on `localhost` as the
   only isolation mechanism, because browser cookies are not separated by port.
-- Prefer reserved local `.test` hostnames when realistic local domains are
-  needed. Manage profile entries in the system hosts file through the
-  cross-platform hosts helper; only entries marked as Lidoo-managed may be
-  changed or removed. Keep hostname routing out of the database identity.
+- Use `<profile>.lidoo.localhost` for profile hostnames. The `.localhost`
+  suffix provides local resolution; do not modify the system hosts file or
+  add custom DNS management. Keep hostname routing out of the database
+  identity.
 - Introduce profile files only when persistent, structured configuration (for
   example add-ons) cannot be represented safely with labels; do not add files
   merely to duplicate runtime discovery.
@@ -28,5 +28,5 @@
 
 Before adding a process, dependency, or configuration layer, state the problem
 it solves, why the current Docker/CLI flow cannot solve it, and the operational
-cost it introduces. A small library for safe hosts-file management is allowed
-when it replaces manual setup and does not add a resident process.
+cost it introduces. Do not add DNS or hosts-file management for local profile
+routing.

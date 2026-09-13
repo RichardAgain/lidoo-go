@@ -154,6 +154,44 @@ func ChildWorktrees(state State, parent string) ([]string, error) {
 	return children, nil
 }
 
+func ContainerNames(state State) ([]string, error) {
+	containers := make(map[string]containerEntry)
+	if raw, ok := state["containers"]; ok {
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			return nil, fmt.Errorf("read containers: %w", err)
+		}
+	}
+
+	names := make([]string, 0, len(containers))
+	for name := range containers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func RemoveContainer(state State, container string) error {
+	containers := make(map[string]containerEntry)
+	raw, ok := state["containers"]
+	if !ok {
+		return nil
+	}
+	if err := json.Unmarshal(raw, &containers); err != nil {
+		return fmt.Errorf("read containers: %w", err)
+	}
+	if _, ok := containers[container]; !ok {
+		return nil
+	}
+	delete(containers, container)
+
+	rawContainers, err := json.Marshal(containers)
+	if err != nil {
+		return err
+	}
+	state["containers"] = rawContainers
+	return nil
+}
+
 func AddContainer(state State, container string) error {
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")

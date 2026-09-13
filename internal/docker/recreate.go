@@ -15,9 +15,11 @@ func Recreate(name string, state files.State) error {
 	if err := Stop(name); err != nil {
 		return fmt.Errorf("stop container %q: %w", name, err)
 	}
-	if err := Remove(name, false); err != nil {
+	previousState := cloneState(state)
+	if err := RemoveWithState(name, false, state); err != nil {
 		return fmt.Errorf("remove container %q: %w", name, err)
 	}
+	restoreState(state, previousState)
 	if err := Run(name, "", state); err != nil {
 		return fmt.Errorf("recreate container %q: %w", name, err)
 	}

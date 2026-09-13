@@ -10,7 +10,6 @@ import (
 	"lidoo/internal/addons"
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
-	"lidoo/internal/hosts"
 	"lidoo/internal/odoo"
 )
 
@@ -39,18 +38,6 @@ func main() {
 		os.Exit(2)
 	}
 	positional := flags.Args()
-
-	if command == hosts.ElevatedCommand {
-		if len(positional) != 2 {
-			fmt.Fprintln(os.Stderr, "hosts write requires add/remove and hostname")
-			os.Exit(2)
-		}
-		if err := hosts.RunElevated(positional[0], positional[1]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
 
 	state, err := files.ReadState()
 	if err != nil {

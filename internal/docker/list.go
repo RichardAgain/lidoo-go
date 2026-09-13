@@ -60,6 +60,9 @@ func renderProfileList(w io.Writer, profiles []profileRow) error {
 	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "PROFILE\tSTATUS\tURL")
 	for _, profile := range profiles {
+		if err := ValidateProfileName(profile.name); err != nil {
+			return fmt.Errorf("invalid profile from Docker: %w", err)
+		}
 		fmt.Fprintf(table, "%s\t%s\thttp://%s\n", profile.name, profile.status, profileHostname(profile.name))
 	}
 	return table.Flush()

@@ -107,6 +107,13 @@ func main() {
 			if err == nil {
 				err = addons.DetachFromContainer(profile, addonNames, state)
 			}
+		case len(positional) > 0 && positional[0] == "rm":
+			var addonName string
+			var removeYes, removeForce bool
+			addonName, removeYes, removeForce, err = parseAddonRemoveArgs(positional[1:], yes, false)
+			if err == nil {
+				err = addons.Remove(addonName, removeYes, removeForce, state)
+			}
 		case len(positional) > 0 && positional[0] == "worktree":
 			var source, name, branch string
 			var worktreeYes bool
@@ -166,6 +173,29 @@ func parseAddonArgs(args []string, profile, action string) (string, []string, er
 		return "", nil, errors.New(usage)
 	}
 	return profile, addonNames, nil
+}
+
+func parseAddonRemoveArgs(args []string, yes, force bool) (string, bool, bool, error) {
+	usage := "usage: lidoo addons rm <addon name> [--yes] [--force]"
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--yes" || args[i] == "-y":
+			yes = true
+		case args[i] == "--force":
+			force = true
+		case strings.HasPrefix(args[i], "-"):
+			return "", false, false, fmt.Errorf("unknown addons rm option %q", args[i])
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+
+	if len(positional) != 1 {
+		return "", false, false, errors.New(usage)
+	}
+	return positional[0], yes, force, nil
 }
 
 func parseWorktreeArgs(args []string) (string, string, string, bool, error) {
@@ -228,6 +258,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
+	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons attach --name <profile> <addon name> [<addon name> ...]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons detach --name <profile> <addon name> [<addon name> ...]")

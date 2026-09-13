@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -101,6 +102,56 @@ func RegisterWorktree(state State, name, path, parent, branch string) error {
 		Branch:     branch,
 	}
 	return saveAddons(state, addons)
+}
+
+func UnregisterAddon(state State, name string) error {
+	addons, err := loadAddons(state)
+	if err != nil {
+		return err
+	}
+	if _, ok := addons[name]; !ok {
+		return fmt.Errorf("addon %q not found", name)
+	}
+	delete(addons, name)
+	return saveAddons(state, addons)
+}
+
+func AddonProfiles(state State, name string) ([]string, error) {
+	if raw, ok := state["containers"]; ok {
+		containers := make(map[string]containerEntry)
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			return nil, fmt.Errorf("read containers: %w", err)
+		}
+
+		profiles := make([]string, 0)
+		for container, config := range containers {
+			for _, addon := range config.Addons {
+				if addon == name {
+					profiles = append(profiles, container)
+					break
+				}
+			}
+		}
+		sort.Strings(profiles)
+		return profiles, nil
+	}
+	return nil, nil
+}
+
+func ChildWorktrees(state State, parent string) ([]string, error) {
+	addons, err := loadAddons(state)
+	if err != nil {
+		return nil, err
+	}
+
+	children := make([]string, 0)
+	for name, addon := range addons {
+		if addon.WorktreeOf == parent {
+			children = append(children, name)
+		}
+	}
+	sort.Strings(children)
+	return children, nil
 }
 
 func AddContainer(state State, container string) error {

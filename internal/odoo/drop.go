@@ -5,9 +5,10 @@ import (
 	"fmt"
 
 	"lidoo/internal/docker"
+	"lidoo/internal/files"
 )
 
-func Drop(name, database string, yes bool) error {
+func Drop(name, database string, yes bool, state files.State) error {
 	if err := validateDatabaseOperationInputs(name, database); err != nil {
 		return err
 	}
@@ -16,6 +17,11 @@ func Drop(name, database string, yes bool) error {
 	}
 	if !yes {
 		return errors.New("drop requires --yes")
+	}
+
+	database, err := resolveDatabaseName(state, name, database)
+	if err != nil {
+		return err
 	}
 
 	container, err := docker.RequireRunningProfile(name)

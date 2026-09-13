@@ -70,11 +70,11 @@ func main() {
 	case "list":
 		err = docker.List()
 	case "init":
-		err = odoo.Init(name, database, modules)
+		err = odoo.Init(name, database, modules, state)
 	case "update":
-		err = odoo.Update(name, database, updateAll)
+		err = odoo.Update(name, database, updateAll, state)
 	case "drop":
-		err = odoo.Drop(name, database, yes)
+		err = odoo.Drop(name, database, yes, state)
 	case "run":
 		err = docker.Run(name, version, state)
 	case "recreate":

@@ -4,10 +4,12 @@ import (
 	"fmt"
 
 	"lidoo/internal/docker"
+	"lidoo/internal/files"
 )
 
-func Update(name, database string, updateAll bool) error {
-	if err := validateDatabaseOperationInputs(name, database); err != nil {
+func Update(name, database string, updateAll bool, state files.State) error {
+	database, err := resolveDatabaseName(state, name, database)
+	if err != nil {
 		return err
 	}
 

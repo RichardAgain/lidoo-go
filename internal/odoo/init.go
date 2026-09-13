@@ -5,10 +5,12 @@ import (
 	"fmt"
 
 	"lidoo/internal/docker"
+	"lidoo/internal/files"
 )
 
-func Init(name, database, modules string) error {
-	if err := validateDatabaseOperationInputs(name, database); err != nil {
+func Init(name, database, modules string, state files.State) error {
+	database, err := resolveDatabaseName(state, name, database)
+	if err != nil {
 		return err
 	}
 	if modules == "" {

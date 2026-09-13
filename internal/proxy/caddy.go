@@ -76,7 +76,7 @@ func Render(routes []Route) (string, error) {
 	output.WriteString("    auto_https off\n")
 	output.WriteString("}\n")
 	for _, route := range routes {
-		fmt.Fprintf(&output, "\n%s {\n    reverse_proxy %s:%d\n}\n", route.Host, route.Container, route.Port)
+		fmt.Fprintf(&output, "\nhttp://%s {\n    reverse_proxy %s:%d\n}\n", route.Host, route.Container, route.Port)
 	}
 	return output.String(), nil
 }

@@ -43,7 +43,7 @@ func Run(name, version string, state files.State) error {
 		return err
 	}
 
-	storedVersion, err := files.ContainerVersion(state, name)
+	storedVersion, err := profile.Version(state, name)
 	if err != nil {
 		return err
 	}
@@ -60,11 +60,11 @@ func Run(name, version string, state files.State) error {
 		return fmt.Errorf("invalid Odoo version %q", selectedVersion)
 	}
 
-	addonNames, err := files.ContainerAddons(state, name)
+	addonNames, err := profile.Addons(state, name)
 	if err != nil {
 		return err
 	}
-	prefix, err := files.ContainerPrefix(state, name)
+	prefix, err := profile.Prefix(state, name)
 	if err != nil {
 		return err
 	}
@@ -75,18 +75,18 @@ func Run(name, version string, state files.State) error {
 		return err
 	}
 	if exists {
-		previousState := cloneState(state)
+		previousState := files.CloneState(state)
 		running, err := containerIsRunning(name)
 		if err != nil {
 			return err
 		}
 		if running {
-			if err := files.AddContainer(state, name); err != nil {
-				restoreState(state, previousState)
+			if err := ensureProfileState(state, name); err != nil {
+				files.RestoreState(state, previousState)
 				return fmt.Errorf("update state: %w", err)
 			}
 			if err := proxy.Sync(state); err != nil {
-				restoreState(state, previousState)
+				files.RestoreState(state, previousState)
 				return fmt.Errorf("synchronize Caddy routing: %w", err)
 			}
 			return fmt.Errorf("container %q already exists", containerName)
@@ -94,14 +94,14 @@ func Run(name, version string, state files.State) error {
 		if err := dockerQuiet("start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
-		if err := files.AddContainer(state, name); err != nil {
+		if err := ensureProfileState(state, name); err != nil {
 			_ = dockerQuiet("stop", containerName)
-			restoreState(state, previousState)
+			files.RestoreState(state, previousState)
 			return fmt.Errorf("update state: %w", err)
 		}
 		if err := proxy.Sync(state); err != nil {
 			_ = dockerQuiet("stop", containerName)
-			restoreState(state, previousState)
+			files.RestoreState(state, previousState)
 			return fmt.Errorf("synchronize Caddy routing: %w", err)
 		}
 		return reportContainerURL(name)
@@ -157,20 +157,20 @@ func Run(name, version string, state files.State) error {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
 
-	previousState := cloneState(state)
-	if err := files.AddContainer(state, name); err != nil {
+	previousState := files.CloneState(state)
+	if err := ensureProfileState(state, name); err != nil {
 		cleanupErr := removeCreatedContainer(containerName)
-		restoreState(state, previousState)
+		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("update workspace: %w", err), cleanupErr)
 	}
-	if err := files.SetContainerVersion(state, name, selectedVersion); err != nil {
+	if err := profile.SetVersion(state, name, selectedVersion); err != nil {
 		cleanupErr := removeCreatedContainer(containerName)
-		restoreState(state, previousState)
+		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("update workspace: %w", err), cleanupErr)
 	}
 	if err := proxy.Sync(state); err != nil {
 		cleanupErr := removeCreatedContainer(containerName)
-		restoreState(state, previousState)
+		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("synchronize Caddy routing: %w", err), cleanupErr)
 	}
 	return reportContainerURL(name)
@@ -193,21 +193,15 @@ func removeCreatedContainer(name string) error {
 	return nil
 }
 
-func cloneState(state files.State) files.State {
-	clone := make(files.State, len(state))
-	for key, value := range state {
-		clone[key] = append([]byte(nil), value...)
+func ensureProfileState(state files.State, name string) error {
+	created, err := profile.Ensure(state, name)
+	if err != nil {
+		return err
 	}
-	return clone
-}
-
-func restoreState(state, snapshot files.State) {
-	for key := range state {
-		delete(state, key)
+	if created {
+		fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", name)
 	}
-	for key, value := range snapshot {
-		state[key] = append([]byte(nil), value...)
-	}
+	return nil
 }
 
 func combineErrors(primary, cleanup error) error {

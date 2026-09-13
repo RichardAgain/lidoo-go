@@ -27,7 +27,7 @@ func worktree(source, name, branch string, yes bool, state files.State) error {
 		return errors.New("branch cannot be empty")
 	}
 
-	sourceAddon, found, err := files.LookupAddon(state, source)
+	sourceAddon, found, err := lookupAddon(state, source)
 	if err != nil {
 		return fmt.Errorf("read source addon %q: %w", source, err)
 	}
@@ -41,7 +41,7 @@ func worktree(source, name, branch string, yes bool, state files.State) error {
 		return fmt.Errorf("source addon %q is already registered as a worktree", source)
 	}
 
-	if _, found, err := files.LookupAddon(state, name); err != nil {
+	if _, found, err := lookupAddon(state, name); err != nil {
 		return fmt.Errorf("check addon %q: %w", name, err)
 	} else if found {
 		return fmt.Errorf("addon %q is already registered", name)
@@ -125,7 +125,7 @@ func worktree(source, name, branch string, yes bool, state files.State) error {
 		branchCreated = true
 	}
 
-	if err := files.RegisterWorktree(state, name, destination, source, branch); err != nil {
+	if err := registerWorktree(state, name, destination, source, branch); err != nil {
 		return fmt.Errorf("register worktree: %w", err)
 	}
 	if branchCreated {

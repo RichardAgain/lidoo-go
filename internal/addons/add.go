@@ -38,7 +38,7 @@ func Add(name, url string, state files.State) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("clone addon %q: %w", name, err)
 	}
-	if err := files.RegisterAddon(state, name, url, destination); err != nil {
+	if err := registerAddon(state, name, url, destination); err != nil {
 		return fmt.Errorf("register addon: %w", err)
 	}
 	return nil

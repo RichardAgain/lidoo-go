@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"lidoo/internal/files"
+	"lidoo/internal/profile"
 	"lidoo/internal/proxy"
 )
 
@@ -54,12 +55,12 @@ func remove(name string, yes bool, state files.State) error {
 
 	var previousState files.State
 	if state != nil {
-		previousState = cloneState(state)
-		if err := files.RemoveContainer(state, name); err != nil {
+		previousState = files.CloneState(state)
+		if err := profile.Remove(state, name); err != nil {
 			return fmt.Errorf("update workspace: %w", err)
 		}
 		if err := proxy.Sync(state); err != nil {
-			restoreState(state, previousState)
+			files.RestoreState(state, previousState)
 			return fmt.Errorf("synchronize Caddy routing: %w", err)
 		}
 	}
@@ -68,7 +69,7 @@ func remove(name string, yes bool, state files.State) error {
 		if state == nil {
 			return primary
 		}
-		restoreState(state, previousState)
+		files.RestoreState(state, previousState)
 		return combineErrors(primary, proxy.Sync(state))
 	}
 

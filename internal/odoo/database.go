@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"lidoo/internal/files"
+	profiles "lidoo/internal/profile"
 )
 
 func resolveDatabaseName(state files.State, profile, database string) (string, error) {
@@ -11,7 +12,7 @@ func resolveDatabaseName(state files.State, profile, database string) (string, e
 		return "", err
 	}
 
-	prefix, err := files.ContainerPrefix(state, profile)
+	prefix, err := profiles.Prefix(state, profile)
 	if err != nil {
 		return "", fmt.Errorf("read database prefix for profile %q: %w", profile, err)
 	}

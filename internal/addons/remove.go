@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"lidoo/internal/files"
+	"lidoo/internal/profile"
 )
 
 // Remove unregisters an addon and removes its checkout. Profile attachment is
@@ -18,7 +19,7 @@ func Remove(name string, yes, force bool, state files.State) error {
 		return fmt.Errorf("invalid addon name %q", name)
 	}
 
-	addon, found, err := files.LookupAddon(state, name)
+	addon, found, err := lookupAddon(state, name)
 	if err != nil {
 		return fmt.Errorf("read addon %q: %w", name, err)
 	}
@@ -26,7 +27,7 @@ func Remove(name string, yes, force bool, state files.State) error {
 		return fmt.Errorf("addon %q is not registered", name)
 	}
 
-	profiles, err := files.AddonProfiles(state, name)
+	profiles, err := profile.ProfilesUsingAddon(state, name)
 	if err != nil {
 		return fmt.Errorf("find profiles using addon %q: %w", name, err)
 	}
@@ -35,7 +36,7 @@ func Remove(name string, yes, force bool, state files.State) error {
 			name, strings.Join(profiles, ", "))
 	}
 
-	children, err := files.ChildWorktrees(state, name)
+	children, err := childWorktrees(state, name)
 	if err != nil {
 		return fmt.Errorf("find worktrees of addon %q: %w", name, err)
 	}
@@ -71,7 +72,7 @@ func removeClone(name, path string, yes, force bool, state files.State) error {
 		if !confirmed {
 			return nil
 		}
-		if err := files.UnregisterAddon(state, name); err != nil {
+		if err := unregisterAddon(state, name); err != nil {
 			return fmt.Errorf("unregister addon %q: %w", name, err)
 		}
 		fmt.Printf("addon %q checkout was missing; registration removed\n", name)
@@ -112,19 +113,19 @@ func removeClone(name, path string, yes, force bool, state files.State) error {
 	if err := os.RemoveAll(path); err != nil {
 		return fmt.Errorf("remove addon %q: %w", name, err)
 	}
-	if err := files.UnregisterAddon(state, name); err != nil {
+	if err := unregisterAddon(state, name); err != nil {
 		return fmt.Errorf("unregister addon %q: %w", name, err)
 	}
 	fmt.Printf("addon %q removed\n", name)
 	return nil
 }
 
-func removeWorktree(name string, addon files.AddonEntry, path string, yes, force bool, state files.State) error {
+func removeWorktree(name string, addon addonEntry, path string, yes, force bool, state files.State) error {
 	if strings.TrimSpace(addon.Branch) == "" {
 		return fmt.Errorf("worktree addon %q has no branch", name)
 	}
 
-	parent, found, err := files.LookupAddon(state, addon.WorktreeOf)
+	parent, found, err := lookupAddon(state, addon.WorktreeOf)
 	if err != nil {
 		return fmt.Errorf("read source addon %q: %w", addon.WorktreeOf, err)
 	}
@@ -197,14 +198,14 @@ func removeWorktree(name string, addon files.AddonEntry, path string, yes, force
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("remove worktree %q: %w", name, err)
 	}
-	if err := files.UnregisterAddon(state, name); err != nil {
+	if err := unregisterAddon(state, name); err != nil {
 		return fmt.Errorf("unregister worktree %q: %w", name, err)
 	}
 	fmt.Printf("worktree addon %q removed; branch %q was preserved\n", name, addon.Branch)
 	return nil
 }
 
-func registeredAddonPath(name string, addon files.AddonEntry) (string, error) {
+func registeredAddonPath(name string, addon addonEntry) (string, error) {
 	if strings.TrimSpace(addon.Path) == "" {
 		return "", fmt.Errorf("addon %q has no registered path", name)
 	}

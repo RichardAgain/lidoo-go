@@ -27,7 +27,7 @@ type Route struct {
 }
 
 func Routes(state files.State) ([]Route, error) {
-	profiles, err := files.ContainerNames(state)
+	profiles, err := profile.Names(state)
 	if err != nil {
 		return nil, err
 	}

@@ -84,7 +84,7 @@ func main() {
 	case "restart":
 		err = docker.Restart(name)
 	case "remove":
-		err = docker.Remove(name, yes)
+		err = docker.RemoveWithState(name, yes, state)
 	case "addons":
 		switch {
 		case len(positional) > 0 && positional[0] == "add":

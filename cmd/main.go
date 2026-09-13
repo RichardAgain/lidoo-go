@@ -96,9 +96,16 @@ func main() {
 		case len(positional) > 0 && positional[0] == "attach":
 			var profile string
 			var addonNames []string
-			profile, addonNames, err = parseAttachArgs(positional[1:], name)
+			profile, addonNames, err = parseAddonArgs(positional[1:], name, "attach")
 			if err == nil {
 				err = addons.AttachToContainer(profile, addonNames, state)
+			}
+		case len(positional) > 0 && positional[0] == "detach":
+			var profile string
+			var addonNames []string
+			profile, addonNames, err = parseAddonArgs(positional[1:], name, "detach")
+			if err == nil {
+				err = addons.DetachFromContainer(profile, addonNames, state)
 			}
 		case len(positional) > 0 && positional[0] == "worktree":
 			var source, name, branch string
@@ -108,7 +115,7 @@ func main() {
 				err = addons.WorktreeWithConfirmation(source, name, branch, yes || worktreeYes, state)
 			}
 		default:
-			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons attach --name <profile> <addon name> [<addon name> ...] | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
+			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons attach|detach --name <profile> <addon name> [<addon name> ...] | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 		}
 	default:
 		usage()
@@ -128,7 +135,8 @@ func main() {
 	}
 }
 
-func parseAttachArgs(args []string, profile string) (string, []string, error) {
+func parseAddonArgs(args []string, profile, action string) (string, []string, error) {
+	usage := fmt.Sprintf("usage: lidoo addons %s --name <profile> <addon name> [<addon name> ...]", action)
 	profileSet := strings.TrimSpace(profile) != ""
 	var addonNames []string
 
@@ -136,26 +144,26 @@ func parseAttachArgs(args []string, profile string) (string, []string, error) {
 		switch {
 		case args[i] == "--name":
 			if profileSet || i+1 >= len(args) {
-				return "", nil, errors.New("usage: lidoo addons attach --name <profile> <addon name> [<addon name> ...]")
+				return "", nil, errors.New(usage)
 			}
 			i++
 			profile = args[i]
 			profileSet = true
 		case strings.HasPrefix(args[i], "--name="):
 			if profileSet {
-				return "", nil, errors.New("usage: lidoo addons attach --name <profile> <addon name> [<addon name> ...]")
+				return "", nil, errors.New(usage)
 			}
 			profile = strings.TrimPrefix(args[i], "--name=")
 			profileSet = true
 		case strings.HasPrefix(args[i], "-"):
-			return "", nil, fmt.Errorf("unknown addons attach option %q", args[i])
+			return "", nil, fmt.Errorf("unknown addons %s option %q", action, args[i])
 		default:
 			addonNames = append(addonNames, args[i])
 		}
 	}
 
 	if !profileSet || strings.TrimSpace(profile) == "" || len(addonNames) == 0 {
-		return "", nil, errors.New("usage: lidoo addons attach --name <profile> <addon name> [<addon name> ...]")
+		return "", nil, errors.New(usage)
 	}
 	return profile, addonNames, nil
 }
@@ -222,4 +230,5 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons attach --name <profile> <addon name> [<addon name> ...]")
+	fmt.Fprintln(os.Stderr, "       lidoo addons detach --name <profile> <addon name> [<addon name> ...]")
 }

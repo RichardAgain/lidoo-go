@@ -202,6 +202,48 @@ func AddAddonsToContainer(state State, container string, names []string) error {
 	return nil
 }
 
+func RemoveAddonsFromContainer(state State, container string, names []string) error {
+	if strings.TrimSpace(container) == "" {
+		return errors.New("container name cannot be empty")
+	}
+	if len(names) == 0 {
+		return errors.New("at least one addon is required")
+	}
+
+	containers := make(map[string]containerEntry)
+	raw, ok := state["containers"]
+	if !ok {
+		return fmt.Errorf("container %q not found", container)
+	}
+	if err := json.Unmarshal(raw, &containers); err != nil {
+		return fmt.Errorf("read containers: %w", err)
+	}
+	config, ok := containers[container]
+	if !ok {
+		return fmt.Errorf("container %q not found", container)
+	}
+
+	remove := make(map[string]bool, len(names))
+	for _, name := range names {
+		remove[name] = true
+	}
+	remaining := make([]string, 0, len(config.Addons))
+	for _, addon := range config.Addons {
+		if !remove[addon] {
+			remaining = append(remaining, addon)
+		}
+	}
+	config.Addons = remaining
+	containers[container] = config
+
+	rawContainers, err := json.Marshal(containers)
+	if err != nil {
+		return err
+	}
+	state["containers"] = rawContainers
+	return nil
+}
+
 func ContainerAddons(state State, container string) ([]string, error) {
 	if raw, ok := state["containers"]; ok {
 		containers := make(map[string]containerEntry)

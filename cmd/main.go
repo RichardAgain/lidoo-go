@@ -23,8 +23,10 @@ func main() {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 
-	var name, version, database, modules string
-	var updateAll, yes bool
+	var name, version, database, modules, format string
+	var updateAll, yes, force, ifExists, filestore, noFilestore bool
+	var copyDatabase, move, neutralize bool
+	var jobs int
 
 	flags.StringVar(&name, "name", "", "container name")
 	flags.StringVar(&version, "version", "", "Odoo version")
@@ -33,6 +35,15 @@ func main() {
 	flags.BoolVar(&updateAll, "update-all", false, "force a complete module update")
 	flags.BoolVar(&yes, "y", false, "confirm to all")
 	flags.BoolVar(&yes, "yes", false, "confirm to all")
+	flags.BoolVar(&force, "force", false, "overwrite an existing backup or database")
+	flags.BoolVar(&ifExists, "if-exists", false, "skip backup if the database does not exist")
+	flags.StringVar(&format, "format", "zip", "backup format: zip, dump, or folder")
+	flags.BoolVar(&filestore, "filestore", true, "include the filestore in a backup")
+	flags.BoolVar(&noFilestore, "no-filestore", false, "exclude the filestore from a backup")
+	flags.BoolVar(&copyDatabase, "copy", true, "restore as a database copy")
+	flags.BoolVar(&move, "move", false, "restore by moving the database")
+	flags.BoolVar(&neutralize, "neutralize", false, "neutralize a restored database")
+	flags.IntVar(&jobs, "jobs", 1, "parallel jobs for folder restores")
 
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
@@ -46,11 +57,9 @@ func main() {
 	}
 
 	exitCode := 0
-	if commandRejectsPositionals(command) {
-		if err := noPositionals(command, positional); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
+	if err := validatePositionals(command, positional); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 
 	switch command {
@@ -62,6 +71,14 @@ func main() {
 		err = odoo.Update(name, database, updateAll, state)
 	case "drop":
 		err = odoo.Drop(name, database, yes, state)
+	case "backup":
+		backupPath := ""
+		if len(positional) == 1 {
+			backupPath = positional[0]
+		}
+		err = odoo.Backup(name, database, backupPath, format, force, ifExists, filestore && !noFilestore, state)
+	case "restore":
+		err = odoo.Restore(name, database, positional[0], copyDatabase && !move, force, neutralize, jobs, state)
 	case "run":
 		err = docker.Run(name, version, state)
 	case "recreate":
@@ -221,28 +238,32 @@ func parseWorktreeArgs(args []string) (string, string, string, bool, error) {
 	return positional[0], positional[1], branch, yes, nil
 }
 
-func commandRejectsPositionals(command string) bool {
+func validatePositionals(command string, positional []string) error {
 	switch command {
+	case "backup":
+		if len(positional) > 1 {
+			return errors.New("usage: lidoo backup --name <profile> --database <database> [options] [<destination>]")
+		}
+	case "restore":
+		if len(positional) != 1 {
+			return errors.New("usage: lidoo restore --name <profile> --database <database> [options] <source>")
+		}
 	case "list", "init", "update", "drop", "run", "recreate", "stop", "restart", "remove":
-		return true
-	default:
-		return false
-	}
-}
-
-func noPositionals(command string, positional []string) error {
-	if len(positional) != 0 {
-		return fmt.Errorf("%s does not accept positional arguments", command)
+		if len(positional) != 0 {
+			return fmt.Errorf("%s does not accept positional arguments", command)
+		}
 	}
 	return nil
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <list|init|update|drop|run|recreate|stop|restart|remove> [options]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <list|init|update|drop|backup|restore|run|recreate|stop|restart|remove> [options]")
 	fmt.Fprintln(os.Stderr, "  list")
 	fmt.Fprintln(os.Stderr, "  init --name <profile> --database <database> [--modules <csv>]")
 	fmt.Fprintln(os.Stderr, "  update --name <profile> --database <database> [--update-all]")
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
+	fmt.Fprintln(os.Stderr, "  backup --name <profile> --database <database> [options] [<destination>]")
+	fmt.Fprintln(os.Stderr, "  restore --name <profile> --database <database> [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")

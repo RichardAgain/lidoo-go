@@ -17,6 +17,7 @@ import (
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 	"lidoo/internal/odoo"
+	"lidoo/internal/profile"
 	"lidoo/internal/profileio"
 	"lidoo/internal/tui"
 )
@@ -36,11 +37,15 @@ func main() {
 	var copyDatabase, move, neutralize, follow, waitForReady bool
 	var jobs, tail int
 	var waitTimeout time.Duration
+	var dbFilterMode, dbFilterPattern, adminPasswd string
 
 	flags.StringVar(&name, "name", "", "container name")
 	flags.StringVar(&version, "version", "", "Odoo version")
 	flags.StringVar(&database, "database", "", "database name")
 	flags.StringVar(&modules, "modules", "base", "comma-separated modules to install")
+	flags.StringVar(&dbFilterMode, "db-filter-mode", "", "database filter mode: profile, disabled, or custom")
+	flags.StringVar(&dbFilterPattern, "db-filter-pattern", "", "custom database filter regular expression")
+	flags.StringVar(&adminPasswd, "admin-passwd", "", "Odoo master admin password")
 	flags.BoolVar(&updateAll, "update-all", false, "force a complete module update")
 	flags.BoolVar(&yes, "y", false, "confirm to all")
 	flags.BoolVar(&yes, "yes", false, "confirm to all")
@@ -89,6 +94,13 @@ func main() {
 		if err == nil {
 			state, err = files.ReadState()
 			readStateErr = err != nil
+			if command == "config" && os.IsNotExist(err) {
+				// A profile can be configured before its first run, so a missing
+				// state file is not an error for config.
+				state = make(files.State)
+				err = nil
+				readStateErr = false
+			}
 		}
 	}
 	if err != nil {
@@ -178,6 +190,9 @@ func main() {
 		}
 	case "wait":
 		err = odoo.Wait(name, waitTimeout, state)
+	case "config":
+		err = configureProfile(state, name, dbFilterMode, dbFilterPattern, adminPasswd,
+			flagWasSet(flags, "db-filter-mode"), flagWasSet(flags, "db-filter-pattern"), flagWasSet(flags, "admin-passwd"))
 	case "recreate":
 		err = service.RecreateProfile(context.Background(), name, profileOptions)
 	case "stop":
@@ -689,7 +704,7 @@ func isAddonMutationCommand(command string, positional []string) bool {
 
 func commandMutatesState(command string, positional []string) bool {
 	switch command {
-	case "run", "stop", "restart", "recreate", "remove":
+	case "run", "stop", "restart", "recreate", "remove", "config":
 		return true
 	case "addons":
 		return isAddonMutationCommand(command, positional)
@@ -864,7 +879,7 @@ func validatePositionals(command string, positional []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: lidoo restore --name <profile> --database <database> [options] <source>")
 		}
-	case "tui", "list", "status", "logs", "init", "update", "drop", "run", "wait", "recreate", "stop", "restart", "remove":
+	case "tui", "list", "status", "logs", "init", "update", "drop", "run", "wait", "recreate", "stop", "restart", "remove", "config":
 		if len(positional) != 0 {
 			return fmt.Errorf("%s does not accept positional arguments", command)
 		}
@@ -876,8 +891,60 @@ func validatePositionals(command string, positional []string) error {
 	return nil
 }
 
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func configureProfile(state files.State, name, mode, pattern, adminPasswd string, modeSet, patternSet, passwordSet bool) error {
+	if err := profile.ValidateName(name); err != nil {
+		return err
+	}
+	if !modeSet && !patternSet && !passwordSet {
+		return errors.New("config requires at least one of --db-filter-mode, --db-filter-pattern, or --admin-passwd")
+	}
+	if patternSet && !modeSet {
+		return errors.New("--db-filter-pattern requires --db-filter-mode custom")
+	}
+	if modeSet {
+		switch mode {
+		case profile.DBFilterModeCustom:
+			if !patternSet {
+				return errors.New("--db-filter-mode custom requires --db-filter-pattern")
+			}
+		case profile.DBFilterModeProfile, profile.DBFilterModeDisabled:
+			if patternSet {
+				return errors.New("--db-filter-pattern is only valid with --db-filter-mode custom")
+			}
+		default:
+			return fmt.Errorf("invalid database filter mode %q: use profile, disabled, or custom", mode)
+		}
+	}
+
+	update := profile.ConfigUpdate{}
+	if modeSet {
+		update.DBFilterMode = &mode
+	}
+	if patternSet {
+		update.DBFilterPattern = &pattern
+	}
+	if passwordSet {
+		update.AdminPasswd = &adminPasswd
+	}
+	if err := profile.UpdateConfig(state, name, update); err != nil {
+		return fmt.Errorf("update profile configuration: %w", err)
+	}
+	fmt.Printf("configuration for profile %q updated\n", name)
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <tui|list|status|logs|init|update|drop|backup|restore|run|wait|recreate|stop|restart|remove|db> [options]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <tui|list|status|logs|init|update|drop|backup|restore|run|wait|recreate|stop|restart|remove|config|db> [options]")
 	fmt.Fprintln(os.Stderr, "  tui")
 	fmt.Fprintln(os.Stderr, "  list")
 	fmt.Fprintln(os.Stderr, "  status [--name <profile>]")
@@ -889,6 +956,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  backup --name <profile> --database <database> [options] [<destination>]")
 	fmt.Fprintln(os.Stderr, "  restore --name <profile> --database <database> [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
+	fmt.Fprintln(os.Stderr, "  config --name <profile> [--db-filter-mode profile|disabled|custom] [--db-filter-pattern <regex>] [--admin-passwd <password>]")
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
 	fmt.Fprintln(os.Stderr, "  db info --name <profile> --database <database>")
 	fmt.Fprintln(os.Stderr, "  db shell --name <profile> --database <database>")

@@ -1,0 +1,4 @@
+; Reference only: Lidoo generates .lidoo/<profile>/odoo.conf from .lidoo.json.
+; Do not maintain this file as a source of truth.
+[options]
+; admin_passwd = set-with: lidoo config --name <profile> --admin-passwd <password>

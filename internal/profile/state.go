@@ -3,6 +3,7 @@ package profile
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -11,10 +12,56 @@ import (
 
 const profilesStateKey = "containers"
 
+const (
+	DBFilterModeProfile  = "profile"
+	DBFilterModeDisabled = "disabled"
+	DBFilterModeCustom   = "custom"
+)
+
 type Config struct {
-	Addons  []string `json:"addons"`
-	Prefix  string   `json:"prefix"`
-	Version *string  `json:"version,omitempty"`
+	Addons          []string `json:"addons"`
+	Prefix          string   `json:"prefix"`
+	Version         *string  `json:"version,omitempty"`
+	DBFilterMode    string   `json:"db_filter_mode,omitempty"`
+	DBFilterPattern string   `json:"db_filter_pattern,omitempty"`
+	AdminPasswd     string   `json:"admin_passwd,omitempty"`
+}
+
+// ConfigUpdate uses pointers so a caller can update one setting without
+// changing the other persisted profile settings.
+type ConfigUpdate struct {
+	DBFilterMode    *string
+	DBFilterPattern *string
+	AdminPasswd     *string
+}
+
+func (config Config) EffectiveDBFilterMode() string {
+	if config.DBFilterMode == "" {
+		return DBFilterModeProfile
+	}
+	return config.DBFilterMode
+}
+
+func (config Config) Validate() error {
+	switch config.EffectiveDBFilterMode() {
+	case DBFilterModeProfile, DBFilterModeDisabled:
+		if config.DBFilterPattern != "" {
+			return fmt.Errorf("database filter pattern is only valid with custom mode")
+		}
+	case DBFilterModeCustom:
+		if config.DBFilterPattern == "" {
+			return errors.New("custom database filter mode requires a pattern")
+		}
+		if _, err := regexp.Compile(config.DBFilterPattern); err != nil {
+			return fmt.Errorf("invalid database filter pattern: %w", err)
+		}
+	default:
+		return fmt.Errorf("invalid database filter mode %q: use profile, disabled, or custom", config.DBFilterMode)
+	}
+	if strings.ContainsAny(config.AdminPasswd, "\r\n") {
+		return errors.New("admin password cannot contain newline characters")
+	}
+	return nil
 }
 
 func loadProfiles(state files.State) (map[string]Config, error) {
@@ -25,6 +72,11 @@ func loadProfiles(state files.State) (map[string]Config, error) {
 	if profiles == nil {
 		profiles = make(map[string]Config)
 	}
+	for name, config := range profiles {
+		if err := config.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid configuration for profile %q: %w", name, err)
+		}
+	}
 	return profiles, nil
 }
 
@@ -33,7 +85,11 @@ func saveProfiles(state files.State, profiles map[string]Config) error {
 }
 
 func NewConfig(name string) Config {
-	return Config{Addons: []string{}, Prefix: name + "__"}
+	return Config{
+		Addons:       []string{},
+		Prefix:       name + "__",
+		DBFilterMode: DBFilterModeProfile,
+	}
 }
 
 func ValidatePrefix(prefix string) error {
@@ -61,8 +117,45 @@ func Lookup(state files.State, name string) (Config, bool, error) {
 }
 
 func Put(state files.State, name string, config Config) error {
+	if err := config.Validate(); err != nil {
+		return err
+	}
 	profiles, err := loadProfiles(state)
 	if err != nil {
+		return err
+	}
+	profiles[name] = config
+	return saveProfiles(state, profiles)
+}
+
+// UpdateConfig creates a state entry when needed and changes only the fields
+// supplied by update. A profile can therefore be configured before its first
+// container is run without touching Docker.
+func UpdateConfig(state files.State, name string, update ConfigUpdate) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	profiles, err := loadProfiles(state)
+	if err != nil {
+		return err
+	}
+	config, ok := profiles[name]
+	if !ok {
+		config = NewConfig(name)
+	}
+	if update.DBFilterMode != nil {
+		config.DBFilterMode = *update.DBFilterMode
+		if *update.DBFilterMode != DBFilterModeCustom && update.DBFilterPattern == nil {
+			config.DBFilterPattern = ""
+		}
+	}
+	if update.DBFilterPattern != nil {
+		config.DBFilterPattern = *update.DBFilterPattern
+	}
+	if update.AdminPasswd != nil {
+		config.AdminPasswd = *update.AdminPasswd
+	}
+	if err := config.Validate(); err != nil {
 		return err
 	}
 	profiles[name] = config

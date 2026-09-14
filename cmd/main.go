@@ -106,14 +106,25 @@ func main() {
 		err = docker.RemoveWithState(name, yes, state)
 	case "db":
 		if len(positional) == 0 {
-			err = errors.New("usage: lidoo db list --name <profile>")
-		} else if positional[0] != "list" {
-			err = fmt.Errorf("unknown db command %q; use list", positional[0])
+			err = errors.New("usage: lidoo db list|info|shell --name <profile> [--database <database>]")
 		} else {
-			var profileName string
-			profileName, err = parseDBProfileArgs(positional[1:], name)
-			if err == nil {
-				err = odoo.ListDatabases(profileName, state)
+			switch positional[0] {
+			case "list":
+				var profileName string
+				profileName, err = parseDBArgs(positional[1:], name, "list")
+				if err == nil {
+					err = odoo.ListDatabases(profileName, state)
+				}
+			case "info", "shell":
+				var profileName, databaseName string
+				profileName, databaseName, err = parseDBArgsWithDatabase(positional[1:], name, "", positional[0])
+				if err == nil && positional[0] == "info" {
+					err = odoo.InfoDatabase(profileName, databaseName, state)
+				} else if err == nil {
+					err = odoo.ShellDatabase(profileName, databaseName, state)
+				}
+			default:
+				err = fmt.Errorf("unknown db command %q; use list, info, or shell", positional[0])
 			}
 		}
 	case "addons":
@@ -183,32 +194,58 @@ func main() {
 	}
 }
 
-func parseDBProfileArgs(args []string, profileName string) (string, error) {
-	usage := "usage: lidoo db list --name <profile>"
+func parseDBArgs(args []string, profileName, action string) (string, error) {
+	profileName, _, err := parseDBValues(args, profileName, "", action, false)
+	return profileName, err
+}
+
+func parseDBArgsWithDatabase(args []string, profileName, databaseName, action string) (string, string, error) {
+	return parseDBValues(args, profileName, databaseName, action, true)
+}
+
+func parseDBValues(args []string, profileName, databaseName, action string, requireDatabase bool) (string, string, error) {
+	usage := fmt.Sprintf("usage: lidoo db %s --name <profile>", action)
+	if requireDatabase {
+		usage += " --database <database>"
+	}
 	profileSet := strings.TrimSpace(profileName) != ""
+	databaseSet := strings.TrimSpace(databaseName) != ""
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--name":
 			if profileSet || i+1 >= len(args) {
-				return "", errors.New(usage)
+				return "", "", errors.New(usage)
 			}
 			i++
 			profileName = args[i]
 			profileSet = true
 		case strings.HasPrefix(args[i], "--name="):
 			if profileSet {
-				return "", errors.New(usage)
+				return "", "", errors.New(usage)
 			}
 			profileName = strings.TrimPrefix(args[i], "--name=")
 			profileSet = true
+		case args[i] == "--database":
+			if databaseSet || i+1 >= len(args) {
+				return "", "", errors.New(usage)
+			}
+			i++
+			databaseName = args[i]
+			databaseSet = true
+		case strings.HasPrefix(args[i], "--database="):
+			if databaseSet {
+				return "", "", errors.New(usage)
+			}
+			databaseName = strings.TrimPrefix(args[i], "--database=")
+			databaseSet = true
 		default:
-			return "", fmt.Errorf("unknown db list option %q", args[i])
+			return "", "", fmt.Errorf("unknown db %s option %q", action, args[i])
 		}
 	}
-	if !profileSet || strings.TrimSpace(profileName) == "" {
-		return "", errors.New(usage)
+	if !profileSet || strings.TrimSpace(profileName) == "" || (requireDatabase && (!databaseSet || strings.TrimSpace(databaseName) == "")) {
+		return "", "", errors.New(usage)
 	}
-	return profileName, nil
+	return profileName, databaseName, nil
 }
 
 func commandMutatesState(command string, positional []string) bool {
@@ -392,6 +429,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  restore --name <profile> --database <database> [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
+	fmt.Fprintln(os.Stderr, "  db info --name <profile> --database <database>")
+	fmt.Fprintln(os.Stderr, "  db shell --name <profile> --database <database>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")

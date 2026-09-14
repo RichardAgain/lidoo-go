@@ -10,6 +10,17 @@ func Exec(container string, command ...string) error {
 	return ExecWithOutput(container, os.Stdout, os.Stderr, command...)
 }
 
+func ExecInteractive(container string, command ...string) error {
+	args := make([]string, 0, len(command)+4)
+	args = append(args, "exec", "--interactive", "--tty", container)
+	args = append(args, command...)
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func ExecAsUser(container, user string, command ...string) error {
 	args := make([]string, 0, len(command)+4)
 	args = append(args, "exec", "--user", user, container)

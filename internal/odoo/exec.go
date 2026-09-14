@@ -3,8 +3,10 @@ package odoo
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"lidoo/internal/docker"
 )
@@ -47,9 +49,20 @@ func runWithOutput(container string, stdout, stderr io.Writer, command ...string
 }
 
 func runCapture(container string, command ...string) ([]byte, error) {
-	var output bytes.Buffer
-	if err := runWithOutput(container, &output, &output, command...); err != nil {
+	var output, diagnostic bytes.Buffer
+	if err := runWithOutput(container, &output, &diagnostic, command...); err != nil {
+		detail := strings.TrimSpace(diagnostic.String())
+		if detail != "" {
+			return nil, fmt.Errorf("%w: %s", err, detail)
+		}
 		return nil, err
 	}
 	return output.Bytes(), nil
+}
+
+func runInteractive(container string, command ...string) error {
+	args := make([]string, 0, len(command)+4)
+	args = append(args, "sh", "-c", execScript, "lidoo")
+	args = append(args, command...)
+	return docker.ExecInteractive(container, args...)
 }

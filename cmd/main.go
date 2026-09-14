@@ -196,6 +196,14 @@ func main() {
 			if err == nil {
 				err = addons.WorktreeWithConfirmation(source, name, branch, yes || worktreeYes, state)
 			}
+		case len(positional) > 0 && (positional[0] == "fetch" || positional[0] == "pull"):
+			if len(positional) != 2 {
+				err = fmt.Errorf("usage: lidoo addons %s <addon name>", positional[0])
+			} else if positional[0] == "fetch" {
+				err = addons.Fetch(positional[1], state)
+			} else {
+				err = addons.Pull(positional[1], state)
+			}
 		default:
 			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons attach|detach --name <profile> <addon name> [<addon name> ...] | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 		}
@@ -288,7 +296,7 @@ func commandMutatesState(command string, positional []string) bool {
 			return false
 		}
 		switch positional[0] {
-		case "add", "attach", "detach", "rm", "worktree", "pull":
+		case "add", "attach", "detach", "rm", "worktree", "pull", "fetch":
 			return true
 		default:
 			return false
@@ -470,6 +478,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")
+	fmt.Fprintln(os.Stderr, "       lidoo addons fetch <addon name>")
+	fmt.Fprintln(os.Stderr, "       lidoo addons pull <addon name>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons attach --name <profile> <addon name> [<addon name> ...] [--recreate]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons detach --name <profile> <addon name> [<addon name> ...] [--recreate]")
 }

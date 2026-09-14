@@ -50,17 +50,32 @@ func main() {
 	}
 	positional := flags.Args()
 
+	if err := validatePositionals(command, positional); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	mutatesState := commandMutatesState(command, positional)
+	var err error
+	var stateLock *files.StateLock
+	if mutatesState {
+		stateLock, err = files.AcquireStateLock()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
 	state, err := files.ReadState()
 	if err != nil {
+		if stateLock != nil {
+			_ = stateLock.Close()
+		}
 		fmt.Fprintln(os.Stderr, "read state:", err)
 		os.Exit(1)
 	}
 
 	exitCode := 0
-	if err := validatePositionals(command, positional); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
 
 	switch command {
 	case "list":
@@ -135,16 +150,45 @@ func main() {
 		exitCode = 2
 	}
 
-	if saveErr := files.SaveState(state); saveErr != nil {
-		fmt.Fprintln(os.Stderr, "save state:", saveErr)
-		exitCode = 1
+	if err == nil && mutatesState {
+		if saveErr := files.SaveState(state); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "save state:", saveErr)
+			exitCode = 1
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		exitCode = 1
 	}
+	if stateLock != nil {
+		if closeErr := stateLock.Close(); closeErr != nil {
+			fmt.Fprintln(os.Stderr, closeErr)
+			exitCode = 1
+		}
+	}
 	if exitCode != 0 {
 		os.Exit(exitCode)
+	}
+}
+
+func commandMutatesState(command string, positional []string) bool {
+	switch command {
+	case "run", "recreate", "remove":
+		return true
+	case "addons":
+		if len(positional) == 0 {
+			return false
+		}
+		switch positional[0] {
+		case "add", "attach", "detach", "rm", "worktree", "pull":
+			return true
+		default:
+			return false
+		}
+	case "profile":
+		return len(positional) > 0 && positional[0] == "import"
+	default:
+		return false
 	}
 }
 

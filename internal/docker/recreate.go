@@ -12,8 +12,14 @@ func Recreate(name string, state files.State) error {
 		return errors.New("recreate requires container name")
 	}
 
-	if err := Stop(name); err != nil {
-		return fmt.Errorf("stop container %q: %w", name, err)
+	running, err := containerIsRunning(name)
+	if err != nil {
+		return fmt.Errorf("check container %q: %w", name, err)
+	}
+	if running {
+		if err := Stop(name); err != nil {
+			return fmt.Errorf("stop container %q: %w", name, err)
+		}
 	}
 	previousState := files.CloneState(state)
 	if err := RemoveWithState(name, false, state); err != nil {

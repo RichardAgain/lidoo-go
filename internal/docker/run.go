@@ -60,13 +60,21 @@ func Run(name, version string, state files.State) error {
 		return fmt.Errorf("invalid Odoo version %q", selectedVersion)
 	}
 
-	addonNames, err := profile.Addons(state, name)
+	config, found, err := profile.Lookup(state, name)
 	if err != nil {
 		return err
 	}
-	prefix, err := profile.Prefix(state, name)
+	if !found {
+		config = profile.NewConfig(name)
+	}
+	filterArgs, err := databaseFilterArgs(config)
 	if err != nil {
 		return err
+	}
+	addonNames := config.Addons
+	runtimeConfig, err := writeRuntimeConfig(name, config.AdminPasswd)
+	if err != nil {
+		return fmt.Errorf("write runtime Odoo config: %w", err)
 	}
 
 	containerName := profile.ContainerName(name)
@@ -138,6 +146,11 @@ func Run(name, version string, state files.State) error {
 		"--label", containerNameLabel + "=" + name,
 		"-v", FilestoreVolumeName + ":/var/lib/odoo",
 	}
+	if runtimeConfig != "" {
+		containerArgs = append(containerArgs,
+			"--mount", "type=bind,source="+runtimeConfig+",target=/etc/odoo/odoo.conf,readonly",
+		)
+	}
 
 	addonPaths := []string{"/usr/lib/python3/dist-packages/odoo/addons"}
 	for _, addonName := range addonNames {
@@ -151,7 +164,7 @@ func Run(name, version string, state files.State) error {
 	if len(addonNames) > 0 {
 		containerArgs = append(containerArgs, "--addons-path="+strings.Join(addonPaths, ","))
 	}
-	containerArgs = append(containerArgs, databaseFilter(prefix))
+	containerArgs = append(containerArgs, filterArgs...)
 	fmt.Printf("starting profile %q\n", name)
 	if err := dockerQuiet(containerArgs...); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
@@ -178,6 +191,63 @@ func Run(name, version string, state files.State) error {
 
 func databaseFilter(prefix string) string {
 	return "--db-filter=^" + regexp.QuoteMeta(prefix) + ".*$"
+}
+
+func databaseFilterArgs(config profile.Config) ([]string, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	switch config.EffectiveDBFilterMode() {
+	case profile.DBFilterModeProfile:
+		return []string{databaseFilter(config.Prefix)}, nil
+	case profile.DBFilterModeDisabled:
+		return nil, nil
+	case profile.DBFilterModeCustom:
+		return []string{"--db-filter=" + config.DBFilterPattern}, nil
+	default:
+		return nil, fmt.Errorf("invalid database filter mode %q", config.DBFilterMode)
+	}
+}
+
+func runtimeConfigPath(name string) string {
+	return filepath.Join(".lidoo", name, "odoo.conf")
+}
+
+func writeRuntimeConfig(name, adminPasswd string) (string, error) {
+	path := runtimeConfigPath(name)
+	if adminPasswd == "" {
+		// Do not create a config for an unset password. If a previous config is
+		// mounted by a stopped container, rewrite it without the old secret so
+		// that the existing mount still contains a valid Odoo config.
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return "", nil
+			}
+			return "", err
+		}
+	}
+
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(directory, 0o755); err != nil {
+		return "", err
+	}
+	contents := "[options]\naddons_path = /mnt/extra-addons\ndata_dir = /var/lib/odoo\n"
+	if adminPasswd != "" {
+		contents += "admin_passwd = " + adminPasswd + "\n"
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		return "", err
+	}
+	if adminPasswd == "" {
+		return "", nil
+	}
+	return path, nil
 }
 
 func reportContainerURL(name string) error {

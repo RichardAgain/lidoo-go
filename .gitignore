@@ -1,2 +1,6 @@
 .env
 .lidoo.json
+# Local Pi runtime state
+.atl/
+# Generated per-profile Odoo runtime configuration
+.lidoo/

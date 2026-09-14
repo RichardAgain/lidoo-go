@@ -11,6 +11,7 @@ import (
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 	"lidoo/internal/odoo"
+	"lidoo/internal/profile"
 )
 
 func main() {
@@ -24,12 +25,16 @@ func main() {
 	flags.SetOutput(os.Stderr)
 
 	var name, version, database, modules string
+	var dbFilterMode, dbFilterPattern, adminPasswd string
 	var updateAll, yes bool
 
 	flags.StringVar(&name, "name", "", "container name")
 	flags.StringVar(&version, "version", "", "Odoo version")
 	flags.StringVar(&database, "database", "", "database name")
 	flags.StringVar(&modules, "modules", "base", "comma-separated modules to install")
+	flags.StringVar(&dbFilterMode, "db-filter-mode", "", "database filter mode: profile, disabled, or custom")
+	flags.StringVar(&dbFilterPattern, "db-filter-pattern", "", "custom database filter regular expression")
+	flags.StringVar(&adminPasswd, "admin-passwd", "", "Odoo master admin password")
 	flags.BoolVar(&updateAll, "update-all", false, "force a complete module update")
 	flags.BoolVar(&yes, "y", false, "confirm to all")
 	flags.BoolVar(&yes, "yes", false, "confirm to all")
@@ -41,8 +46,12 @@ func main() {
 
 	state, err := files.ReadState()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "read state:", err)
-		os.Exit(1)
+		if command == "config" && os.IsNotExist(err) {
+			state = make(files.State)
+		} else {
+			fmt.Fprintln(os.Stderr, "read state:", err)
+			os.Exit(1)
+		}
 	}
 
 	exitCode := 0
@@ -64,6 +73,9 @@ func main() {
 		err = odoo.Drop(name, database, yes, state)
 	case "run":
 		err = docker.Run(name, version, state)
+	case "config":
+		err = configureProfile(state, name, dbFilterMode, dbFilterPattern, adminPasswd,
+			flagWasSet(flags, "db-filter-mode"), flagWasSet(flags, "db-filter-pattern"), flagWasSet(flags, "admin-passwd"))
 	case "recreate":
 		err = docker.Recreate(name, state)
 	case "stop":
@@ -221,9 +233,61 @@ func parseWorktreeArgs(args []string) (string, string, string, bool, error) {
 	return positional[0], positional[1], branch, yes, nil
 }
 
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func configureProfile(state files.State, name, mode, pattern, adminPasswd string, modeSet, patternSet, passwordSet bool) error {
+	if err := profile.ValidateName(name); err != nil {
+		return err
+	}
+	if !modeSet && !patternSet && !passwordSet {
+		return errors.New("config requires at least one of --db-filter-mode, --db-filter-pattern, or --admin-passwd")
+	}
+	if patternSet && !modeSet {
+		return errors.New("--db-filter-pattern requires --db-filter-mode custom")
+	}
+	if modeSet {
+		switch mode {
+		case profile.DBFilterModeCustom:
+			if !patternSet {
+				return errors.New("--db-filter-mode custom requires --db-filter-pattern")
+			}
+		case profile.DBFilterModeProfile, profile.DBFilterModeDisabled:
+			if patternSet {
+				return errors.New("--db-filter-pattern is only valid with --db-filter-mode custom")
+			}
+		default:
+			return fmt.Errorf("invalid database filter mode %q: use profile, disabled, or custom", mode)
+		}
+	}
+
+	update := profile.ConfigUpdate{}
+	if modeSet {
+		update.DBFilterMode = &mode
+	}
+	if patternSet {
+		update.DBFilterPattern = &pattern
+	}
+	if passwordSet {
+		update.AdminPasswd = &adminPasswd
+	}
+	if err := profile.UpdateConfig(state, name, update); err != nil {
+		return fmt.Errorf("update profile configuration: %w", err)
+	}
+	fmt.Printf("configuration for profile %q updated\n", name)
+	return nil
+}
+
 func commandRejectsPositionals(command string) bool {
 	switch command {
-	case "list", "init", "update", "drop", "run", "recreate", "stop", "restart", "remove":
+	case "list", "init", "update", "drop", "run", "recreate", "stop", "restart", "remove", "config":
 		return true
 	default:
 		return false
@@ -238,12 +302,13 @@ func noPositionals(command string, positional []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <list|init|update|drop|run|recreate|stop|restart|remove> [options]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <list|init|update|drop|run|recreate|stop|restart|remove|config> [options]")
 	fmt.Fprintln(os.Stderr, "  list")
 	fmt.Fprintln(os.Stderr, "  init --name <profile> --database <database> [--modules <csv>]")
 	fmt.Fprintln(os.Stderr, "  update --name <profile> --database <database> [--update-all]")
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
+	fmt.Fprintln(os.Stderr, "  config --name <profile> [--db-filter-mode profile|disabled|custom] [--db-filter-pattern <regex>] [--admin-passwd <password>]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")

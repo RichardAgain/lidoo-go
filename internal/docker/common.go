@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"lidoo/internal/profile"
 )
 
 const (
@@ -35,6 +37,16 @@ func findContainerByName(name string) (bool, error) {
 		return false, fmt.Errorf("find container with label %q: %w", name, err)
 	}
 	return len(containers) > 0, nil
+}
+
+func ProfileExists(name string) (bool, error) {
+	if name == "" {
+		return false, fmt.Errorf("profile name cannot be empty")
+	}
+	if err := profile.ValidateName(name); err != nil {
+		return false, err
+	}
+	return findContainerByName(name)
 }
 
 func containerIsRunning(name string) (bool, error) {

@@ -100,16 +100,18 @@ func main() {
 		case len(positional) > 0 && positional[0] == "attach":
 			var profile string
 			var addonNames []string
-			profile, addonNames, err = parseAddonArgs(positional[1:], name, "attach")
+			var recreate bool
+			profile, addonNames, recreate, err = parseAddonArgs(positional[1:], name, "attach")
 			if err == nil {
-				err = addons.AttachToContainer(profile, addonNames, state)
+				err = changeAddonMounts(profile, addonNames, recreate, true, state)
 			}
 		case len(positional) > 0 && positional[0] == "detach":
 			var profile string
 			var addonNames []string
-			profile, addonNames, err = parseAddonArgs(positional[1:], name, "detach")
+			var recreate bool
+			profile, addonNames, recreate, err = parseAddonArgs(positional[1:], name, "detach")
 			if err == nil {
-				err = addons.DetachFromContainer(profile, addonNames, state)
+				err = changeAddonMounts(profile, addonNames, recreate, false, state)
 			}
 		case len(positional) > 0 && positional[0] == "rm":
 			var addonName string
@@ -146,37 +148,73 @@ func main() {
 	}
 }
 
-func parseAddonArgs(args []string, profile, action string) (string, []string, error) {
-	usage := fmt.Sprintf("usage: lidoo addons %s --name <profile> <addon name> [<addon name> ...]", action)
+func changeAddonMounts(name string, addonNames []string, recreate, attach bool, state files.State) error {
+	previousState := files.CloneState(state)
+	var err error
+	if attach {
+		err = addons.AttachToContainer(name, addonNames, state)
+	} else {
+		err = addons.DetachFromContainer(name, addonNames, state)
+	}
+	if err != nil {
+		return err
+	}
+
+	exists, err := docker.ProfileExists(name)
+	if err != nil {
+		return fmt.Errorf("inspect profile %q after addon change: %w", name, err)
+	}
+	if !exists {
+		fmt.Printf("profile %q has no container; addon mounts apply when it is run\n", name)
+		return nil
+	}
+	if !recreate {
+		fmt.Printf("profile %q addon mounts changed; recreate it before they apply (or use --recreate)\n", name)
+		return nil
+	}
+
+	fmt.Printf("recreating profile %q to apply addon mounts\n", name)
+	if err := docker.Recreate(name, state); err != nil {
+		files.RestoreState(state, previousState)
+		return fmt.Errorf("recreate profile %q after addon change: %w", name, err)
+	}
+	return nil
+}
+
+func parseAddonArgs(args []string, profile, action string) (string, []string, bool, error) {
+	usage := fmt.Sprintf("usage: lidoo addons %s --name <profile> <addon name> [<addon name> ...] [--recreate]", action)
 	profileSet := strings.TrimSpace(profile) != ""
 	var addonNames []string
+	var recreate bool
 
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--recreate":
+			recreate = true
 		case args[i] == "--name":
 			if profileSet || i+1 >= len(args) {
-				return "", nil, errors.New(usage)
+				return "", nil, false, errors.New(usage)
 			}
 			i++
 			profile = args[i]
 			profileSet = true
 		case strings.HasPrefix(args[i], "--name="):
 			if profileSet {
-				return "", nil, errors.New(usage)
+				return "", nil, false, errors.New(usage)
 			}
 			profile = strings.TrimPrefix(args[i], "--name=")
 			profileSet = true
 		case strings.HasPrefix(args[i], "-"):
-			return "", nil, fmt.Errorf("unknown addons %s option %q", action, args[i])
+			return "", nil, false, fmt.Errorf("unknown addons %s option %q", action, args[i])
 		default:
 			addonNames = append(addonNames, args[i])
 		}
 	}
 
 	if !profileSet || strings.TrimSpace(profile) == "" || len(addonNames) == 0 {
-		return "", nil, errors.New(usage)
+		return "", nil, false, errors.New(usage)
 	}
-	return profile, addonNames, nil
+	return profile, addonNames, recreate, nil
 }
 
 func parseAddonRemoveArgs(args []string, yes, force bool) (string, bool, bool, error) {
@@ -268,6 +306,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")
-	fmt.Fprintln(os.Stderr, "       lidoo addons attach --name <profile> <addon name> [<addon name> ...]")
-	fmt.Fprintln(os.Stderr, "       lidoo addons detach --name <profile> <addon name> [<addon name> ...]")
+	fmt.Fprintln(os.Stderr, "       lidoo addons attach --name <profile> <addon name> [<addon name> ...] [--recreate]")
+	fmt.Fprintln(os.Stderr, "       lidoo addons detach --name <profile> <addon name> [<addon name> ...] [--recreate]")
 }

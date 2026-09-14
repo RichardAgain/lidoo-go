@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 
 	"lidoo/internal/files"
 )
@@ -42,7 +41,10 @@ func ValidatePrefix(prefix string) error {
 		return fmt.Errorf("invalid database prefix %q: maximum length is 63 characters", prefix)
 	}
 	for _, character := range prefix {
-		if !(unicode.IsLetter(character) || unicode.IsDigit(character) || strings.ContainsRune("_.-", character)) {
+		if !((character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("_.-", character)) {
 			return fmt.Errorf("invalid database prefix %q: use letters, numbers, dots, underscores, or hyphens", prefix)
 		}
 	}

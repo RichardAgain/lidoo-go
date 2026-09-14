@@ -339,6 +339,9 @@ func parseDBValues(args []string, profileName, databaseName, action string, requ
 			profileName = strings.TrimPrefix(args[i], "--name=")
 			profileSet = true
 		case args[i] == "--database":
+			if !requireDatabase {
+				return "", "", fmt.Errorf("unknown db %s option %q", action, args[i])
+			}
 			if databaseSet || i+1 >= len(args) {
 				return "", "", errors.New(usage)
 			}
@@ -346,6 +349,9 @@ func parseDBValues(args []string, profileName, databaseName, action string, requ
 			databaseName = args[i]
 			databaseSet = true
 		case strings.HasPrefix(args[i], "--database="):
+			if !requireDatabase {
+				return "", "", fmt.Errorf("unknown db %s option %q", action, args[i])
+			}
 			if databaseSet {
 				return "", "", errors.New(usage)
 			}

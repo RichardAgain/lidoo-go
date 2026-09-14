@@ -104,6 +104,18 @@ func main() {
 		err = docker.Restart(name)
 	case "remove":
 		err = docker.RemoveWithState(name, yes, state)
+	case "db":
+		if len(positional) == 0 {
+			err = errors.New("usage: lidoo db list --name <profile>")
+		} else if positional[0] != "list" {
+			err = fmt.Errorf("unknown db command %q; use list", positional[0])
+		} else {
+			var profileName string
+			profileName, err = parseDBProfileArgs(positional[1:], name)
+			if err == nil {
+				err = odoo.ListDatabases(profileName, state)
+			}
+		}
 	case "addons":
 		switch {
 		case len(positional) > 0 && positional[0] == "add":
@@ -169,6 +181,34 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func parseDBProfileArgs(args []string, profileName string) (string, error) {
+	usage := "usage: lidoo db list --name <profile>"
+	profileSet := strings.TrimSpace(profileName) != ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--name":
+			if profileSet || i+1 >= len(args) {
+				return "", errors.New(usage)
+			}
+			i++
+			profileName = args[i]
+			profileSet = true
+		case strings.HasPrefix(args[i], "--name="):
+			if profileSet {
+				return "", errors.New(usage)
+			}
+			profileName = strings.TrimPrefix(args[i], "--name=")
+			profileSet = true
+		default:
+			return "", fmt.Errorf("unknown db list option %q", args[i])
+		}
+	}
+	if !profileSet || strings.TrimSpace(profileName) == "" {
+		return "", errors.New(usage)
+	}
+	return profileName, nil
 }
 
 func commandMutatesState(command string, positional []string) bool {
@@ -334,6 +374,10 @@ func validatePositionals(command string, positional []string) error {
 		if len(positional) != 0 {
 			return fmt.Errorf("%s does not accept positional arguments", command)
 		}
+	case "db":
+		if len(positional) == 0 {
+			return errors.New("usage: lidoo db list --name <profile>")
+		}
 	}
 	return nil
 }
@@ -347,6 +391,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  backup --name <profile> --database <database> [options] [<destination>]")
 	fmt.Fprintln(os.Stderr, "  restore --name <profile> --database <database> [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
+	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")

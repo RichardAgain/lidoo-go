@@ -1,7 +1,9 @@
 package odoo
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os"
 
 	"lidoo/internal/docker"
@@ -20,6 +22,10 @@ exec "$@"
 `
 
 func run(container string, command ...string) error {
+	return runWithOutput(container, os.Stdout, os.Stderr, command...)
+}
+
+func runWithOutput(container string, stdout, stderr io.Writer, command ...string) error {
 	if len(command) == 0 {
 		return errors.New("cannot execute an empty command")
 	}
@@ -28,10 +34,22 @@ func run(container string, command ...string) error {
 	args = append(args, "sh", "-c", execScript, "lidoo")
 	args = append(args, command...)
 
-	writer := newCleanOutputWriter(os.Stdout)
-	err := docker.ExecWithOutput(container, writer, writer, args...)
-	if flushErr := writer.Flush(); err == nil {
+	stdoutWriter := newCleanOutputWriter(stdout)
+	stderrWriter := newCleanOutputWriter(stderr)
+	err := docker.ExecWithOutput(container, stdoutWriter, stderrWriter, args...)
+	if flushErr := stdoutWriter.Flush(); err == nil {
+		err = flushErr
+	}
+	if flushErr := stderrWriter.Flush(); err == nil {
 		err = flushErr
 	}
 	return err
+}
+
+func runCapture(container string, command ...string) ([]byte, error) {
+	var output bytes.Buffer
+	if err := runWithOutput(container, &output, &output, command...); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
 }

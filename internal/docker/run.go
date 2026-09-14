@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"lidoo/internal/addons"
 	"lidoo/internal/files"
 	"lidoo/internal/profile"
 	"lidoo/internal/proxy"
@@ -63,6 +64,10 @@ func Run(name, version string, state files.State) error {
 	addonNames, err := profile.Addons(state, name)
 	if err != nil {
 		return err
+	}
+	mounts, err := addons.ResolveMounts(state, addonNames)
+	if err != nil {
+		return fmt.Errorf("validate profile addons: %w", err)
 	}
 	prefix, err := profile.Prefix(state, name)
 	if err != nil {
@@ -140,11 +145,11 @@ func Run(name, version string, state files.State) error {
 	}
 
 	addonPaths := []string{"/usr/lib/python3/dist-packages/odoo/addons"}
-	for _, addonName := range addonNames {
+	for _, mount := range mounts {
 		containerArgs = append(containerArgs,
-			"-v", "./"+filepath.ToSlash(filepath.Join("addons", addonName))+":/opt/addons/"+addonName,
+			"-v", filepath.ToSlash(mount.Path)+":/opt/addons/"+mount.Name,
 		)
-		addonPaths = append(addonPaths, "/opt/addons/"+addonName)
+		addonPaths = append(addonPaths, "/opt/addons/"+mount.Name)
 	}
 
 	containerArgs = append(containerArgs, image, "odoo", "--dev=all")

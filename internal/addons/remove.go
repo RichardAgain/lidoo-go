@@ -120,7 +120,7 @@ func removeClone(name, path string, yes, force bool, state files.State) error {
 	return nil
 }
 
-func removeWorktree(name string, addon addonEntry, path string, yes, force bool, state files.State) error {
+func removeWorktree(name string, addon Entry, path string, yes, force bool, state files.State) error {
 	if strings.TrimSpace(addon.Branch) == "" {
 		return fmt.Errorf("worktree addon %q has no branch", name)
 	}
@@ -205,7 +205,7 @@ func removeWorktree(name string, addon addonEntry, path string, yes, force bool,
 	return nil
 }
 
-func registeredAddonPath(name string, addon addonEntry) (string, error) {
+func registeredAddonPath(name string, addon Entry) (string, error) {
 	if strings.TrimSpace(addon.Path) == "" {
 		return "", fmt.Errorf("addon %q has no registered path", name)
 	}

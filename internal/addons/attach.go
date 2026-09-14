@@ -22,17 +22,12 @@ func AttachToContainer(container string, names []string, state files.State) erro
 		}
 	}
 
-	created, err := profile.Ensure(state, container)
-	if err != nil {
-		return fmt.Errorf("add container %q to state: %w", container, err)
-	}
-	if created {
-		fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", container)
-	}
-
-	config, _, err := profile.Lookup(state, container)
+	config, found, err := profile.Lookup(state, container)
 	if err != nil {
 		return fmt.Errorf("update container %q: %w", container, err)
+	}
+	if !found {
+		config = profile.NewConfig(container)
 	}
 	seen := make(map[string]bool, len(config.Addons))
 	for _, name := range config.Addons {
@@ -43,6 +38,16 @@ func AttachToContainer(container string, names []string, state files.State) erro
 			config.Addons = append(config.Addons, name)
 			seen[name] = true
 		}
+	}
+	if _, err := ResolveMounts(state, config.Addons); err != nil {
+		return fmt.Errorf("validate addons for container %q: %w", container, err)
+	}
+	created, err := profile.Ensure(state, container)
+	if err != nil {
+		return fmt.Errorf("add container %q to state: %w", container, err)
+	}
+	if created {
+		fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", container)
 	}
 	if err := profile.Put(state, container, config); err != nil {
 		return fmt.Errorf("update container %q: %w", container, err)

@@ -57,6 +57,24 @@ func containerIsRunning(name string) (bool, error) {
 	return len(containers) > 0, nil
 }
 
+func ProfileState(name string) (string, bool, error) {
+	if err := profile.ValidateName(name); err != nil {
+		return "", false, err
+	}
+	containers, err := containerIDs("label="+containerNameLabel+"="+name, true)
+	if err != nil {
+		return "", false, fmt.Errorf("find profile with label %q: %w", name, err)
+	}
+	if len(containers) == 0 {
+		return "", false, nil
+	}
+	output, err := dockerOutput("inspect", "--format", "{{.State.Status}}", containers[0])
+	if err != nil {
+		return "", true, fmt.Errorf("inspect profile %q: %w", name, err)
+	}
+	return strings.TrimSpace(string(output)), true, nil
+}
+
 func RequireRunningProfile(name string) (string, error) {
 	exists, err := findContainerByName(name)
 	if err != nil {

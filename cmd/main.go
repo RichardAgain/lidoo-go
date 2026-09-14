@@ -12,6 +12,7 @@ import (
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 	"lidoo/internal/odoo"
+	"lidoo/internal/profileio"
 )
 
 func main() {
@@ -119,6 +120,28 @@ func main() {
 		err = docker.Restart(name)
 	case "remove":
 		err = docker.RemoveWithState(name, yes, state)
+	case "profile":
+		if len(positional) == 0 {
+			err = errors.New("usage: lidoo profile export|import ...")
+		} else {
+			switch positional[0] {
+			case "export":
+				var profileName, destination string
+				profileName, destination, err = parseProfileExportArgs(positional[1:], name)
+				if err == nil {
+					err = profileio.Export(profileName, destination, state)
+				}
+			case "import":
+				var source string
+				var overwrite bool
+				source, overwrite, err = parseProfileImportArgs(positional[1:], yes)
+				if err == nil {
+					err = profileio.Import(source, overwrite, state)
+				}
+			default:
+				err = fmt.Errorf("unknown profile command %q; use export or import", positional[0])
+			}
+		}
 	case "db":
 		if len(positional) == 0 {
 			err = errors.New("usage: lidoo db list|info|shell --name <profile> [--database <database>]")
@@ -231,6 +254,57 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func parseProfileExportArgs(args []string, profileName string) (string, string, error) {
+	usage := "usage: lidoo profile export --name <profile> <file>"
+	profileSet := strings.TrimSpace(profileName) != ""
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--name":
+			if profileSet || i+1 >= len(args) {
+				return "", "", errors.New(usage)
+			}
+			i++
+			profileName = args[i]
+			profileSet = true
+		case strings.HasPrefix(args[i], "--name="):
+			if profileSet {
+				return "", "", errors.New(usage)
+			}
+			profileName = strings.TrimPrefix(args[i], "--name=")
+			profileSet = true
+		case strings.HasPrefix(args[i], "-"):
+			return "", "", fmt.Errorf("unknown profile export option %q", args[i])
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+	if !profileSet || strings.TrimSpace(profileName) == "" || len(positional) != 1 {
+		return "", "", errors.New(usage)
+	}
+	return profileName, positional[0], nil
+}
+
+func parseProfileImportArgs(args []string, overwrite bool) (string, bool, error) {
+	usage := "usage: lidoo profile import <file> [--yes]"
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--yes", "-y":
+			overwrite = true
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", false, fmt.Errorf("unknown profile import option %q", args[i])
+			}
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 1 {
+		return "", false, errors.New(usage)
+	}
+	return positional[0], overwrite, nil
 }
 
 func parseDBArgs(args []string, profileName, action string) (string, error) {
@@ -473,6 +547,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
 	fmt.Fprintln(os.Stderr, "  db info --name <profile> --database <database>")
 	fmt.Fprintln(os.Stderr, "  db shell --name <profile> --database <database>")
+	fmt.Fprintln(os.Stderr, "  profile export --name <profile> <file>")
+	fmt.Fprintln(os.Stderr, "  profile import <file> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons list")
 	fmt.Fprintln(os.Stderr, "       lidoo addons status [<addon name>]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")

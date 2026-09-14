@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"lidoo/internal/files"
 )
@@ -34,6 +35,18 @@ func saveProfiles(state files.State, profiles map[string]Config) error {
 
 func NewConfig(name string) Config {
 	return Config{Addons: []string{}, Prefix: name + "__"}
+}
+
+func ValidatePrefix(prefix string) error {
+	if len(prefix) > 63 {
+		return fmt.Errorf("invalid database prefix %q: maximum length is 63 characters", prefix)
+	}
+	for _, character := range prefix {
+		if !(unicode.IsLetter(character) || unicode.IsDigit(character) || strings.ContainsRune("_.-", character)) {
+			return fmt.Errorf("invalid database prefix %q: use letters, numbers, dots, underscores, or hyphens", prefix)
+		}
+	}
+	return nil
 }
 
 func Lookup(state files.State, name string) (Config, bool, error) {

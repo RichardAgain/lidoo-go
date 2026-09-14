@@ -144,6 +144,22 @@ func main() {
 		}
 	case "addons":
 		switch {
+		case len(positional) > 0 && positional[0] == "list":
+			if len(positional) != 1 {
+				err = errors.New("usage: lidoo addons list")
+			} else {
+				err = addons.List(state)
+			}
+		case len(positional) > 0 && positional[0] == "status":
+			if len(positional) > 2 {
+				err = errors.New("usage: lidoo addons status [<addon name>]")
+			} else {
+				addonName := ""
+				if len(positional) == 2 {
+					addonName = positional[1]
+				}
+				err = addons.Status(addonName, state)
+			}
 		case len(positional) > 0 && positional[0] == "add":
 			if len(positional) != 3 {
 				err = errors.New("usage: lidoo addons add <addon name> <git url>")
@@ -449,6 +465,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
 	fmt.Fprintln(os.Stderr, "  db info --name <profile> --database <database>")
 	fmt.Fprintln(os.Stderr, "  db shell --name <profile> --database <database>")
+	fmt.Fprintln(os.Stderr, "       lidoo addons list")
+	fmt.Fprintln(os.Stderr, "       lidoo addons status [<addon name>]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")

@@ -383,6 +383,9 @@ func commandMutatesState(command string, positional []string) bool {
 }
 
 func changeAddonMounts(name string, addonNames []string, recreate, attach bool, state files.State) error {
+	if err := docker.ValidateProfileName(name); err != nil {
+		return err
+	}
 	previousState := files.CloneState(state)
 	var err error
 	if attach {
@@ -396,7 +399,11 @@ func changeAddonMounts(name string, addonNames []string, recreate, attach bool, 
 
 	exists, err := docker.ProfileExists(name)
 	if err != nil {
-		return fmt.Errorf("inspect profile %q after addon change: %w", name, err)
+		if recreate {
+			return fmt.Errorf("inspect profile %q before recreation: %w", name, err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: addon mounts for profile %q changed, but its container could not be inspected: %v; recreate it explicitly before they apply\n", name, err)
+		return nil
 	}
 	if !exists {
 		fmt.Printf("profile %q has no container; addon mounts apply when it is run\n", name)

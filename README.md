@@ -150,7 +150,7 @@ go run ./cmd addons detach --name testing server-tools --recreate
 ```
 
 Use `--recreate` only when replacing the container is acceptable. Without it,
-state changes apply the next time the profile is run or recreated. Unknown,
+state changes remain pending until the profile is explicitly recreated. Unknown,
 missing, non-directory, and duplicate mount paths are rejected before Docker
 or state changes.
 

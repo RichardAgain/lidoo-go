@@ -1,10 +1,25 @@
 package docker
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 )
+
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if code := exitErr.ExitCode(); code >= 0 {
+			return code
+		}
+		return 130
+	}
+	return 1
+}
 
 func Exec(container string, command ...string) error {
 	return ExecWithOutput(container, os.Stdout, os.Stderr, command...)

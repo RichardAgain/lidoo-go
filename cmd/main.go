@@ -25,8 +25,8 @@ func main() {
 
 	var name, version, database, modules, format string
 	var updateAll, yes, force, ifExists, filestore, noFilestore bool
-	var copyDatabase, move, neutralize bool
-	var jobs int
+	var copyDatabase, move, neutralize, follow bool
+	var jobs, tail int
 
 	flags.StringVar(&name, "name", "", "container name")
 	flags.StringVar(&version, "version", "", "Odoo version")
@@ -44,6 +44,8 @@ func main() {
 	flags.BoolVar(&move, "move", false, "restore by moving the database")
 	flags.BoolVar(&neutralize, "neutralize", false, "neutralize a restored database")
 	flags.IntVar(&jobs, "jobs", 1, "parallel jobs for folder restores")
+	flags.BoolVar(&follow, "follow", false, "follow profile logs")
+	flags.IntVar(&tail, "tail", -1, "number of log lines to show")
 
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
@@ -80,6 +82,10 @@ func main() {
 	switch command {
 	case "list":
 		err = docker.List()
+	case "status":
+		err = docker.Status(name, state)
+	case "logs":
+		err = docker.Logs(name, follow, tail)
 	case "init":
 		err = odoo.Init(name, database, modules, state)
 	case "update":
@@ -181,7 +187,7 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		exitCode = 1
+		exitCode = docker.ExitCode(err)
 	}
 	if stateLock != nil {
 		if closeErr := stateLock.Close(); closeErr != nil {
@@ -407,7 +413,7 @@ func validatePositionals(command string, positional []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: lidoo restore --name <profile> --database <database> [options] <source>")
 		}
-	case "list", "init", "update", "drop", "run", "recreate", "stop", "restart", "remove":
+	case "list", "status", "logs", "init", "update", "drop", "run", "recreate", "stop", "restart", "remove":
 		if len(positional) != 0 {
 			return fmt.Errorf("%s does not accept positional arguments", command)
 		}
@@ -420,8 +426,10 @@ func validatePositionals(command string, positional []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <list|init|update|drop|backup|restore|run|recreate|stop|restart|remove> [options]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <list|status|logs|init|update|drop|backup|restore|run|recreate|stop|restart|remove|db> [options]")
 	fmt.Fprintln(os.Stderr, "  list")
+	fmt.Fprintln(os.Stderr, "  status [--name <profile>]")
+	fmt.Fprintln(os.Stderr, "  logs --name <profile> [--follow] [--tail N]")
 	fmt.Fprintln(os.Stderr, "  init --name <profile> --database <database> [--modules <csv>]")
 	fmt.Fprintln(os.Stderr, "  update --name <profile> --database <database> [--update-all]")
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")

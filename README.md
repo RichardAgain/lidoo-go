@@ -8,6 +8,19 @@ docker compose up -d db caddy
 go run ./cmd run --name testing --version 18
 ```
 
+For the developer-friendly `lidoo` command, add the repository wrapper to your
+shell path once per checkout:
+
+```sh
+export PATH="$(pwd)/bin:$PATH"
+lidoo run --name testing --version 18
+lidoo backup --name testing --database testing_db
+```
+
+The wrapper changes to the repository root before invoking `go run ./cmd`, so
+it works even when called from another directory. It is intentionally a
+development wrapper and requires Go to be installed.
+
 To list all profiles discovered through Docker labels, including stopped
 profiles:
 

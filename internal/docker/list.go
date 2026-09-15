@@ -2,41 +2,72 @@ package docker
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
+
+	"lidoo/internal/files"
+	"lidoo/internal/profile"
 )
 
-type profileRow struct {
-	name   string
-	status string
+// ProfileSummary is the runtime-facing data needed to list a profile.
+type ProfileSummary struct {
+	Name    string
+	State   string
+	URL     string
+	Version string
 }
 
-func List() error {
-	output, err := dockerOutput(
-		"ps", "--all",
-		"--filter", "label="+containerNameLabel,
-		"--format", `{{.Label "io.lidoo.name"}}	{{.State}}`,
-	)
+// ListProfiles returns profiles known by workspace state, Docker, or both.
+func ListProfiles(state files.State) ([]ProfileSummary, error) {
+	runtime, err := runtimeProfiles()
 	if err != nil {
-		return fmt.Errorf("find profiles: %w", err)
+		return nil, fmt.Errorf("find profiles: %w", err)
 	}
 
-	profiles, err := parseProfileList(output)
+	names, err := profile.Names(state)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if len(profiles) == 0 {
-		fmt.Println("no profiles found")
-		return nil
+	seen := make(map[string]bool, len(names)+len(runtime))
+	for _, name := range names {
+		seen[name] = true
 	}
-	return renderProfileList(os.Stdout, profiles)
+	for name := range runtime {
+		if !seen[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	profiles := make([]ProfileSummary, 0, len(names))
+	for _, name := range names {
+		config, found, err := profile.Lookup(state, name)
+		if err != nil {
+			return nil, fmt.Errorf("read profile %q: %w", name, err)
+		}
+		if !found {
+			config = profile.NewConfig(name)
+		}
+
+		summary := ProfileSummary{
+			Name:    name,
+			State:   "not created",
+			URL:     "http://" + profile.Hostname(name),
+			Version: profileVersion(config),
+		}
+		if container, ok := runtime[name]; ok {
+			summary.State = container.State
+			if container.Version != "" {
+				summary.Version = container.Version
+			}
+		}
+		profiles = append(profiles, summary)
+	}
+	return profiles, nil
 }
 
-func parseProfileList(output []byte) ([]profileRow, error) {
-	var profiles []profileRow
+func parseProfileList(output []byte) ([]ProfileSummary, error) {
+	var profiles []ProfileSummary
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -45,25 +76,25 @@ func parseProfileList(output []byte) ([]profileRow, error) {
 		if len(fields) != 2 || strings.TrimSpace(fields[0]) == "" || strings.TrimSpace(fields[1]) == "" {
 			return nil, fmt.Errorf("invalid profile row from Docker: %q", line)
 		}
-		profiles = append(profiles, profileRow{
-			name:   strings.TrimSpace(fields[0]),
-			status: strings.TrimSpace(fields[1]),
+		name := strings.TrimSpace(fields[0])
+		if err := ValidateProfileName(name); err != nil {
+			return nil, fmt.Errorf("invalid profile from Docker: %w", err)
+		}
+		profiles = append(profiles, ProfileSummary{
+			Name:  name,
+			State: strings.TrimSpace(fields[1]),
+			URL:   "http://" + profile.Hostname(name),
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool {
-		return profiles[i].name < profiles[j].name
+		return profiles[i].Name < profiles[j].Name
 	})
 	return profiles, nil
 }
 
-func renderProfileList(w io.Writer, profiles []profileRow) error {
-	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "PROFILE\tSTATUS\tURL")
-	for _, profile := range profiles {
-		if err := ValidateProfileName(profile.name); err != nil {
-			return fmt.Errorf("invalid profile from Docker: %w", err)
-		}
-		fmt.Fprintf(table, "%s\t%s\thttp://%s\n", profile.name, profile.status, profileHostname(profile.name))
+func profileVersion(config profile.Config) string {
+	if config.Version == nil {
+		return "-"
 	}
-	return table.Flush()
+	return *config.Version
 }

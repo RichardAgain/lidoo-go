@@ -4,8 +4,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"lidoo/internal/addons"
@@ -86,9 +88,17 @@ func main() {
 
 	switch command {
 	case "list":
-		err = docker.List()
+		var profiles []docker.ProfileSummary
+		profiles, err = docker.ListProfiles(state)
+		if err == nil {
+			err = renderProfileList(os.Stdout, profiles)
+		}
 	case "status":
-		err = docker.Status(name, state)
+		var details []docker.ProfileDetail
+		details, err = docker.ProfileDetails(name, state)
+		if err == nil {
+			err = renderProfileDetails(details)
+		}
 	case "logs":
 		err = docker.Logs(name, follow, tail)
 	case "init":
@@ -254,6 +264,42 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func renderProfileList(output io.Writer, profiles []docker.ProfileSummary) error {
+	if len(profiles) == 0 {
+		_, err := fmt.Fprintln(output, "no profiles found")
+		return err
+	}
+
+	table := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "PROFILE\tSTATUS\tURL")
+	for _, profile := range profiles {
+		fmt.Fprintf(table, "%s\t%s\t%s\n", profile.Name, profile.State, profile.URL)
+	}
+	return table.Flush()
+}
+
+func renderProfileDetails(details []docker.ProfileDetail) error {
+	if len(details) == 0 {
+		fmt.Println("no profiles found")
+		return nil
+	}
+	for index, detail := range details {
+		if index > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("PROFILE: %s\n", detail.Name)
+		fmt.Printf("docker state: %s\n", detail.DockerState)
+		fmt.Printf("url: %s\n", detail.URL)
+		fmt.Printf("odoo version: %s\n", detail.OdooVersion)
+		fmt.Printf("attached addons: %s\n", strings.Join(detail.AttachedAddons, ", "))
+		fmt.Printf("database prefix: %s\n", detail.DatabasePrefix)
+		fmt.Printf("image: %s\n", detail.Image)
+		fmt.Printf("filestore volume: %s\n", detail.FilestoreVolume)
+		fmt.Printf("pending recreation: %s\n", detail.PendingRecreation.String())
+	}
+	return nil
 }
 
 func parseProfileExportArgs(args []string, profileName string) (string, string, error) {

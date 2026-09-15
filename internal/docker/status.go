@@ -14,6 +14,40 @@ import (
 	"lidoo/internal/profile"
 )
 
+// ProfileDetail is the inspection data for one profile.
+type ProfileDetail struct {
+	Name              string
+	DockerState       string
+	URL               string
+	OdooVersion       string
+	AttachedAddons    []string
+	DatabasePrefix    string
+	Image             string
+	FilestoreVolume   string
+	PendingRecreation RecreationStatus
+}
+
+// RecreationStatus describes whether a running profile must be recreated for
+// its configured mounts to match the current workspace state.
+type RecreationStatus struct {
+	Checked bool
+	Pending bool
+	Reason  string
+}
+
+func (status RecreationStatus) String() string {
+	if !status.Checked {
+		return "no (not created)"
+	}
+	if !status.Pending {
+		return "no"
+	}
+	if status.Reason != "" {
+		return "yes (" + status.Reason + ")"
+	}
+	return "yes"
+}
+
 type runtimeProfile struct {
 	ID      string
 	State   string
@@ -41,28 +75,30 @@ type inspectedContainer struct {
 	Mounts []runtimeMount `json:"Mounts"`
 }
 
-func Status(name string, state files.State) error {
+// ProfileDetails returns inspection data for profiles known by workspace state,
+// Docker, or both. When name is non-empty, only that profile is returned.
+func ProfileDetails(name string, state files.State) ([]ProfileDetail, error) {
 	runtime, err := runtimeProfiles()
 	if err != nil {
-		return fmt.Errorf("inspect profile containers: %w", err)
+		return nil, fmt.Errorf("inspect profile containers: %w", err)
 	}
 
 	names, err := profile.Names(state)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if name != "" {
 		if err := profile.ValidateName(name); err != nil {
-			return err
+			return nil, err
 		}
-		names = []string{name}
 		if _, found, err := profile.Lookup(state, name); err != nil {
-			return err
+			return nil, err
 		} else if !found {
-			if _, running := runtime[name]; !running {
-				return fmt.Errorf("profile %q not found", name)
+			if _, exists := runtime[name]; !exists {
+				return nil, fmt.Errorf("profile %q not found", name)
 			}
 		}
+		names = []string{name}
 	} else {
 		seen := make(map[string]bool, len(names)+len(runtime))
 		for _, profileName := range names {
@@ -75,20 +111,50 @@ func Status(name string, state files.State) error {
 		}
 		sort.Strings(names)
 	}
-	if len(names) == 0 {
-		fmt.Println("no profiles found")
-		return nil
+
+	details := make([]ProfileDetail, 0, len(names))
+	for _, profileName := range names {
+		detail, err := profileDetail(profileName, state, runtime[profileName])
+		if err != nil {
+			return nil, err
+		}
+		details = append(details, detail)
+	}
+	return details, nil
+}
+
+func profileDetail(name string, state files.State, runtime runtimeProfile) (ProfileDetail, error) {
+	config, found, err := profile.Lookup(state, name)
+	if err != nil {
+		return ProfileDetail{}, fmt.Errorf("read profile %q: %w", name, err)
+	}
+	if !found {
+		config = profile.NewConfig(name)
 	}
 
-	for index, profileName := range names {
-		if index > 0 {
-			fmt.Println()
-		}
-		if err := renderStatus(profileName, state, runtime[profileName]); err != nil {
-			return err
-		}
+	detail := ProfileDetail{
+		Name:              name,
+		DockerState:       "not created",
+		URL:               "http://" + profile.Hostname(name),
+		OdooVersion:       profileVersion(config),
+		AttachedAddons:    append([]string(nil), config.Addons...),
+		DatabasePrefix:    config.Prefix,
+		Image:             "-",
+		FilestoreVolume:   FilestoreVolumeName + " (not attached)",
+		PendingRecreation: RecreationStatus{},
 	}
-	return nil
+	if runtime.ID == "" {
+		return detail, nil
+	}
+
+	detail.DockerState = runtime.State
+	detail.Image = runtime.Image
+	detail.FilestoreVolume = mountDisplay(runtime.Mounts, "/var/lib/odoo")
+	if runtime.Version != "" {
+		detail.OdooVersion = runtime.Version
+	}
+	detail.PendingRecreation = recreationStatus(state, config, runtime.Mounts)
+	return detail, nil
 }
 
 func runtimeProfiles() (map[string]runtimeProfile, error) {
@@ -140,45 +206,6 @@ func inspectContainer(id string) (inspectedContainer, error) {
 	return inspected, nil
 }
 
-func renderStatus(name string, state files.State, runtime runtimeProfile) error {
-	config, found, err := profile.Lookup(state, name)
-	if err != nil {
-		return fmt.Errorf("read profile %q: %w", name, err)
-	}
-	if !found {
-		config = profile.NewConfig(name)
-	}
-
-	version := "-"
-	if config.Version != nil {
-		version = *config.Version
-	}
-	if runtime.Version != "" {
-		version = runtime.Version
-	}
-	image := "-"
-	dockerState := "not created"
-	filestore := FilestoreVolumeName + " (not attached)"
-	pending := "no (not created)"
-	if runtime.ID != "" {
-		dockerState = runtime.State
-		image = runtime.Image
-		filestore = mountDisplay(runtime.Mounts, "/var/lib/odoo")
-		pending = recreationStatus(state, config, runtime.Mounts)
-	}
-
-	fmt.Printf("PROFILE: %s\n", name)
-	fmt.Printf("docker state: %s\n", dockerState)
-	fmt.Printf("url: http://%s\n", profile.Hostname(name))
-	fmt.Printf("odoo version: %s\n", version)
-	fmt.Printf("attached addons: %s\n", strings.Join(config.Addons, ", "))
-	fmt.Printf("database prefix: %s\n", config.Prefix)
-	fmt.Printf("image: %s\n", image)
-	fmt.Printf("filestore volume: %s\n", filestore)
-	fmt.Printf("pending recreation: %s\n", pending)
-	return nil
-}
-
 func mountDisplay(mounts []runtimeMount, destination string) string {
 	for _, mount := range mounts {
 		if mount.Destination != destination {
@@ -194,10 +221,14 @@ func mountDisplay(mounts []runtimeMount, destination string) string {
 	return "not attached"
 }
 
-func recreationStatus(state files.State, config profile.Config, mounts []runtimeMount) string {
+func recreationStatus(state files.State, config profile.Config, mounts []runtimeMount) RecreationStatus {
 	expected, err := addons.ResolveMounts(state, config.Addons)
 	if err != nil {
-		return "yes (invalid addon mounts: " + err.Error() + ")"
+		return RecreationStatus{
+			Checked: true,
+			Pending: true,
+			Reason:  "invalid addon mounts: " + err.Error(),
+		}
 	}
 	actual := make(map[string]string)
 	for _, mount := range mounts {
@@ -208,12 +239,12 @@ func recreationStatus(state files.State, config profile.Config, mounts []runtime
 	for _, mount := range expected {
 		destination := "/opt/addons/" + mount.Name
 		if filepath.Clean(actual[destination]) != filepath.Clean(mount.Path) {
-			return "yes"
+			return RecreationStatus{Checked: true, Pending: true}
 		}
 		delete(actual, destination)
 	}
 	if len(actual) > 0 {
-		return "yes"
+		return RecreationStatus{Checked: true, Pending: true}
 	}
 	filestoreFound := false
 	for _, mount := range mounts {
@@ -222,13 +253,13 @@ func recreationStatus(state files.State, config profile.Config, mounts []runtime
 		}
 		filestoreFound = true
 		if mount.Name != FilestoreVolumeName {
-			return "yes"
+			return RecreationStatus{Checked: true, Pending: true}
 		}
 	}
 	if !filestoreFound {
-		return "yes"
+		return RecreationStatus{Checked: true, Pending: true}
 	}
-	return "no"
+	return RecreationStatus{Checked: true}
 }
 
 func Logs(name string, follow bool, tail int) error {

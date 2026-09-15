@@ -1,12 +1,32 @@
 package odoo
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 )
+
+// ErrDatabaseNotFound identifies an action that targeted a database which no
+// longer exists in its profile.
+var ErrDatabaseNotFound = errors.New("database not found")
+
+// DatabaseNotFoundError retains the profile and logical database involved in a
+// failed lookup while remaining detectable with errors.Is.
+type DatabaseNotFoundError struct {
+	Profile  string
+	Database string
+}
+
+func (err *DatabaseNotFoundError) Error() string {
+	return fmt.Sprintf("database %q does not exist in profile %q", err.Database, err.Profile)
+}
+
+func (err *DatabaseNotFoundError) Unwrap() error {
+	return ErrDatabaseNotFound
+}
 
 type DatabaseInfo struct {
 	Logical   string
@@ -16,18 +36,20 @@ type DatabaseInfo struct {
 	Available bool
 }
 
-func InfoDatabase(name, database string, state files.State) error {
+// InfoDatabase returns inspection data for a profile database without writing
+// to the terminal.
+func InfoDatabase(name, database string, state files.State) (DatabaseInfo, error) {
 	physical, err := resolveDatabaseName(state, name, database)
 	if err != nil {
-		return err
+		return DatabaseInfo{}, err
 	}
 	prefix, err := profilePrefix(state, name)
 	if err != nil {
-		return err
+		return DatabaseInfo{}, err
 	}
 	container, err := docker.RequireRunningProfile(name)
 	if err != nil {
-		return err
+		return DatabaseInfo{}, err
 	}
 
 	query := "SELECT datname, pg_size_pretty(pg_database_size(datname)), pg_get_userbyid(datdba) FROM pg_database WHERE datname = " + postgresString(physical)
@@ -36,31 +58,21 @@ func InfoDatabase(name, database string, state files.State) error {
 		"--command", query, "postgres",
 	)
 	if err != nil {
-		return fmt.Errorf("inspect database %q: %w", physical, err)
+		return DatabaseInfo{}, fmt.Errorf("inspect database %q: %w", physical, err)
 	}
 	info, found, err := parseDatabaseInfo(string(output), prefix, physical)
 	if err != nil {
-		return err
+		return DatabaseInfo{}, err
 	}
 	if !found {
-		return fmt.Errorf("database %q does not exist in profile %q", database, name)
+		return DatabaseInfo{}, &DatabaseNotFoundError{Profile: name, Database: database}
 	}
 
 	_, connectionErr := runCapture(container,
 		"psql", "--no-psqlrc", "--command", "SELECT 1", physical,
 	)
 	info.Available = connectionErr == nil
-
-	fmt.Printf("logical database: %s\n", info.Logical)
-	fmt.Printf("physical database: %s\n", info.Physical)
-	fmt.Printf("size: %s\n", info.Size)
-	fmt.Printf("owner: %s\n", info.Owner)
-	if info.Available {
-		fmt.Println("connection: available")
-	} else {
-		fmt.Println("connection: unavailable")
-	}
-	return nil
+	return info, nil
 }
 
 func parseDatabaseInfo(output, prefix, physical string) (DatabaseInfo, bool, error) {

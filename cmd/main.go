@@ -161,13 +161,21 @@ func main() {
 				var profileName string
 				profileName, err = parseDBArgs(positional[1:], name, "list")
 				if err == nil {
-					err = odoo.ListDatabases(profileName, state)
+					var databases []odoo.Database
+					databases, err = odoo.ListDatabases(profileName, state)
+					if err == nil {
+						err = renderDatabaseList(databases)
+					}
 				}
 			case "info", "shell":
 				var profileName, databaseName string
 				profileName, databaseName, err = parseDBArgsWithDatabase(positional[1:], name, "", positional[0])
 				if err == nil && positional[0] == "info" {
-					err = odoo.InfoDatabase(profileName, databaseName, state)
+					var info odoo.DatabaseInfo
+					info, err = odoo.InfoDatabase(profileName, databaseName, state)
+					if err == nil {
+						err = renderDatabaseInfo(info)
+					}
 				} else if err == nil {
 					err = odoo.ShellDatabase(profileName, databaseName, state)
 				}
@@ -298,6 +306,47 @@ func renderProfileDetails(details []docker.ProfileDetail) error {
 		fmt.Printf("image: %s\n", detail.Image)
 		fmt.Printf("filestore volume: %s\n", detail.FilestoreVolume)
 		fmt.Printf("pending recreation: %s\n", detail.PendingRecreation.String())
+	}
+	return nil
+}
+
+func renderDatabaseList(databases []odoo.Database) error {
+	if len(databases) == 0 {
+		fmt.Println("no databases found")
+		return nil
+	}
+
+	prefixed := false
+	for _, database := range databases {
+		if database.Logical != database.Physical {
+			prefixed = true
+			break
+		}
+	}
+	table := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	if !prefixed {
+		fmt.Fprintln(table, "DATABASE")
+		for _, database := range databases {
+			fmt.Fprintln(table, database.Physical)
+		}
+	} else {
+		fmt.Fprintln(table, "LOGICAL DATABASE\tPHYSICAL DATABASE")
+		for _, database := range databases {
+			fmt.Fprintf(table, "%s\t%s\n", database.Logical, database.Physical)
+		}
+	}
+	return table.Flush()
+}
+
+func renderDatabaseInfo(info odoo.DatabaseInfo) error {
+	fmt.Printf("logical database: %s\n", info.Logical)
+	fmt.Printf("physical database: %s\n", info.Physical)
+	fmt.Printf("size: %s\n", info.Size)
+	fmt.Printf("owner: %s\n", info.Owner)
+	if info.Available {
+		fmt.Println("connection: available")
+	} else {
+		fmt.Println("connection: unavailable")
 	}
 	return nil
 }

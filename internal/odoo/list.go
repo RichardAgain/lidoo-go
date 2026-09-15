@@ -2,11 +2,8 @@ package odoo
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
 
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
@@ -18,20 +15,22 @@ type Database struct {
 	Physical string
 }
 
-func ListDatabases(name string, state files.State) error {
+// ListDatabases returns the databases visible through a profile's configured
+// prefix. Logical and physical names remain separate for prefixed profiles.
+func ListDatabases(name string, state files.State) ([]Database, error) {
 	if name == "" {
-		return fmt.Errorf("database list requires name")
+		return nil, fmt.Errorf("database list requires name")
 	}
 	if err := docker.ValidateProfileName(name); err != nil {
-		return err
+		return nil, err
 	}
 	prefix, err := profilePrefix(state, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	container, err := docker.RequireRunningProfile(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	output, err := runCapture(container,
@@ -43,13 +42,9 @@ func ListDatabases(name string, state files.State) error {
 		"postgres",
 	)
 	if err != nil {
-		return fmt.Errorf("list databases for profile %q: %w", name, err)
+		return nil, fmt.Errorf("list databases for profile %q: %w", name, err)
 	}
-	databases, err := ParseDatabases(string(output), prefix)
-	if err != nil {
-		return err
-	}
-	return renderDatabases(databases, prefix, os.Stdout)
+	return ParseDatabases(string(output), prefix)
 }
 
 func profilePrefix(state files.State, name string) (string, error) {
@@ -88,25 +83,4 @@ func ParseDatabases(output, prefix string) ([]Database, error) {
 		return databases[i].Physical < databases[j].Physical
 	})
 	return databases, nil
-}
-
-func renderDatabases(databases []Database, prefix string, output io.Writer) error {
-	if len(databases) == 0 {
-		_, err := fmt.Fprintln(output, "no databases found")
-		return err
-	}
-
-	table := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	if prefix == "" {
-		fmt.Fprintln(table, "DATABASE")
-		for _, database := range databases {
-			fmt.Fprintln(table, database.Physical)
-		}
-	} else {
-		fmt.Fprintln(table, "LOGICAL DATABASE\tPHYSICAL DATABASE")
-		for _, database := range databases {
-			fmt.Fprintf(table, "%s\t%s\n", database.Logical, database.Physical)
-		}
-	}
-	return table.Flush()
 }

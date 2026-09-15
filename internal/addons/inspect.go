@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
-	"text/tabwriter"
 
 	"lidoo/internal/files"
 	"lidoo/internal/profile"
@@ -25,14 +23,11 @@ type AddonStatus struct {
 	AttachedProfiles []string
 }
 
-func List(state files.State) error {
+// List returns sorted status values for every registered add-on.
+func List(state files.State) ([]AddonStatus, error) {
 	entries, err := loadAddons(state)
 	if err != nil {
-		return err
-	}
-	if len(entries) == 0 {
-		fmt.Println("no addons found")
-		return nil
+		return nil, err
 	}
 
 	names := make([]string, 0, len(entries))
@@ -40,56 +35,29 @@ func List(state files.State) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
 	statuses := make([]AddonStatus, 0, len(names))
 	for _, name := range names {
 		status, err := inspectAddon(state, name, entries[name])
 		if err != nil {
-			return err
+			return nil, err
 		}
 		statuses = append(statuses, status)
 	}
-	return renderAddonList(statuses)
+	return statuses, nil
 }
 
-func Status(name string, state files.State) error {
+// Status returns the status for one registered add-on.
+func Status(name string, state files.State) (AddonStatus, error) {
 	entries, err := loadAddons(state)
 	if err != nil {
-		return err
+		return AddonStatus{}, err
 	}
-	if name != "" {
-		entry, found := entries[name]
-		if !found {
-			return fmt.Errorf("addon %q is not registered", name)
-		}
-		status, err := inspectAddon(state, name, entry)
-		if err != nil {
-			return err
-		}
-		return renderAddonStatus(status)
+	entry, found := entries[name]
+	if !found {
+		return AddonStatus{}, fmt.Errorf("addon %q is not registered", name)
 	}
-	if len(entries) == 0 {
-		fmt.Println("no addons found")
-		return nil
-	}
-
-	names := make([]string, 0, len(entries))
-	for addonName := range entries {
-		names = append(names, addonName)
-	}
-	sort.Strings(names)
-	for index, addonName := range names {
-		status, err := inspectAddon(state, addonName, entries[addonName])
-		if err != nil {
-			return err
-		}
-		if index > 0 {
-			fmt.Println()
-		}
-		if err := renderAddonStatus(status); err != nil {
-			return err
-		}
-	}
-	return nil
+	return inspectAddon(state, name, entry)
 }
 
 func inspectAddon(state files.State, name string, entry Entry) (AddonStatus, error) {
@@ -158,65 +126,4 @@ func inspectAddon(state files.State, name string, entry Entry) (AddonStatus, err
 		}
 	}
 	return status, nil
-}
-
-func renderAddonList(statuses []AddonStatus) error {
-	table := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "NAME\tTYPE\tSOURCE/PARENT\tBRANCH\tPATH\tATTACHED PROFILES")
-	for _, status := range statuses {
-		source := status.Entry.Source
-		if status.Kind == "worktree" {
-			source = status.Entry.WorktreeOf
-		}
-		if source == "" {
-			source = "-"
-		}
-		branch := status.Entry.Branch
-		if branch == "" {
-			branch = "-"
-		}
-		attached := strings.Join(status.AttachedProfiles, ",")
-		if attached == "" {
-			attached = "-"
-		}
-		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", status.Name, status.Kind, source, branch, status.Path, attached)
-	}
-	return table.Flush()
-}
-
-func renderAddonStatus(status AddonStatus) error {
-	fmt.Printf("ADDON: %s\n", status.Name)
-	fmt.Printf("type: %s\n", status.Kind)
-	if status.Entry.Source != "" {
-		fmt.Printf("source: %s\n", status.Entry.Source)
-	}
-	if status.Entry.WorktreeOf != "" {
-		fmt.Printf("worktree parent: %s\n", status.Entry.WorktreeOf)
-	}
-	if status.Entry.Branch != "" {
-		fmt.Printf("branch: %s\n", status.Entry.Branch)
-	}
-	fmt.Printf("path: %s\n", status.Path)
-	if status.PathAvailable {
-		if status.Dirty {
-			fmt.Println("repository: dirty")
-		} else {
-			fmt.Println("repository: clean")
-		}
-	} else {
-		fmt.Printf("repository: unavailable (%s)\n", status.RepositoryError)
-	}
-	if status.Kind == "worktree" {
-		if status.ParentAvailable {
-			fmt.Println("worktree parent status: available")
-		} else {
-			fmt.Printf("worktree parent status: unavailable (%s)\n", status.ParentError)
-		}
-	}
-	attached := strings.Join(status.AttachedProfiles, ", ")
-	if attached == "" {
-		attached = "none"
-	}
-	fmt.Printf("attached profiles: %s\n", attached)
-	return nil
 }

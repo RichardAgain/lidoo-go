@@ -189,17 +189,27 @@ func main() {
 			if len(positional) != 1 {
 				err = errors.New("usage: lidoo addons list")
 			} else {
-				err = addons.List(state)
+				var statuses []addons.AddonStatus
+				statuses, err = addons.List(state)
+				if err == nil {
+					err = renderAddonList(os.Stdout, statuses)
+				}
 			}
 		case len(positional) > 0 && positional[0] == "status":
 			if len(positional) > 2 {
 				err = errors.New("usage: lidoo addons status [<addon name>]")
-			} else {
-				addonName := ""
-				if len(positional) == 2 {
-					addonName = positional[1]
+			} else if len(positional) == 2 {
+				var status addons.AddonStatus
+				status, err = addons.Status(positional[1], state)
+				if err == nil {
+					err = renderAddonStatus(os.Stdout, status)
 				}
-				err = addons.Status(addonName, state)
+			} else {
+				var statuses []addons.AddonStatus
+				statuses, err = addons.List(state)
+				if err == nil {
+					err = renderAddonStatuses(os.Stdout, statuses)
+				}
 			}
 		case len(positional) > 0 && positional[0] == "add":
 			if len(positional) != 3 {
@@ -348,6 +358,88 @@ func renderDatabaseInfo(info odoo.DatabaseInfo) error {
 	} else {
 		fmt.Println("connection: unavailable")
 	}
+	return nil
+}
+
+func renderAddonList(output io.Writer, statuses []addons.AddonStatus) error {
+	if len(statuses) == 0 {
+		_, err := fmt.Fprintln(output, "no addons found")
+		return err
+	}
+
+	table := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(table, "NAME\tTYPE\tSOURCE/PARENT\tBRANCH\tPATH\tATTACHED PROFILES")
+	for _, status := range statuses {
+		source := status.Entry.Source
+		if status.Kind == "worktree" {
+			source = status.Entry.WorktreeOf
+		}
+		if source == "" {
+			source = "-"
+		}
+		branch := status.Entry.Branch
+		if branch == "" {
+			branch = "-"
+		}
+		attached := strings.Join(status.AttachedProfiles, ",")
+		if attached == "" {
+			attached = "-"
+		}
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", status.Name, status.Kind, source, branch, status.Path, attached)
+	}
+	return table.Flush()
+}
+
+func renderAddonStatuses(output io.Writer, statuses []addons.AddonStatus) error {
+	if len(statuses) == 0 {
+		_, err := fmt.Fprintln(output, "no addons found")
+		return err
+	}
+	for index, status := range statuses {
+		if index > 0 {
+			fmt.Fprintln(output)
+		}
+		if err := renderAddonStatus(output, status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderAddonStatus(output io.Writer, status addons.AddonStatus) error {
+	fmt.Fprintf(output, "ADDON: %s\n", status.Name)
+	fmt.Fprintf(output, "type: %s\n", status.Kind)
+	if status.Entry.Source != "" {
+		fmt.Fprintf(output, "source: %s\n", status.Entry.Source)
+	}
+	if status.Entry.WorktreeOf != "" {
+		fmt.Fprintf(output, "worktree parent: %s\n", status.Entry.WorktreeOf)
+	}
+	if status.Entry.Branch != "" {
+		fmt.Fprintf(output, "branch: %s\n", status.Entry.Branch)
+	}
+	fmt.Fprintf(output, "path: %s\n", status.Path)
+	if status.PathAvailable {
+		if status.Dirty {
+			fmt.Fprintln(output, "repository: dirty")
+		} else {
+			fmt.Fprintln(output, "repository: clean")
+		}
+	} else {
+		fmt.Fprintf(output, "repository: unavailable (%s)\n", status.RepositoryError)
+	}
+	if status.Kind == "worktree" {
+		if status.ParentAvailable {
+			fmt.Fprintln(output, "worktree parent status: available")
+		} else {
+			fmt.Fprintf(output, "worktree parent status: unavailable (%s)\n", status.ParentError)
+		}
+	}
+	attached := strings.Join(status.AttachedProfiles, ", ")
+	if attached == "" {
+		attached = "none"
+	}
+	fmt.Fprintf(output, "attached profiles: %s\n", attached)
 	return nil
 }
 

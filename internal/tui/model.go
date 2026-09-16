@@ -97,6 +97,7 @@ type Model struct {
 	taskStarting           bool
 	taskRunning            bool
 	taskCancelRequested    bool
+	interactivePreparing   bool
 	formField              int
 	initModules            string
 	backupDestination      string
@@ -327,6 +328,38 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.finishTask("cancelled", msg.Output, nil)
 		return m, m.refreshAfterTask(msg.ProfileName)
+	case ProfileLogsLoadedMsg:
+		m.interactivePreparing = false
+		m.retainInteractiveOutput("logs "+msg.ProfileName, msg.Output, nil)
+		return m, nil
+	case ProfileLogsFailedMsg:
+		m.interactivePreparing = false
+		m.retainInteractiveOutput("logs "+msg.ProfileName, "", msg.Err)
+		return m, nil
+	case InteractiveCommandReadyMsg:
+		m.interactivePreparing = false
+		if msg.Command == nil {
+			m.retainInteractiveOutput(interactiveTaskName(msg), "", errors.New("interactive command is unavailable"))
+			return m, nil
+		}
+		return m, tea.ExecProcess(msg.Command, func(err error) tea.Msg {
+			return InteractiveCommandFinishedMsg{
+				Kind:         msg.Kind,
+				ProfileName:  msg.ProfileName,
+				DatabaseName: msg.DatabaseName,
+				Err:          err,
+			}
+		})
+	case InteractiveCommandFailedMsg:
+		m.interactivePreparing = false
+		m.retainInteractiveOutput(interactiveTaskName(msg), "", msg.Err)
+		if errors.Is(msg.Err, odoo.ErrDatabaseNotFound) && msg.ProfileName == m.selectedProfileName() {
+			return m, m.refreshDatabasesAfterMissing()
+		}
+		return m, nil
+	case InteractiveCommandFinishedMsg:
+		m.retainInteractiveOutput(interactiveTaskName(msg), "", msg.Err)
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -336,7 +369,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modal != modalNone {
 		return m.updateModalKey(msg)
 	}
-	if m.taskStarting || m.taskRunning {
+	if m.taskStarting || m.taskRunning || m.interactivePreparing {
 		switch msg.String() {
 		case "c", "ctrl+c":
 			m.cancelTask()
@@ -399,6 +432,42 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "b":
 		if m.focus == focusDatabases {
 			m.openBackupForm()
+		}
+	case "o":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			profileName := m.selectedProfileName()
+			m.interactivePreparing = true
+			m.taskName = "logs " + profileName
+			m.taskStatus = "loading"
+			m.taskOutput = ""
+			m.taskErr = nil
+			m.err = nil
+			return m, LoadProfileLogsCmd(m.ctx, m.service, profileName, -1)
+		}
+	case "L":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			profileName := m.selectedProfileName()
+			m.interactivePreparing = true
+			m.taskName = "follow logs " + profileName
+			m.taskStatus = "preparing"
+			m.taskOutput = ""
+			m.taskErr = nil
+			m.err = nil
+			return m, PrepareProfileLogsCmd(m.ctx, m.service, profileName, true, -1)
+		}
+	case "p":
+		if m.focus == focusDatabases {
+			database := m.selectedDatabase()
+			if database != nil {
+				profileName := m.selectedProfileName()
+				m.interactivePreparing = true
+				m.taskName = "psql " + profileName + "/" + database.Logical
+				m.taskStatus = "preparing"
+				m.taskOutput = ""
+				m.taskErr = nil
+				m.err = nil
+				return m, PrepareDatabaseShellCmd(m.ctx, m.service, profileName, database.Logical)
+			}
 		}
 	case "ctrl+r":
 		return m, m.refreshProfiles()
@@ -781,6 +850,34 @@ func (m *Model) finishTask(status, output string, taskErr error) {
 	m.taskCancelRequested = false
 	m.taskOutput = strings.TrimSpace(output)
 	m.taskErr = taskErr
+}
+
+func (m *Model) retainInteractiveOutput(name, output string, taskErr error) {
+	m.taskName = name
+	m.taskStatus = "completed"
+	if taskErr != nil {
+		m.taskStatus = "failed"
+	}
+	m.taskOutput = strings.TrimSpace(output)
+	m.taskErr = taskErr
+	m.interactivePreparing = false
+}
+
+func interactiveTaskName(message any) string {
+	var kind interactiveKind
+	var profileName, databaseName string
+	switch message := message.(type) {
+	case InteractiveCommandReadyMsg:
+		kind, profileName, databaseName = message.Kind, message.ProfileName, message.DatabaseName
+	case InteractiveCommandFailedMsg:
+		kind, profileName, databaseName = message.Kind, message.ProfileName, message.DatabaseName
+	case InteractiveCommandFinishedMsg:
+		kind, profileName, databaseName = message.Kind, message.ProfileName, message.DatabaseName
+	}
+	if kind == interactiveDatabaseShell {
+		return "psql " + profileName + "/" + databaseName
+	}
+	return "follow logs " + profileName
 }
 
 func (m *Model) refreshAfterTask(profileName string) tea.Cmd {
@@ -1336,11 +1433,11 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "x start  r restart  R recreate  s stop  d remove"
+	return "x start  r restart  R recreate  s stop  d remove  o logs  L follow"
 }
 
 func databaseActionHints() string {
-	return "i init  u update  U update-all  d drop  b backup  R restore"
+	return "i init  u update  U update-all  d drop  b backup  R restore  p psql"
 }
 
 func (m *Model) modalView() string {

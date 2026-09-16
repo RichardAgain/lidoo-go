@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os/exec"
+
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
 	"lidoo/internal/docker"
@@ -108,4 +110,42 @@ type TaskCancelledMsg struct {
 	ID          uint64
 	ProfileName string
 	Output      string
+}
+
+type ProfileLogsLoadedMsg struct {
+	ProfileName string
+	Output      string
+}
+
+type ProfileLogsFailedMsg struct {
+	ProfileName string
+	Err         error
+}
+
+type interactiveKind uint8
+
+const (
+	interactiveProfileLogs interactiveKind = iota
+	interactiveDatabaseShell
+)
+
+type InteractiveCommandReadyMsg struct {
+	Kind         interactiveKind
+	ProfileName  string
+	DatabaseName string
+	Command      *exec.Cmd
+}
+
+type InteractiveCommandFailedMsg struct {
+	Kind         interactiveKind
+	ProfileName  string
+	DatabaseName string
+	Err          error
+}
+
+type InteractiveCommandFinishedMsg struct {
+	Kind         interactiveKind
+	ProfileName  string
+	DatabaseName string
+	Err          error
 }

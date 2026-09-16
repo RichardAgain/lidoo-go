@@ -1,8 +1,10 @@
 package docker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,18 +265,37 @@ func recreationStatus(state files.State, config profile.Config, mounts []runtime
 }
 
 func Logs(name string, follow bool, tail int) error {
-	if name == "" {
-		return fmt.Errorf("logs requires name")
-	}
-	if err := profile.ValidateName(name); err != nil {
+	command, err := LogsCommand(name, follow, tail)
+	if err != nil {
 		return err
 	}
-	containers, err := containerIDs("label="+containerNameLabel+"="+name, true)
+	return runDockerCommand(command.Args[1:]...)
+}
+
+func LogsCommand(name string, follow bool, tail int) (*exec.Cmd, error) {
+	return logsCommand(context.Background(), name, follow, tail, os.Stderr)
+}
+
+func LogsCommandWithContext(ctx context.Context, name string, follow bool, tail int) (*exec.Cmd, error) {
+	return logsCommand(ctx, name, follow, tail, io.Discard)
+}
+
+func logsCommand(ctx context.Context, name string, follow bool, tail int, lookupStderr io.Writer) (*exec.Cmd, error) {
+	if name == "" {
+		return nil, fmt.Errorf("logs requires name")
+	}
+	if err := profile.ValidateName(name); err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	containers, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, true, CommandOptions{Context: ctx, Stderr: lookupStderr})
 	if err != nil {
-		return fmt.Errorf("find profile %q: %w", name, err)
+		return nil, fmt.Errorf("find profile %q: %w", name, err)
 	}
 	if len(containers) == 0 {
-		return fmt.Errorf("no profile with name %q", name)
+		return nil, fmt.Errorf("no profile with name %q", name)
 	}
 	args := []string{"logs"}
 	if follow {
@@ -284,7 +305,7 @@ func Logs(name string, follow bool, tail int) error {
 		args = append(args, "--tail", fmt.Sprintf("%d", tail))
 	}
 	args = append(args, containers[0])
-	return runDockerCommand(args...)
+	return exec.CommandContext(ctx, "docker", args...), nil
 }
 
 func runDockerCommand(args ...string) error {

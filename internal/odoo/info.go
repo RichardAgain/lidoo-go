@@ -1,8 +1,12 @@
 package odoo
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"strings"
 
 	"lidoo/internal/docker"
@@ -103,15 +107,32 @@ func parseDatabaseInfo(output, prefix, physical string) (DatabaseInfo, bool, err
 }
 
 func ShellDatabase(name, database string, state files.State) error {
-	physical, err := resolveDatabaseName(state, name, database)
+	command, err := ShellDatabaseCommand(context.Background(), name, database, state)
 	if err != nil {
 		return err
 	}
-	container, err := docker.RequireRunningProfile(name)
-	if err != nil {
-		return err
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	return command.Run()
+}
+
+// ShellDatabaseCommand validates a database and prepares an interactive psql
+// process. The caller supplies terminal streams when it executes the command.
+func ShellDatabaseCommand(ctx context.Context, name, database string, state files.State) (*exec.Cmd, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return runInteractive(container, "psql", physical)
+	physical, err := resolveExistingDatabaseName(state, name, database)
+	if err != nil {
+		return nil, err
+	}
+	container, err := docker.RequireRunningProfileWithOptions(name, docker.CommandOptions{Context: ctx, Stderr: io.Discard})
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"exec", "--interactive", "--tty", container, "sh", "-c", execScript, "lidoo", "psql", physical}
+	return exec.CommandContext(ctx, "docker", args...), nil
 }
 
 func postgresString(value string) string {

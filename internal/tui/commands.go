@@ -123,3 +123,42 @@ func LoadAddonsCmd(ctx context.Context, service *app.Service, profileName string
 		return AddonsLoadedMsg{RequestID: requestID, ProfileName: profileName, Addons: addons}
 	}
 }
+
+func LoadProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, tail int) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return ProfileLogsFailedMsg{ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
+		}
+		output, err := service.ProfileLogs(ctx, profileName, tail)
+		if err != nil {
+			return ProfileLogsFailedMsg{ProfileName: profileName, Err: err}
+		}
+		return ProfileLogsLoadedMsg{ProfileName: profileName, Output: output}
+	}
+}
+
+func PrepareProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, follow bool, tail int) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return InteractiveCommandFailedMsg{Kind: interactiveProfileLogs, ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
+		}
+		command, err := service.ProfileLogsCommand(ctx, profileName, follow, tail)
+		if err != nil {
+			return InteractiveCommandFailedMsg{Kind: interactiveProfileLogs, ProfileName: profileName, Err: err}
+		}
+		return InteractiveCommandReadyMsg{Kind: interactiveProfileLogs, ProfileName: profileName, Command: command}
+	}
+}
+
+func PrepareDatabaseShellCmd(ctx context.Context, service *app.Service, profileName, databaseName string) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return InteractiveCommandFailedMsg{Kind: interactiveDatabaseShell, ProfileName: profileName, DatabaseName: databaseName, Err: errors.New("workspace service is unavailable")}
+		}
+		command, err := service.DatabaseShellCommand(ctx, profileName, databaseName)
+		if err != nil {
+			return InteractiveCommandFailedMsg{Kind: interactiveDatabaseShell, ProfileName: profileName, DatabaseName: databaseName, Err: err}
+		}
+		return InteractiveCommandReadyMsg{Kind: interactiveDatabaseShell, ProfileName: profileName, DatabaseName: databaseName, Command: command}
+	}
+}

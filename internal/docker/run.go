@@ -3,6 +3,7 @@ package docker
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,11 +33,21 @@ func buildImageArgs(dockerfile, image string, buildx bool) []string {
 }
 
 func buildImage(dockerfile, image string) error {
-	buildx := dockerCommandAvailable("buildx", "version")
-	return dockerQuiet(buildImageArgs(dockerfile, image, buildx)...)
+	return buildImageWithOptions(dockerfile, image, CommandOptions{})
+}
+
+func buildImageWithOptions(dockerfile, image string, options CommandOptions) error {
+	options = normalizeCommandOptions(options)
+	buildx := dockerCommandAvailableWithContext(options.Context, "buildx", "version")
+	return dockerQuietWithOptions(options, buildImageArgs(dockerfile, image, buildx)...)
 }
 
 func Run(name, version string, state files.State) error {
+	return RunWithOptions(name, version, state, CommandOptions{})
+}
+
+func RunWithOptions(name, version string, state files.State, options CommandOptions) error {
+	options = normalizeCommandOptions(options)
 	if name == "" {
 		return errors.New("run requires name")
 	}
@@ -52,7 +63,7 @@ func Run(name, version string, state files.State) error {
 	if storedVersion != nil {
 		selectedVersion = *storedVersion
 		if version != "" {
-			fmt.Fprintf(os.Stderr, "warning: container %q uses version %q; ignoring --version %q\n", name, selectedVersion, version)
+			fmt.Fprintf(options.Stderr, "warning: container %q uses version %q; ignoring --version %q\n", name, selectedVersion, version)
 		}
 	} else if version == "" {
 		return fmt.Errorf("run requires --version because container %q has no stored version", name)
@@ -75,41 +86,41 @@ func Run(name, version string, state files.State) error {
 	}
 
 	containerName := profile.ContainerName(name)
-	exists, err := findContainerByName(name)
+	exists, err := findContainerByNameWithOptions(name, options)
 	if err != nil {
 		return err
 	}
 	if exists {
 		previousState := files.CloneState(state)
-		running, err := containerIsRunning(name)
+		running, err := containerIsRunningWithOptions(name, options)
 		if err != nil {
 			return err
 		}
 		if running {
-			if err := ensureProfileState(state, name); err != nil {
+			if err := ensureProfileState(state, name, options.Stdout); err != nil {
 				files.RestoreState(state, previousState)
 				return fmt.Errorf("update state: %w", err)
 			}
-			if err := proxy.Sync(state); err != nil {
+			if err := proxy.SyncWithContext(options.Context, state); err != nil {
 				files.RestoreState(state, previousState)
 				return fmt.Errorf("synchronize Caddy routing: %w", err)
 			}
 			return fmt.Errorf("container %q already exists", containerName)
 		}
-		if err := dockerQuiet("start", containerName); err != nil {
+		if err := dockerQuietWithOptions(options, "start", containerName); err != nil {
 			return fmt.Errorf("start container %q: %w", containerName, err)
 		}
-		if err := ensureProfileState(state, name); err != nil {
-			_ = dockerQuiet("stop", containerName)
+		if err := ensureProfileState(state, name, options.Stdout); err != nil {
+			_ = dockerQuietWithOptions(options, "stop", containerName)
 			files.RestoreState(state, previousState)
 			return fmt.Errorf("update state: %w", err)
 		}
-		if err := proxy.Sync(state); err != nil {
-			_ = dockerQuiet("stop", containerName)
+		if err := proxy.SyncWithContext(options.Context, state); err != nil {
+			_ = dockerQuietWithOptions(options, "stop", containerName)
 			files.RestoreState(state, previousState)
 			return fmt.Errorf("synchronize Caddy routing: %w", err)
 		}
-		return reportContainerURL(name)
+		return reportContainerURL(name, options.Stdout)
 	}
 
 	dockerfile := filepath.Join("docker", "Dockerfile."+selectedVersion)
@@ -120,16 +131,16 @@ func Run(name, version string, state files.State) error {
 	if _, err := os.Stat(databaseEnvFile); err != nil {
 		return fmt.Errorf("%q not found: %w", databaseEnvFile, err)
 	}
-	if err := networkExists(); err != nil {
+	if err := networkExistsWithContext(options.Context); err != nil {
 		return err
 	}
-	if err := EnsureVolume(); err != nil {
+	if err := EnsureVolumeWithContext(options.Context); err != nil {
 		return fmt.Errorf("ensure filestore volume: %w", err)
 	}
 
 	image := "lidoo-odoo:" + selectedVersion
-	fmt.Printf("building Odoo %s image\n", selectedVersion)
-	if err := buildImage(dockerfile, image); err != nil {
+	fmt.Fprintf(options.Stdout, "building Odoo %s image\n", selectedVersion)
+	if err := buildImageWithOptions(dockerfile, image, options); err != nil {
 		return fmt.Errorf("build Odoo image: %w", err)
 	}
 
@@ -157,54 +168,54 @@ func Run(name, version string, state files.State) error {
 		containerArgs = append(containerArgs, "--addons-path="+strings.Join(addonPaths, ","))
 	}
 	containerArgs = append(containerArgs, databaseFilter(prefix))
-	fmt.Printf("starting profile %q\n", name)
-	if err := dockerQuiet(containerArgs...); err != nil {
+	fmt.Fprintf(options.Stdout, "starting profile %q\n", name)
+	if err := dockerQuietWithOptions(options, containerArgs...); err != nil {
 		return fmt.Errorf("create Odoo container: %w", err)
 	}
 
 	previousState := files.CloneState(state)
-	if err := ensureProfileState(state, name); err != nil {
-		cleanupErr := removeCreatedContainer(containerName)
+	if err := ensureProfileState(state, name, options.Stdout); err != nil {
+		cleanupErr := removeCreatedContainer(containerName, options)
 		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("update workspace: %w", err), cleanupErr)
 	}
 	if err := profile.SetVersion(state, name, selectedVersion); err != nil {
-		cleanupErr := removeCreatedContainer(containerName)
+		cleanupErr := removeCreatedContainer(containerName, options)
 		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("update workspace: %w", err), cleanupErr)
 	}
-	if err := proxy.Sync(state); err != nil {
-		cleanupErr := removeCreatedContainer(containerName)
+	if err := proxy.SyncWithContext(options.Context, state); err != nil {
+		cleanupErr := removeCreatedContainer(containerName, options)
 		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("synchronize Caddy routing: %w", err), cleanupErr)
 	}
-	return reportContainerURL(name)
+	return reportContainerURL(name, options.Stdout)
 }
 
 func databaseFilter(prefix string) string {
 	return "--db-filter=^" + regexp.QuoteMeta(prefix) + ".*$"
 }
 
-func reportContainerURL(name string) error {
+func reportContainerURL(name string, output io.Writer) error {
 	hostname := profileHostname(name)
-	fmt.Printf("profile running at http://%s\n", hostname)
+	fmt.Fprintf(output, "profile running at http://%s\n", hostname)
 	return nil
 }
 
-func removeCreatedContainer(name string) error {
-	if err := dockerQuiet("rm", "-f", name); err != nil {
+func removeCreatedContainer(name string, options CommandOptions) error {
+	if err := dockerQuietWithOptions(options, "rm", "-f", name); err != nil {
 		return fmt.Errorf("remove created container %q: %w", name, err)
 	}
 	return nil
 }
 
-func ensureProfileState(state files.State, name string) error {
+func ensureProfileState(state files.State, name string, output io.Writer) error {
 	created, err := profile.Ensure(state, name)
 	if err != nil {
 		return err
 	}
 	if created {
-		fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", name)
+		fmt.Fprintf(output, "\033[32mstate entry for container %q created\033[0m\n", name)
 	}
 	return nil
 }

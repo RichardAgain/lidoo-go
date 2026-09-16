@@ -11,18 +11,42 @@ import (
 	"lidoo/internal/proxy"
 )
 
+// RemoveOptions controls output and confirmation for profile removal. Confirm
+// is called only when a running container must be stopped. It belongs to the
+// presentation boundary; the Docker package only supplies the decision point.
+type RemoveOptions struct {
+	CommandOptions
+	Yes     bool
+	Confirm func() (bool, error)
+}
+
 // Remove keeps the original package API for callers that do not have loaded
-// workspace state. The CLI uses RemoveWithState so routing can be updated
-// before the container disappears.
+// workspace state. The CLI uses the application service for new operations.
 func Remove(name string, yes bool) error {
-	return remove(name, yes, nil)
+	return remove(name, nil, RemoveOptions{
+		CommandOptions: CommandOptions{},
+		Yes:            yes,
+		Confirm:        defaultRemovalConfirmation,
+	})
 }
 
+// RemoveWithState keeps the original package API for compatibility.
 func RemoveWithState(name string, yes bool, state files.State) error {
-	return remove(name, yes, state)
+	return remove(name, state, RemoveOptions{
+		CommandOptions: CommandOptions{},
+		Yes:            yes,
+		Confirm:        defaultRemovalConfirmation,
+	})
 }
 
-func remove(name string, yes bool, state files.State) error {
+// RemoveWithStateOptions removes a profile using caller-owned terminal
+// handling and process context.
+func RemoveWithStateOptions(name string, state files.State, options RemoveOptions) error {
+	return remove(name, state, options)
+}
+
+func remove(name string, state files.State, options RemoveOptions) error {
+	options.CommandOptions = normalizeCommandOptions(options.CommandOptions)
 	if name == "" {
 		return errors.New("remove requires name")
 	}
@@ -30,7 +54,7 @@ func remove(name string, yes bool, state files.State) error {
 		return err
 	}
 
-	containers, err := containerIDs("label="+containerNameLabel+"="+name, true)
+	containers, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, true, options.CommandOptions)
 	if err != nil {
 		return fmt.Errorf("find container with name %q: %w", name, err)
 	}
@@ -38,17 +62,19 @@ func remove(name string, yes bool, state files.State) error {
 		return fmt.Errorf("no container with name %q", name)
 	}
 
-	running, err := containerIDs("label="+containerNameLabel+"="+name, false)
+	running, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, false, options.CommandOptions)
 	if err != nil {
 		return fmt.Errorf("check container with name %q: %w", name, err)
 	}
-	if len(running) > 0 && !yes {
-		fmt.Fprint(os.Stderr, "container is running, stop it? [Y/N] ")
-		var answer string
-		if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
-			return fmt.Errorf("read confirmation: %w", err)
+	if len(running) > 0 && !options.Yes {
+		if options.Confirm == nil {
+			return errors.New("remove requires confirmation for a running container")
 		}
-		if !strings.EqualFold(answer, "y") {
+		confirmed, err := options.Confirm()
+		if err != nil {
+			return err
+		}
+		if !confirmed {
 			return nil
 		}
 	}
@@ -59,7 +85,7 @@ func remove(name string, yes bool, state files.State) error {
 		if err := profile.Remove(state, name); err != nil {
 			return fmt.Errorf("update workspace: %w", err)
 		}
-		if err := proxy.Sync(state); err != nil {
+		if err := proxy.SyncWithContext(options.Context, state); err != nil {
 			files.RestoreState(state, previousState)
 			return fmt.Errorf("synchronize Caddy routing: %w", err)
 		}
@@ -70,18 +96,27 @@ func remove(name string, yes bool, state files.State) error {
 			return primary
 		}
 		files.RestoreState(state, previousState)
-		return combineErrors(primary, proxy.Sync(state))
+		return combineErrors(primary, proxy.SyncWithContext(options.Context, state))
 	}
 
 	for _, container := range running {
-		if err := dockerQuiet("stop", container); err != nil {
+		if err := dockerQuietWithOptions(options.CommandOptions, "stop", container); err != nil {
 			return rollback(fmt.Errorf("stop container %s: %w", container, err))
 		}
 	}
 	for _, container := range containers {
-		if err := dockerQuiet("rm", container); err != nil {
+		if err := dockerQuietWithOptions(options.CommandOptions, "rm", container); err != nil {
 			return rollback(fmt.Errorf("remove container %s: %w", container, err))
 		}
 	}
 	return nil
+}
+
+func defaultRemovalConfirmation() (bool, error) {
+	fmt.Fprint(os.Stderr, "container is running, stop it? [Y/N] ")
+	var answer string
+	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	return strings.EqualFold(answer, "y"), nil
 }

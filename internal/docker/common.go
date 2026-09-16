@@ -2,6 +2,7 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -17,14 +18,41 @@ const (
 	containerNameLabel = "io.lidoo.name"
 )
 
+// CommandOptions carries the process context and terminal streams for a
+// Docker operation. Application callers can provide buffers instead of
+// writing into Bubble Tea's terminal.
+type CommandOptions struct {
+	Context context.Context
+	Stdout  io.Writer
+	Stderr  io.Writer
+}
+
+func normalizeCommandOptions(options CommandOptions) CommandOptions {
+	if options.Context == nil {
+		options.Context = context.Background()
+	}
+	if options.Stdout == nil {
+		options.Stdout = os.Stdout
+	}
+	if options.Stderr == nil {
+		options.Stderr = os.Stderr
+	}
+	return options
+}
+
 func containerIDs(filter string, all bool) ([]string, error) {
+	return containerIDsWithOptions(filter, all, CommandOptions{})
+}
+
+func containerIDsWithOptions(filter string, all bool, options CommandOptions) ([]string, error) {
+	options = normalizeCommandOptions(options)
 	args := []string{"ps"}
 	if all {
 		args = append(args, "--all")
 	}
 	args = append(args, "--quiet", "--filter", filter)
 
-	output, err := dockerOutput(args...)
+	output, err := dockerOutputWithOptions(options, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +60,11 @@ func containerIDs(filter string, all bool) ([]string, error) {
 }
 
 func findContainerByName(name string) (bool, error) {
-	containers, err := containerIDs("label="+containerNameLabel+"="+name, true)
+	return findContainerByNameWithOptions(name, CommandOptions{})
+}
+
+func findContainerByNameWithOptions(name string, options CommandOptions) (bool, error) {
+	containers, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, true, options)
 	if err != nil {
 		return false, fmt.Errorf("find container with label %q: %w", name, err)
 	}
@@ -40,17 +72,25 @@ func findContainerByName(name string) (bool, error) {
 }
 
 func ProfileExists(name string) (bool, error) {
+	return ProfileExistsWithOptions(name, CommandOptions{})
+}
+
+func ProfileExistsWithOptions(name string, options CommandOptions) (bool, error) {
 	if name == "" {
 		return false, fmt.Errorf("profile name cannot be empty")
 	}
 	if err := profile.ValidateName(name); err != nil {
 		return false, err
 	}
-	return findContainerByName(name)
+	return findContainerByNameWithOptions(name, options)
 }
 
 func containerIsRunning(name string) (bool, error) {
-	containers, err := containerIDs("label="+containerNameLabel+"="+name, false)
+	return containerIsRunningWithOptions(name, CommandOptions{})
+}
+
+func containerIsRunningWithOptions(name string, options CommandOptions) (bool, error) {
+	containers, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, false, options)
 	if err != nil {
 		return false, fmt.Errorf("check container with label %q: %w", name, err)
 	}
@@ -94,10 +134,20 @@ func RequireRunningProfile(name string) (string, error) {
 }
 
 func networkExists() error {
-	cmd := exec.Command("docker", "network", "inspect", networkName)
+	return networkExistsWithContext(context.Background())
+}
+
+func networkExistsWithContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "docker", "network", "inspect", networkName)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
 		return fmt.Errorf("Docker network %q does not exist", networkName)
 	}
 	return nil
@@ -111,13 +161,21 @@ func docker(args ...string) error {
 }
 
 func dockerQuiet(args ...string) error {
-	cmd := exec.Command("docker", args...)
+	return dockerQuietWithOptions(CommandOptions{}, args...)
+}
+
+func dockerQuietWithOptions(options CommandOptions, args ...string) error {
+	options = normalizeCommandOptions(options)
+	cmd := exec.CommandContext(options.Context, "docker", args...)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	if err := cmd.Run(); err != nil {
 		if output.Len() > 0 {
-			fmt.Fprint(os.Stderr, output.String())
+			fmt.Fprint(options.Stderr, output.String())
+		}
+		if contextErr := options.Context.Err(); contextErr != nil {
+			return contextErr
 		}
 		return err
 	}
@@ -125,14 +183,33 @@ func dockerQuiet(args ...string) error {
 }
 
 func dockerCommandAvailable(args ...string) bool {
-	cmd := exec.Command("docker", args...)
+	return dockerCommandAvailableWithContext(context.Background(), args...)
+}
+
+func dockerCommandAvailableWithContext(ctx context.Context, args ...string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
 }
 
 func dockerOutput(args ...string) ([]byte, error) {
-	cmd := exec.Command("docker", args...)
-	cmd.Stderr = os.Stderr
-	return cmd.Output()
+	return dockerOutputWithOptions(CommandOptions{}, args...)
+}
+
+func dockerOutputWithOptions(options CommandOptions, args ...string) ([]byte, error) {
+	options = normalizeCommandOptions(options)
+	cmd := exec.CommandContext(options.Context, "docker", args...)
+	cmd.Stderr = options.Stderr
+	output, err := cmd.Output()
+	if err != nil {
+		if contextErr := options.Context.Err(); contextErr != nil {
+			return nil, contextErr
+		}
+		return nil, err
+	}
+	return output, nil
 }

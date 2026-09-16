@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"lidoo/internal/addons"
+	"lidoo/internal/app"
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 	"lidoo/internal/odoo"
@@ -66,24 +67,45 @@ func main() {
 		os.Exit(2)
 	}
 
+	profileLifecycle := isProfileLifecycleCommand(command)
 	mutatesState := commandMutatesState(command, positional)
+	if profileLifecycle {
+		mutatesState = false
+	}
 	var err error
+	var state files.State
 	var stateLock *files.StateLock
-	if mutatesState {
-		stateLock, err = files.AcquireStateLock()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+	var service *app.Service
+	var readStateErr bool
+	if profileLifecycle {
+		service, err = app.Open()
+	} else if command != "tui" {
+		if mutatesState {
+			stateLock, err = files.AcquireStateLock()
+		}
+		if err == nil {
+			state, err = files.ReadState()
+			readStateErr = err != nil
 		}
 	}
-
-	state, err := files.ReadState()
 	if err != nil {
 		if stateLock != nil {
 			_ = stateLock.Close()
 		}
-		fmt.Fprintln(os.Stderr, "read state:", err)
+		if readStateErr {
+			fmt.Fprintln(os.Stderr, "read state:", err)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
+	}
+
+	profileOptions := app.ProfileOperationOptions{
+		Output:      os.Stdout,
+		ErrorOutput: os.Stderr,
+	}
+	if profileLifecycle {
+		profileOptions.Confirm = confirmProfileRemoval
 	}
 
 	exitCode := 0
@@ -120,20 +142,23 @@ func main() {
 	case "restore":
 		err = odoo.Restore(name, database, positional[0], copyDatabase && !move, force, neutralize, jobs, state)
 	case "run":
-		err = docker.Run(name, version, state)
+		err = service.RunProfile(context.Background(), app.RunProfileInput{Name: name, Version: version}, profileOptions)
 		if err == nil && waitForReady {
-			err = odoo.Wait(name, waitTimeout, state)
+			state, err = files.ReadState()
+			if err == nil {
+				err = odoo.Wait(name, waitTimeout, state)
+			}
 		}
 	case "wait":
 		err = odoo.Wait(name, waitTimeout, state)
 	case "recreate":
-		err = docker.Recreate(name, state)
+		err = service.RecreateProfile(context.Background(), name, profileOptions)
 	case "stop":
-		err = docker.Stop(name)
+		err = service.StopProfile(context.Background(), name, profileOptions)
 	case "restart":
-		err = docker.Restart(name)
+		err = service.RestartProfile(context.Background(), name, profileOptions)
 	case "remove":
-		err = docker.RemoveWithState(name, yes, state)
+		err = service.RemoveProfile(context.Background(), app.RemoveProfileInput{Name: name, Yes: yes}, profileOptions)
 	case "profile":
 		if len(positional) == 0 {
 			err = errors.New("usage: lidoo profile export|import ...")
@@ -558,9 +583,28 @@ func parseDBValues(args []string, profileName, databaseName, action string, requ
 	return profileName, databaseName, nil
 }
 
+func isProfileLifecycleCommand(command string) bool {
+	switch command {
+	case "run", "stop", "restart", "recreate", "remove":
+		return true
+	default:
+		return false
+	}
+}
+
+func confirmProfileRemoval(confirmation app.ProfileConfirmation) (bool, error) {
+	_ = confirmation
+	fmt.Fprint(os.Stderr, "container is running, stop it? [Y/N] ")
+	var answer string
+	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	return strings.EqualFold(answer, "y"), nil
+}
+
 func commandMutatesState(command string, positional []string) bool {
 	switch command {
-	case "run", "recreate", "remove":
+	case "run", "stop", "restart", "recreate", "remove":
 		return true
 	case "addons":
 		if len(positional) == 0 {

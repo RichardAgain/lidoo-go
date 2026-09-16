@@ -11,8 +11,9 @@ import (
 	"lidoo/internal/profile"
 )
 
-// Service coordinates read-only workspace queries for presentation layers.
-// Workspace state is intentionally not retained between calls.
+// Service coordinates workspace queries and operation-scoped mutations for
+// presentation layers. Workspace state is intentionally not retained between
+// calls.
 type Service struct{}
 
 // Open validates that the current workspace state can be read and returns a

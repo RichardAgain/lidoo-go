@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,6 +91,13 @@ func WriteConfig(routes []Route) error {
 }
 
 func Sync(state files.State) error {
+	return SyncWithContext(context.Background(), state)
+}
+
+func SyncWithContext(ctx context.Context, state files.State) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	routes, err := Routes(state)
 	if err != nil {
 		return fmt.Errorf("build Caddy routes: %w", err)
@@ -107,14 +115,14 @@ func Sync(state files.State) error {
 		return fmt.Errorf("write Caddy configuration: %w", err)
 	}
 
-	if err := caddyCommand("validate"); err != nil {
+	if err := caddyCommandContext(ctx, "validate"); err != nil {
 		restoreErr := restoreConfig(oldConfig, hadOldConfig)
 		return fmt.Errorf("failed to validate generated Caddy configuration: %w%s", err, restoreSuffix(restoreErr))
 	}
-	if err := caddyCommand("reload"); err != nil {
+	if err := caddyCommandContext(ctx, "reload"); err != nil {
 		restoreErr := restoreConfig(oldConfig, hadOldConfig)
 		if restoreErr == nil {
-			restoreErr = caddyCommand("reload")
+			restoreErr = caddyCommandContext(ctx, "reload")
 		}
 		return fmt.Errorf("failed to reload Caddy: %w%s", err, restoreSuffix(restoreErr))
 	}
@@ -197,17 +205,27 @@ func restoreSuffix(err error) string {
 }
 
 func caddyCommand(action string) error {
+	return caddyCommandContext(context.Background(), action)
+}
+
+func caddyCommandContext(ctx context.Context, action string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	args := []string{
 		"exec", caddyContainer,
 		"caddy", action,
 		"--config", caddyConfigPath,
 		"--adapter", "caddyfile",
 	}
-	command := exec.Command("docker", args...)
+	command := exec.CommandContext(ctx, "docker", args...)
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
 		detail := strings.TrimSpace(output.String())
 		if detail != "" {
 			return fmt.Errorf("docker exec %s: %w: %s", action, err, detail)

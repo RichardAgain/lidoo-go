@@ -1,16 +1,18 @@
 package docker
 
-import (
-	"errors"
-	"fmt"
-)
+import "fmt"
 
 func Restart(name string) error {
+	return RestartWithOptions(name, CommandOptions{})
+}
+
+func RestartWithOptions(name string, options CommandOptions) error {
+	options = normalizeCommandOptions(options)
 	if name == "" {
-		return errors.New("restart requires name")
+		return fmt.Errorf("restart requires name")
 	}
 
-	containers, err := containerIDs("label="+containerNameLabel+"="+name, false)
+	containers, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, false, options)
 	if err != nil {
 		return fmt.Errorf("find container with name %q: %w", name, err)
 	}
@@ -18,7 +20,7 @@ func Restart(name string) error {
 		return fmt.Errorf("no running container with name %q", name)
 	}
 	for _, container := range containers {
-		if err := dockerQuiet("restart", container); err != nil {
+		if err := dockerQuietWithOptions(options, "restart", container); err != nil {
 			return fmt.Errorf("restart container %s: %w", container, err)
 		}
 	}

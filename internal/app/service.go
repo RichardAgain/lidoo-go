@@ -75,6 +75,21 @@ func (s *Service) Databases(ctx context.Context, profileName string) ([]odoo.Dat
 	return databases, nil
 }
 
+func (s *Service) Database(ctx context.Context, profileName, databaseName string) (odoo.DatabaseInfo, error) {
+	state, err := s.readState(ctx)
+	if err != nil {
+		return odoo.DatabaseInfo{}, err
+	}
+	info, err := odoo.InfoDatabase(profileName, databaseName, state)
+	if err != nil {
+		return odoo.DatabaseInfo{}, err
+	}
+	if err := contextError(ctx); err != nil {
+		return odoo.DatabaseInfo{}, err
+	}
+	return info, nil
+}
+
 // Addons returns fresh status data for add-ons attached to one selected
 // profile. Results retain the sorted order of addons.List.
 func (s *Service) Addons(ctx context.Context, profileName string) ([]addons.AddonStatus, error) {

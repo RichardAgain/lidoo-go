@@ -143,9 +143,9 @@ func main() {
 		if len(positional) == 1 {
 			backupPath = positional[0]
 		}
-		err = odoo.Backup(name, database, backupPath, format, force, ifExists, filestore && !noFilestore, state)
+		_, err = service.BackupDatabase(context.Background(), name, database, backupPath, format, force, ifExists, filestore && !noFilestore, databaseOptions)
 	case "restore":
-		err = odoo.Restore(name, database, positional[0], copyDatabase && !move, force, neutralize, jobs, state)
+		_, err = service.RestoreDatabase(context.Background(), name, database, positional[0], copyDatabase && !move, force, neutralize, jobs, databaseOptions)
 	case "run":
 		err = service.RunProfile(context.Background(), app.RunProfileInput{Name: name, Version: version}, profileOptions)
 		if err == nil && waitForReady {
@@ -609,7 +609,7 @@ func confirmProfileRemoval(confirmation app.ProfileConfirmation) (bool, error) {
 
 func isDatabaseMutationCommand(command string) bool {
 	switch command {
-	case "init", "update", "drop":
+	case "init", "update", "drop", "backup", "restore":
 		return true
 	default:
 		return false

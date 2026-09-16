@@ -17,45 +17,56 @@ var backupFormats = map[string]bool{
 	"folder": true,
 }
 
-func Backup(name, database, destination, format string, force, ifExists, filestore bool, state files.State) error {
-	databaseName := database
-	database, err := resolveDatabaseName(state, name, database)
+func Backup(name, database, destination, format string, force, ifExists, filestore bool, state files.State, options ...OperationOptions) (result OperationResult, err error) {
+	stdout, stderr, operationOptions := newOperationStreams(options)
+	result.ProfileName = name
+	defer func() {
+		result.Output = stdout.String()
+		result.ErrorOutput = stderr.String()
+	}()
+
+	logicalDatabase := database
+	database, err = resolveDatabaseName(state, name, database)
 	if err != nil {
-		return err
+		return result, err
 	}
+	result.LogicalDatabase = logicalDatabase
+	result.PhysicalDatabase = database
 	if err := validateBackupFormat(format); err != nil {
-		return err
+		return result, err
 	}
 	if destination == "" {
 		if format != "zip" {
-			return fmt.Errorf("a backup destination is required when using format %q", format)
+			return result, fmt.Errorf("a backup destination is required when using format %q", format)
 		}
-		destination = defaultBackupDestination(databaseName)
+		destination = defaultBackupDestination(logicalDatabase)
 	}
 	destination, err = absolutePath(destination, "backup destination")
 	if err != nil {
-		return err
+		return result, err
 	}
+	result.Destination = destination
 	if err := validateBackupDestination(destination); err != nil {
-		return err
+		return result, err
 	}
 	if !force && !ifExists {
 		if _, err := os.Lstat(destination); err == nil {
-			return fmt.Errorf("destination already exists: %s", destination)
+			return result, fmt.Errorf("destination already exists: %s", destination)
 		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect destination: %w", err)
+			return result, fmt.Errorf("inspect destination: %w", err)
 		}
 	}
 
-	container, err := docker.RequireRunningProfile(name)
+	commandOptions := stdout.commandOptions(stderr, operationOptions.Context)
+	container, err := docker.RequireRunningProfileWithOptions(name, commandOptions)
 	if err != nil {
-		return err
+		return result, err
 	}
 
 	containerDestination := temporaryContainerPath("backup")
-	defer removeContainerPath(container, containerDestination)
+	defer removeContainerPathWithOptions(container, containerDestination, commandOptions)
 
-	fmt.Printf("backing up database %q from profile %q to %q\n", database, name, destination)
+	fmt.Fprintf(stdout, "backing up database %q from profile %q to %q\n", database, name, destination)
 	args := []string{
 		"click-odoo-backupdb",
 		"--log-level=error",
@@ -74,18 +85,19 @@ func Backup(name, database, destination, format string, force, ifExists, filesto
 	}
 	args = append(args, database, containerDestination)
 
-	if err := run(container, args...); err != nil {
-		return fmt.Errorf("backup database %q: %w", database, err)
+	if err := runWithCommandOptions(container, commandOptions, args...); err != nil {
+		return result, fmt.Errorf("backup database %q: %w", database, err)
 	}
-	if ifExists && !containerPathExists(container, containerDestination) {
-		fmt.Printf("database %q does not exist; backup skipped\n", database)
-		return nil
+	if ifExists && !containerPathExistsWithOptions(container, containerDestination, commandOptions) {
+		fmt.Fprintf(stdout, "database %q does not exist; backup skipped\n", database)
+		result.Skipped = true
+		return result, nil
 	}
-	if err := copyBackupToHost(container, containerDestination, destination, force); err != nil {
-		return fmt.Errorf("write backup %q: %w", destination, err)
+	if err := copyBackupToHost(container, containerDestination, destination, force, commandOptions); err != nil {
+		return result, fmt.Errorf("write backup %q: %w", destination, err)
 	}
-	fmt.Printf("database %q backed up to %q\n", database, destination)
-	return nil
+	fmt.Fprintf(stdout, "database %q backed up to %q\n", database, destination)
+	return result, nil
 }
 
 func validateBackupFormat(format string) error {
@@ -115,7 +127,7 @@ func validateBackupDestination(destination string) error {
 	return nil
 }
 
-func copyBackupToHost(container, source, destination string, force bool) error {
+func copyBackupToHost(container, source, destination string, force bool, options docker.CommandOptions) error {
 	parent := filepath.Dir(destination)
 	info, err := os.Stat(parent)
 	if err != nil {
@@ -126,7 +138,7 @@ func copyBackupToHost(container, source, destination string, force bool) error {
 	}
 
 	staging := temporaryLocalPath(destination)
-	if err := docker.CopyFrom(container, source, staging); err != nil {
+	if err := docker.CopyFromWithOptions(container, source, staging, options); err != nil {
 		return fmt.Errorf("copy from profile: %w", err)
 	}
 	defer os.RemoveAll(staging)
@@ -168,9 +180,17 @@ func temporaryLocalPath(destination string) string {
 }
 
 func containerPathExists(container, path string) bool {
-	return docker.Exec(container, "test", "-e", path) == nil
+	return containerPathExistsWithOptions(container, path, docker.CommandOptions{})
+}
+
+func containerPathExistsWithOptions(container, path string, options docker.CommandOptions) bool {
+	return docker.ExecWithOptions(container, options, "test", "-e", path) == nil
 }
 
 func removeContainerPath(container, path string) {
-	_ = docker.ExecAsUser(container, "root", "rm", "-rf", "--", path)
+	removeContainerPathWithOptions(container, path, docker.CommandOptions{})
+}
+
+func removeContainerPathWithOptions(container, path string, options docker.CommandOptions) {
+	_ = docker.ExecAsUserWithOptions(container, "root", options, "rm", "-rf", "--", path)
 }

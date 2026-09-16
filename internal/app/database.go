@@ -59,6 +59,28 @@ func (s *Service) DropDatabase(ctx context.Context, name, database string, yes b
 	})
 }
 
+func (s *Service) BackupDatabase(ctx context.Context, name, database, destination, format string, force, ifExists, filestore bool, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
+	operationOptions := normalizeDatabaseOperationOptions(options)
+	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {
+		return odoo.Backup(name, database, destination, format, force, ifExists, filestore, state, odoo.OperationOptions{
+			Context:     ctx,
+			Output:      operationOptions.Output,
+			ErrorOutput: operationOptions.ErrorOutput,
+		})
+	})
+}
+
+func (s *Service) RestoreDatabase(ctx context.Context, name, database, source string, copyDatabase, force, neutralize bool, jobs int, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
+	operationOptions := normalizeDatabaseOperationOptions(options)
+	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {
+		return odoo.Restore(name, database, source, copyDatabase, force, neutralize, jobs, state, odoo.OperationOptions{
+			Context:     ctx,
+			Output:      operationOptions.Output,
+			ErrorOutput: operationOptions.ErrorOutput,
+		})
+	})
+}
+
 func (s *Service) withDatabaseOperation(ctx context.Context, operation func(files.State) (DatabaseOperationResult, error)) (result DatabaseOperationResult, err error) {
 	if err := contextError(ctx); err != nil {
 		return result, err

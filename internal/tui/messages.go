@@ -77,3 +77,35 @@ type AddonsFailedMsg struct {
 	ProfileName string
 	Err         error
 }
+
+type TaskStartedMsg struct {
+	ID uint64
+}
+
+type TaskProgressMsg struct {
+	ID   uint64
+	Text string
+}
+
+type TaskProgressDoneMsg struct {
+	ID uint64
+}
+
+type TaskCompletedMsg struct {
+	ID          uint64
+	ProfileName string
+	Output      string
+}
+
+type TaskFailedMsg struct {
+	ID          uint64
+	ProfileName string
+	Err         error
+	Output      string
+}
+
+type TaskCancelledMsg struct {
+	ID          uint64
+	ProfileName string
+	Output      string
+}

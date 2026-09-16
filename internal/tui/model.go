@@ -65,6 +65,19 @@ type Model struct {
 	watcherDisconnected    bool
 	profileListOnlyRefresh bool
 	pendingDatabaseRefresh bool
+	taskID                 uint64
+	pendingTask            *taskRequest
+	taskContext            context.Context
+	taskCancel             context.CancelFunc
+	taskProgress           <-chan string
+	taskProfileName        string
+	taskName               string
+	taskStatus             string
+	taskOutput             string
+	taskErr                error
+	taskStarting           bool
+	taskRunning            bool
+	taskCancelRequested    bool
 }
 
 var (
@@ -218,12 +231,70 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addonPhase = phaseError
 		m.addonErr = msg.Err
 		return m, nil
+	case TaskStartedMsg:
+		if !m.currentTask(msg.ID) || m.pendingTask == nil {
+			return m, nil
+		}
+		request := *m.pendingTask
+		m.pendingTask = nil
+		m.taskStarting = false
+		m.taskRunning = true
+		m.taskStatus = "running"
+		progress := make(chan string, 32)
+		m.taskProgress = progress
+		return m, tea.Batch(
+			ExecuteProfileTaskCmd(m.taskContext, m.service, request, msg.ID, progress),
+			WaitTaskProgressCmd(msg.ID, progress),
+		)
+	case TaskProgressMsg:
+		if !m.currentTask(msg.ID) || !m.taskRunning {
+			return m, nil
+		}
+		if msg.Text != "" {
+			m.taskOutput = appendTaskOutput(m.taskOutput, msg.Text)
+		}
+		if m.taskProgress == nil {
+			return m, nil
+		}
+		return m, WaitTaskProgressCmd(msg.ID, m.taskProgress)
+	case TaskProgressDoneMsg:
+		if !m.currentTask(msg.ID) {
+			return m, nil
+		}
+		m.taskProgress = nil
+		return m, nil
+	case TaskCompletedMsg:
+		if !m.currentTask(msg.ID) {
+			return m, nil
+		}
+		m.finishTask("completed", msg.Output, nil)
+		return m, m.refreshAfterTask(msg.ProfileName)
+	case TaskFailedMsg:
+		if !m.currentTask(msg.ID) {
+			return m, nil
+		}
+		m.finishTask("failed", msg.Output, msg.Err)
+		return m, m.refreshAfterTask(msg.ProfileName)
+	case TaskCancelledMsg:
+		if !m.currentTask(msg.ID) {
+			return m, nil
+		}
+		m.finishTask("cancelled", msg.Output, nil)
+		return m, m.refreshAfterTask(msg.ProfileName)
 	default:
 		return m, nil
 	}
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.taskStarting || m.taskRunning {
+		switch msg.String() {
+		case "c", "x", "ctrl+c":
+			m.cancelTask()
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -248,6 +319,77 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
+}
+
+func (m *Model) queueTask(request taskRequest) tea.Cmd {
+	m.taskID++
+	m.pendingTask = &request
+	m.taskProfileName = request.ProfileName
+	m.taskName = taskLabel(request.Kind) + " " + request.ProfileName
+	m.taskStatus = "starting"
+	m.taskOutput = ""
+	m.taskErr = nil
+	m.taskStarting = true
+	m.taskRunning = false
+	m.taskCancelRequested = false
+	taskBaseContext := m.ctx
+	if taskBaseContext == nil {
+		taskBaseContext = context.Background()
+	}
+	m.taskContext, m.taskCancel = context.WithCancel(taskBaseContext)
+	return StartTaskCmd(m.taskID)
+}
+
+func (m *Model) cancelTask() {
+	if m.taskCancelRequested {
+		return
+	}
+	m.taskCancelRequested = true
+	m.taskStatus = "cancelling"
+	if m.taskCancel != nil {
+		m.taskCancel()
+	}
+}
+
+func (m *Model) currentTask(id uint64) bool {
+	return id == m.taskID && (m.taskStarting || m.taskRunning)
+}
+
+func (m *Model) finishTask(status, output string, taskErr error) {
+	if m.taskCancel != nil {
+		m.taskCancel()
+	}
+	m.taskCancel = nil
+	m.taskContext = nil
+	m.taskProgress = nil
+	m.pendingTask = nil
+	m.taskStarting = false
+	m.taskRunning = false
+	m.taskStatus = status
+	m.taskCancelRequested = false
+	m.taskOutput = strings.TrimSpace(output)
+	m.taskErr = taskErr
+}
+
+func (m *Model) refreshAfterTask(profileName string) tea.Cmd {
+	if profileName != "" {
+		m.taskProfileName = profileName
+	}
+	m.profileListOnlyRefresh = false
+	m.loading = true
+	m.err = nil
+	return LoadProfilesCmd(m.ctx, m.service)
+}
+
+func appendTaskOutput(existing, next string) string {
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return existing
+	}
+	if existing == "" {
+		return next
+	}
+	return existing + "\n" + next
 }
 
 func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
@@ -588,10 +730,40 @@ func (m *Model) rightView() string {
 	if m.watcherDisconnected {
 		warnings = append(warnings, warningStyle.Render("Docker event watcher disconnected"))
 	}
+	if task := m.taskView(); task != "" {
+		content += "\n\n" + task
+	}
 	if len(warnings) == 0 {
 		return content
 	}
 	return strings.Join(append(warnings, "", content), "\n")
+}
+
+func (m *Model) taskView() string {
+	if m.taskStatus == "" || m.taskName == "" {
+		return ""
+	}
+	lines := []string{titleStyle.Render("Latest task"), m.taskName + "  " + taskStatus(m.taskStatus)}
+	if m.taskErr != nil {
+		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
+	}
+	if m.taskOutput != "" {
+		lines = append(lines, mutedStyle.Render("output:"), m.taskOutput)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func taskStatus(status string) string {
+	switch status {
+	case "completed":
+		return runningStyle.Render(status)
+	case "failed":
+		return errorStyle.Render(status)
+	case "cancelled", "cancelling", "version required":
+		return warningStyle.Render(status)
+	default:
+		return mutedStyle.Render(status)
+	}
 }
 
 func (m *Model) profileDetailView() string {
@@ -713,6 +885,12 @@ func (m *Model) footerView() string {
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  r refresh  q quit  ? hide help"
 	}
+	if m.taskStarting || m.taskRunning {
+		keys += "  c cancel"
+	}
+	if m.taskStatus != "" {
+		keys += "  · " + m.taskName + ": " + m.taskStatus
+	}
 	return mutedStyle.Render(keys)
 }
 
@@ -731,6 +909,9 @@ func (m *Model) smallView() string {
 		}
 	}
 	lines = append(lines, "", mutedStyle.Render("r refresh  ? help  q quit"))
+	if task := m.taskView(); task != "" {
+		lines = append(lines, "", task)
+	}
 	if m.showHelp {
 		lines = append(lines, mutedStyle.Render("tab focus  arrows or j/k move"))
 	}

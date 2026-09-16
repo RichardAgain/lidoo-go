@@ -27,7 +27,6 @@ type modalMode uint8
 
 const (
 	modalNone modalMode = iota
-	modalActions
 	modalConfirmRemove
 	modalRunVersion
 )
@@ -77,7 +76,6 @@ type Model struct {
 	profileListOnlyRefresh bool
 	pendingDatabaseRefresh bool
 	modal                  modalMode
-	actionIndex            int
 	versionInput           string
 	taskID                 uint64
 	pendingTask            *taskRequest
@@ -313,7 +311,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.taskStarting || m.taskRunning {
 		switch msg.String() {
-		case "c", "x", "ctrl+c":
+		case "c", "ctrl+c":
 			m.cancelTask()
 		}
 		return m, nil
@@ -332,54 +330,45 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.moveFocusedSelection(-1)
 	case "down", "j":
 		return m, m.moveFocusedSelection(1)
-	case "a":
+	case "x":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			m.modal = modalActions
-			m.actionIndex = 0
+			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName()})
 		}
-		return m, nil
-	case "r", "ctrl+r":
-		m.profileListOnlyRefresh = false
-		m.loading = true
-		m.err = nil
-		return m, LoadProfilesCmd(m.ctx, m.service)
+	case "r":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			return m, m.queueTask(taskRequest{Kind: taskRestart, ProfileName: m.selectedProfileName()})
+		}
+		return m, m.refreshProfiles()
+	case "R":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			return m, m.queueTask(taskRequest{Kind: taskRecreate, ProfileName: m.selectedProfileName()})
+		}
+	case "s":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			return m, m.queueTask(taskRequest{Kind: taskStop, ProfileName: m.selectedProfileName()})
+		}
+	case "d":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			m.taskProfileName = m.selectedProfileName()
+			m.modal = modalConfirmRemove
+		}
+	case "ctrl+r":
+		return m, m.refreshProfiles()
 	case "?":
 		m.showHelp = !m.showHelp
-		return m, nil
-	default:
-		return m, nil
 	}
+	return m, nil
 }
 
-type profileAction struct {
-	Label string
-	Kind  taskKind
-}
-
-func (m *Model) profileActions() []profileAction {
-	return []profileAction{
-		{Label: "Run", Kind: taskRun},
-		{Label: "Stop", Kind: taskStop},
-		{Label: "Restart", Kind: taskRestart},
-		{Label: "Recreate", Kind: taskRecreate},
-		{Label: "Remove", Kind: taskRemove},
-	}
+func (m *Model) refreshProfiles() tea.Cmd {
+	m.profileListOnlyRefresh = false
+	m.loading = true
+	m.err = nil
+	return LoadProfilesCmd(m.ctx, m.service)
 }
 
 func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
-	case modalActions:
-		actions := m.profileActions()
-		switch msg.String() {
-		case "esc", "q", "a":
-			m.modal = modalNone
-		case "up", "k":
-			m.moveIndex(&m.actionIndex, len(actions), -1)
-		case "down", "j":
-			m.moveIndex(&m.actionIndex, len(actions), 1)
-		case "enter", "space":
-			return m, m.selectProfileAction()
-		}
 	case modalConfirmRemove:
 		switch msg.String() {
 		case "esc", "n", "N":
@@ -415,23 +404,6 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
-}
-
-func (m *Model) selectProfileAction() tea.Cmd {
-	actions := m.profileActions()
-	if m.actionIndex < 0 || m.actionIndex >= len(actions) || m.selectedProfileName() == "" {
-		m.modal = modalNone
-		return nil
-	}
-	name := m.selectedProfileName()
-	action := actions[m.actionIndex]
-	m.taskProfileName = name
-	if action.Kind == taskRemove {
-		m.modal = modalConfirmRemove
-		return nil
-	}
-	m.modal = modalNone
-	return m.queueTask(taskRequest{Kind: action.Kind, ProfileName: name})
 }
 
 func (m *Model) queueTask(request taskRequest) tea.Cmd {
@@ -1000,12 +972,12 @@ func (m *Model) row(value string, selected bool) string {
 func (m *Model) footerView() string {
 	keys := "tab focus  ↑/↓ move  r refresh  ? help  q quit"
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab focus  ↑/↓ move  a actions  r refresh  ? help  q quit"
+		keys = "tab focus  ↑/↓ move  " + profileActionHints() + "  ctrl+r refresh  ? help  q quit"
 	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  r refresh  q quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k move  a actions  r refresh  q quit  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k move  " + profileActionHints() + "  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -1017,15 +989,13 @@ func (m *Model) footerView() string {
 	return mutedStyle.Render(keys)
 }
 
+func profileActionHints() string {
+	return "x start  r restart  R recreate  s stop  d remove"
+}
+
 func (m *Model) modalView() string {
 	var lines []string
 	switch m.modal {
-	case modalActions:
-		lines = append(lines, titleStyle.Render("Profile actions"), activeStyle.Render(m.selectedProfileName()))
-		for index, action := range m.profileActions() {
-			lines = append(lines, m.row(action.Label, index == m.actionIndex))
-		}
-		lines = append(lines, "", mutedStyle.Render("↑/↓ choose  enter select  esc close"))
 	case modalConfirmRemove:
 		lines = []string{
 			titleStyle.Render("Remove profile " + m.taskProfileName + "?"),
@@ -1071,7 +1041,7 @@ func (m *Model) smallView() string {
 			lines = append(lines, m.row(profile.Name+"  "+profileState(profile.State), index == m.profileIndex && m.focus == focusProfiles))
 		}
 	}
-	lines = append(lines, "", mutedStyle.Render("a actions  r refresh  ? help  q quit"))
+	lines = append(lines, "", mutedStyle.Render(profileActionHints()+"  ctrl+r refresh  ? help  q quit"))
 	if task := m.taskView(); task != "" {
 		lines = append(lines, "", task)
 	}

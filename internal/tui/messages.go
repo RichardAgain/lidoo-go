@@ -2,6 +2,7 @@ package tui
 
 import (
 	"lidoo/internal/addons"
+	"lidoo/internal/app"
 	"lidoo/internal/docker"
 	"lidoo/internal/odoo"
 )
@@ -11,6 +12,19 @@ type ProfilesLoadedMsg struct {
 }
 
 type ProfilesFailedMsg struct {
+	Err error
+}
+
+type ProfileWatcherStartedMsg struct {
+	Events <-chan app.ProfileInvalidation
+	Errors <-chan error
+}
+
+type ProfileInvalidationMsg struct {
+	Invalidation app.ProfileInvalidation
+}
+
+type ProfileWatcherDisconnectedMsg struct {
 	Err error
 }
 

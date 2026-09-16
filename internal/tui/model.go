@@ -33,33 +33,40 @@ const (
 )
 
 type Model struct {
-	ctx               context.Context
-	service           *app.Service
-	profiles          []docker.ProfileSummary
-	profileIndex      int
-	databases         []odoo.Database
-	databaseIndex     int
-	addons            []addons.AddonStatus
-	addonIndex        int
-	focus             focusArea
-	loading           bool
-	err               error
-	status            string
-	showHelp          bool
-	width             int
-	height            int
-	profileRequest    uint64
-	profilePhase      resourcePhase
-	profileDetail     docker.ProfileDetail
-	profileDetailErr  error
-	databasePhase     resourcePhase
-	databaseErr       error
-	databaseRequest   uint64
-	databaseInfoPhase resourcePhase
-	databaseInfo      odoo.DatabaseInfo
-	databaseInfoErr   error
-	addonPhase        resourcePhase
-	addonErr          error
+	ctx                    context.Context
+	service                *app.Service
+	profiles               []docker.ProfileSummary
+	profileIndex           int
+	databases              []odoo.Database
+	databaseIndex          int
+	addons                 []addons.AddonStatus
+	addonIndex             int
+	focus                  focusArea
+	loading                bool
+	err                    error
+	status                 string
+	showHelp               bool
+	width                  int
+	height                 int
+	profileRequest         uint64
+	profileResourceName    string
+	profilePhase           resourcePhase
+	profileDetail          docker.ProfileDetail
+	profileDetailErr       error
+	databasePhase          resourcePhase
+	databaseErr            error
+	databaseRequest        uint64
+	databaseInfoPhase      resourcePhase
+	databaseInfo           odoo.DatabaseInfo
+	databaseInfoErr        error
+	addonPhase             resourcePhase
+	addonErr               error
+	watchEvents            <-chan app.ProfileInvalidation
+	watchErrors            <-chan error
+	watcherStarted         bool
+	watcherConnected       bool
+	profileListOnlyRefresh bool
+	pendingDatabaseRefresh bool
 }
 
 var (
@@ -89,7 +96,7 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return LoadProfilesCmd(m.ctx, m.service)
+	return tea.Batch(LoadProfilesCmd(m.ctx, m.service), StartProfileWatcherCmd(m.ctx, m.service))
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -101,15 +108,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 	case ProfilesLoadedMsg:
+		listOnly := m.profileListOnlyRefresh
+		m.profileListOnlyRefresh = false
 		m.setProfiles(msg.Profiles)
 		m.loading = false
 		m.err = nil
 		m.status = "Ready"
+		if listOnly && m.selectedProfileName() == m.profileResourceName {
+			return m, nil
+		}
 		return m, m.beginProfileResources()
 	case ProfilesFailedMsg:
+		m.profileListOnlyRefresh = false
 		m.loading = false
 		m.err = msg.Err
 		m.status = "Profile refresh failed"
+		return m, nil
+	case ProfileWatcherStartedMsg:
+		m.watchEvents = msg.Events
+		m.watchErrors = msg.Errors
+		m.watcherStarted = true
+		m.watcherConnected = true
+		return m, WaitProfileInvalidationCmd(m.watchEvents, m.watchErrors)
+	case ProfileInvalidationMsg:
+		return m, tea.Batch(WaitProfileInvalidationCmd(m.watchEvents, m.watchErrors), m.handleInvalidation(msg.Invalidation))
+	case ProfileWatcherDisconnectedMsg:
+		m.watcherConnected = false
+		m.status = "Docker event watcher disconnected"
 		return m, nil
 	case ProfileDetailLoadedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -118,11 +143,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profilePhase = phaseReady
 		m.profileDetail = msg.Detail
 		m.profileDetailErr = nil
-		return m, nil
+		m.updateProfileSummary(msg.Detail)
+		return m, m.afterProfileDetailLoaded()
 	case ProfileDetailFailedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
 			return m, nil
 		}
+		m.pendingDatabaseRefresh = false
 		m.profilePhase = phaseError
 		m.profileDetailErr = msg.Err
 		m.status = "Profile details unavailable"
@@ -222,6 +249,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		return m, m.moveFocusedSelection(1)
 	case "r", "ctrl+r":
+		m.profileListOnlyRefresh = false
 		m.loading = true
 		m.err = nil
 		m.status = "Refreshing profiles"
@@ -247,6 +275,7 @@ func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
 }
 
 func (m *Model) beginProfileResources() tea.Cmd {
+	m.pendingDatabaseRefresh = false
 	m.profileRequest++
 	m.databaseRequest++
 	m.profilePhase = phaseLoading
@@ -264,6 +293,7 @@ func (m *Model) beginProfileResources() tea.Cmd {
 	m.addonIndex = 0
 
 	profileName := m.selectedProfileName()
+	m.profileResourceName = profileName
 	if profileName == "" {
 		m.profilePhase = phaseEmpty
 		m.databasePhase = phaseEmpty
@@ -276,6 +306,65 @@ func (m *Model) beginProfileResources() tea.Cmd {
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
 	)
+}
+
+func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd {
+	if invalidation.ProfileName == "" {
+		return nil
+	}
+	if invalidation.ProfileName != m.selectedProfileName() {
+		m.profileListOnlyRefresh = true
+		m.status = "Refreshing " + invalidation.ProfileName
+		return LoadProfilesCmd(m.ctx, m.service)
+	}
+	m.status = "Refreshing " + invalidation.ProfileName
+	m.profileListOnlyRefresh = false
+	m.pendingDatabaseRefresh = invalidation.Kind == app.ProfileRuntimeChanged
+	m.profileRequest++
+	m.profileResourceName = invalidation.ProfileName
+	m.databaseRequest++
+	m.profilePhase = phaseLoading
+	m.profileDetailErr = nil
+	if invalidation.Kind == app.ProfileRuntimeUnavailable {
+		m.databasePhase = phaseUnavailable
+		m.databaseInfoPhase = phaseUnavailable
+	} else {
+		m.databasePhase = phaseLoading
+		m.databaseInfoPhase = phaseIdle
+		m.databaseErr = nil
+		m.databaseInfoErr = nil
+	}
+	return LoadProfileDetailCmd(m.ctx, m.service, invalidation.ProfileName, m.profileRequest)
+}
+
+func (m *Model) afterProfileDetailLoaded() tea.Cmd {
+	if !m.pendingDatabaseRefresh {
+		return nil
+	}
+	m.pendingDatabaseRefresh = false
+	if !strings.EqualFold(m.profileDetail.DockerState, "running") {
+		m.databasePhase = phaseUnavailable
+		m.databaseInfoPhase = phaseUnavailable
+		m.status = "Databases unavailable while profile is stopped"
+		return nil
+	}
+	m.databasePhase = phaseLoading
+	m.databaseInfoPhase = phaseIdle
+	m.databaseErr = nil
+	m.databaseInfoErr = nil
+	return LoadDatabasesCmd(m.ctx, m.service, m.selectedProfileName(), m.profileRequest)
+}
+
+func (m *Model) updateProfileSummary(detail docker.ProfileDetail) {
+	for index := range m.profiles {
+		if m.profiles[index].Name != detail.Name {
+			continue
+		}
+		m.profiles[index].State = detail.DockerState
+		m.profiles[index].URL = detail.URL
+		m.profiles[index].Version = detail.OdooVersion
+		return
+	}
 }
 
 func (m *Model) beginDatabaseInfoLoad() tea.Cmd {
@@ -296,6 +385,7 @@ func (m *Model) moveFocusedSelection(delta int) tea.Cmd {
 	case focusProfiles:
 		changed = m.moveIndex(&m.profileIndex, len(m.profiles), delta)
 		if changed {
+			m.profileListOnlyRefresh = false
 			return m.beginProfileResources()
 		}
 	case focusDatabases:
@@ -433,18 +523,28 @@ func (m *Model) databaseRows() string {
 	case phaseEmpty:
 		return mutedStyle.Render("  no databases found")
 	case phaseUnavailable:
-		return warningStyle.Render("  unavailable while stopped")
-	case phaseError:
-		return errorStyle.Render("  refresh failed")
-	case phaseReady:
-		rows := make([]string, 0, len(m.databases))
-		for index, database := range m.databases {
-			rows = append(rows, m.row(databaseLabel(database), index == m.databaseIndex && m.focus == focusDatabases))
+		if len(m.databases) == 0 {
+			return warningStyle.Render("  unavailable while stopped")
 		}
-		return strings.Join(rows, "\n")
+		return warningStyle.Render("  unavailable; showing last snapshot") + "\n" + m.databaseSnapshotRows()
+	case phaseError:
+		if len(m.databases) == 0 {
+			return errorStyle.Render("  refresh failed")
+		}
+		return errorStyle.Render("  refresh failed; showing last snapshot") + "\n" + m.databaseSnapshotRows()
+	case phaseReady:
+		return m.databaseSnapshotRows()
 	default:
 		return mutedStyle.Render("  not loaded")
 	}
+}
+
+func (m *Model) databaseSnapshotRows() string {
+	rows := make([]string, 0, len(m.databases))
+	for index, database := range m.databases {
+		rows = append(rows, m.row(databaseLabel(database), index == m.databaseIndex && m.focus == focusDatabases))
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (m *Model) addonRows() string {
@@ -514,9 +614,9 @@ func (m *Model) databaseDetailView() string {
 	case phaseEmpty:
 		return strings.Join(append(lines, mutedStyle.Render("No databases found")), "\n")
 	case phaseUnavailable:
-		return strings.Join(append(lines, warningStyle.Render("Databases are unavailable while the profile is stopped")), "\n")
+		lines = append(lines, warningStyle.Render("Databases are unavailable while the profile is stopped"))
 	case phaseError:
-		return strings.Join(append(lines, errorStyle.Render(errorText(m.databaseErr))), "\n")
+		lines = append(lines, errorStyle.Render(errorText(m.databaseErr)))
 	}
 	database := m.selectedDatabase()
 	if database == nil {
@@ -530,17 +630,24 @@ func (m *Model) databaseDetailView() string {
 		lines = append(lines, errorStyle.Render(errorText(m.databaseInfoErr)))
 	case phaseUnavailable:
 		lines = append(lines, warningStyle.Render("Database details are unavailable"))
+		if m.databaseInfo.Physical != "" {
+			lines = append(lines, mutedStyle.Render("Last known details"))
+			lines = appendDatabaseInfo(lines, m.databaseInfo)
+		}
 	case phaseReady:
-		info := m.databaseInfo
-		lines = append(lines,
-			"logical database: "+info.Logical,
-			"physical database: "+info.Physical,
-			"size: "+info.Size,
-			"owner: "+info.Owner,
-			"connection: "+connectionState(info.Available),
-		)
+		lines = appendDatabaseInfo(lines, m.databaseInfo)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func appendDatabaseInfo(lines []string, info odoo.DatabaseInfo) []string {
+	return append(lines,
+		"logical database: "+info.Logical,
+		"physical database: "+info.Physical,
+		"size: "+info.Size,
+		"owner: "+info.Owner,
+		"connection: "+connectionState(info.Available),
+	)
 }
 
 func (m *Model) addonDetailView() string {
@@ -588,6 +695,9 @@ func (m *Model) footerView() string {
 	status := m.status
 	if status == "" {
 		status = "Ready"
+	}
+	if m.watcherStarted && !m.watcherConnected {
+		status += "  Docker events disconnected"
 	}
 	keys := "tab focus  ↑/↓ move  r refresh  ? help  q quit"
 	if m.showHelp {

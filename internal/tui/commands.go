@@ -23,6 +23,40 @@ func LoadProfilesCmd(ctx context.Context, service *app.Service) tea.Cmd {
 	}
 }
 
+func StartProfileWatcherCmd(ctx context.Context, service *app.Service) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return ProfileWatcherDisconnectedMsg{Err: errors.New("workspace service is unavailable")}
+		}
+		events, eventErrors := service.WatchProfileInvalidations(ctx)
+		return ProfileWatcherStartedMsg{Events: events, Errors: eventErrors}
+	}
+}
+
+func WaitProfileInvalidationCmd(events <-chan app.ProfileInvalidation, eventErrors <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		for events != nil || eventErrors != nil {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					events = nil
+					continue
+				}
+				return ProfileInvalidationMsg{Invalidation: event}
+			case err, ok := <-eventErrors:
+				if !ok {
+					eventErrors = nil
+					continue
+				}
+				if err != nil {
+					return ProfileWatcherDisconnectedMsg{Err: err}
+				}
+			}
+		}
+		return ProfileWatcherDisconnectedMsg{Err: errors.New("Docker event watcher stopped")}
+	}
+}
+
 func LoadProfileDetailCmd(ctx context.Context, service *app.Service, profileName string, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		if service == nil {

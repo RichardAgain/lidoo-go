@@ -16,7 +16,9 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	program := tea.NewProgram(NewModel(ctx, service), tea.WithAltScreen(), tea.WithContext(ctx))
+	sessionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	program := tea.NewProgram(NewModel(sessionCtx, service), tea.WithAltScreen(), tea.WithContext(sessionCtx))
 	_, err = program.Run()
 	return err
 }

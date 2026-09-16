@@ -27,7 +27,7 @@ func Drop(name, database string, yes bool, state files.State, options ...Operati
 	}
 
 	logicalDatabase := database
-	database, err = resolveDatabaseName(state, name, database)
+	database, err = resolveExistingDatabaseName(state, name, database)
 	if err != nil {
 		return result, err
 	}

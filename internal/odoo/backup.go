@@ -26,7 +26,11 @@ func Backup(name, database, destination, format string, force, ifExists, filesto
 	}()
 
 	logicalDatabase := database
-	database, err = resolveDatabaseName(state, name, database)
+	if ifExists {
+		database, err = resolveDatabaseName(state, name, database)
+	} else {
+		database, err = resolveExistingDatabaseName(state, name, database)
+	}
 	if err != nil {
 		return result, err
 	}

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -19,12 +21,31 @@ const (
 	taskRestart
 	taskRecreate
 	taskRemove
+	taskInit
+	taskUpdate
+	taskDrop
+	taskBackup
+	taskRestore
 )
 
 type taskRequest struct {
-	Kind        taskKind
-	ProfileName string
-	Version     string
+	Kind             taskKind
+	ProfileName      string
+	DatabaseName     string
+	DatabasePhysical string
+	Version          string
+	Modules          string
+	UpdateAll        bool
+	Yes              bool
+	Destination      string
+	Format           string
+	Filestore        bool
+	IfExists         bool
+	Force            bool
+	Source           string
+	CopyDatabase     bool
+	Neutralize       bool
+	Jobs             string
 }
 
 func taskLabel(kind taskKind) string {
@@ -39,6 +60,16 @@ func taskLabel(kind taskKind) string {
 		return "recreate"
 	case taskRemove:
 		return "remove"
+	case taskInit:
+		return "init"
+	case taskUpdate:
+		return "update"
+	case taskDrop:
+		return "drop"
+	case taskBackup:
+		return "backup"
+	case taskRestore:
+		return "restore"
 	default:
 		return "profile operation"
 	}
@@ -53,23 +84,39 @@ func StartTaskCmd(id uint64) tea.Cmd {
 func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request taskRequest, id uint64, progress chan<- string) tea.Cmd {
 	return func() tea.Msg {
 		output := &taskOutputWriter{progress: progress}
-		_, _ = output.Write([]byte("running " + taskLabel(request.Kind) + " for " + request.ProfileName + "\n"))
-		options := app.ProfileOperationOptions{Output: output, ErrorOutput: output}
+		_, _ = output.Write([]byte("running " + taskLabel(request.Kind) + " for " + request.ProfileName + taskDatabaseSuffix(request) + "\n"))
+		profileOptions := app.ProfileOperationOptions{Output: output, ErrorOutput: output}
+		databaseOptions := app.DatabaseOperationOptions{Output: output, ErrorOutput: output}
 		var err error
 		if service == nil {
 			err = errors.New("workspace service is unavailable")
 		} else {
 			switch request.Kind {
 			case taskRun:
-				err = service.RunProfile(ctx, app.RunProfileInput{Name: request.ProfileName, Version: request.Version}, options)
+				err = service.RunProfile(ctx, app.RunProfileInput{Name: request.ProfileName, Version: request.Version}, profileOptions)
 			case taskStop:
-				err = service.StopProfile(ctx, request.ProfileName, options)
+				err = service.StopProfile(ctx, request.ProfileName, profileOptions)
 			case taskRestart:
-				err = service.RestartProfile(ctx, request.ProfileName, options)
+				err = service.RestartProfile(ctx, request.ProfileName, profileOptions)
 			case taskRecreate:
-				err = service.RecreateProfile(ctx, request.ProfileName, options)
+				err = service.RecreateProfile(ctx, request.ProfileName, profileOptions)
 			case taskRemove:
-				err = service.RemoveProfile(ctx, app.RemoveProfileInput{Name: request.ProfileName, Yes: true}, options)
+				err = service.RemoveProfile(ctx, app.RemoveProfileInput{Name: request.ProfileName, Yes: true}, profileOptions)
+			case taskInit:
+				_, err = service.InitializeDatabase(ctx, request.ProfileName, request.DatabaseName, request.Modules, databaseOptions)
+			case taskUpdate:
+				_, err = service.UpdateDatabase(ctx, request.ProfileName, request.DatabaseName, request.UpdateAll, databaseOptions)
+			case taskDrop:
+				_, err = service.DropDatabase(ctx, request.ProfileName, request.DatabaseName, request.Yes, databaseOptions)
+			case taskBackup:
+				_, err = service.BackupDatabase(ctx, request.ProfileName, request.DatabaseName, request.Destination, request.Format, request.Force, request.IfExists, request.Filestore, databaseOptions)
+			case taskRestore:
+				jobs, parseErr := strconv.Atoi(request.Jobs)
+				if parseErr != nil {
+					err = errors.New("restore jobs must be a number")
+				} else {
+					_, err = service.RestoreDatabase(ctx, request.ProfileName, request.DatabaseName, request.Source, request.CopyDatabase, request.Force, request.Neutralize, jobs, databaseOptions)
+				}
 			default:
 				err = errors.New("unknown profile task")
 			}
@@ -85,6 +132,13 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 	}
 }
 
+func taskDatabaseSuffix(request taskRequest) string {
+	if request.DatabaseName == "" {
+		return ""
+	}
+	return "/" + request.DatabaseName
+}
+
 func WaitTaskProgressCmd(id uint64, progress <-chan string) tea.Cmd {
 	return func() tea.Msg {
 		text, ok := <-progress
@@ -98,9 +152,13 @@ func WaitTaskProgressCmd(id uint64, progress <-chan string) tea.Cmd {
 type taskOutputWriter struct {
 	output   bytes.Buffer
 	progress chan<- string
+	mu       sync.Mutex
 }
 
 func (writer *taskOutputWriter) Write(data []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+
 	count, err := writer.output.Write(data)
 	text := strings.TrimSpace(string(data))
 	if text != "" && writer.progress != nil {
@@ -113,5 +171,7 @@ func (writer *taskOutputWriter) Write(data []byte) (int, error) {
 }
 
 func (writer *taskOutputWriter) String() string {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
 	return strings.TrimSpace(writer.output.String())
 }

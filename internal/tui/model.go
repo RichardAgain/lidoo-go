@@ -29,6 +29,11 @@ const (
 	modalNone modalMode = iota
 	modalConfirmRemove
 	modalRunVersion
+	modalConfirmDrop
+	modalInitDatabase
+	modalBackupDatabase
+	modalRestoreDatabase
+	modalConfirmRestore
 )
 
 type resourcePhase uint8
@@ -83,6 +88,8 @@ type Model struct {
 	taskCancel             context.CancelFunc
 	taskProgress           <-chan string
 	taskProfileName        string
+	taskDatabaseName       string
+	taskDatabasePhysical   string
 	taskName               string
 	taskStatus             string
 	taskOutput             string
@@ -90,6 +97,17 @@ type Model struct {
 	taskStarting           bool
 	taskRunning            bool
 	taskCancelRequested    bool
+	formField              int
+	initModules            string
+	backupDestination      string
+	backupFormat           string
+	backupFilestore        bool
+	backupForce            bool
+	restoreSource          string
+	restoreCopy            bool
+	restoreForce           bool
+	restoreNeutralize      bool
+	restoreJobs            string
 }
 
 var (
@@ -178,8 +196,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		selected := m.selectedDatabasePhysical()
+		previousIndex := m.databaseIndex
 		m.databases = append([]odoo.Database(nil), msg.Databases...)
-		m.databaseIndex = 0
+		m.databaseIndex = previousIndex
+		if len(m.databases) == 0 {
+			m.databaseIndex = 0
+		} else if m.databaseIndex >= len(m.databases) {
+			m.databaseIndex = len(m.databases) - 1
+		}
 		for index, database := range m.databases {
 			if database.Physical == selected {
 				m.databaseIndex = index
@@ -293,6 +317,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.finishTask("failed", msg.Output, msg.Err)
+		if errors.Is(msg.Err, odoo.ErrDatabaseNotFound) && msg.ProfileName == m.selectedProfileName() {
+			return m, m.refreshDatabasesAfterMissing()
+		}
 		return m, m.refreshAfterTask(msg.ProfileName)
 	case TaskCancelledMsg:
 		if !m.currentTask(msg.ID) {
@@ -343,6 +370,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskRecreate, ProfileName: m.selectedProfileName()})
 		}
+		if m.focus == focusDatabases {
+			m.openRestoreForm()
+		}
 	case "s":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskStop, ProfileName: m.selectedProfileName()})
@@ -351,6 +381,24 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			m.taskProfileName = m.selectedProfileName()
 			m.modal = modalConfirmRemove
+		} else if m.focus == focusDatabases {
+			m.openDropConfirmation()
+		}
+	case "i":
+		if m.focus == focusDatabases {
+			m.openInitForm()
+		}
+	case "u":
+		if m.focus == focusDatabases {
+			return m, m.queueSelectedDatabaseTask(taskUpdate, false)
+		}
+	case "U":
+		if m.focus == focusDatabases {
+			return m, m.queueSelectedDatabaseTask(taskUpdate, true)
+		}
+	case "b":
+		if m.focus == focusDatabases {
+			m.openBackupForm()
 		}
 	case "ctrl+r":
 		return m, m.refreshProfiles()
@@ -358,6 +406,71 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = !m.showHelp
 	}
 	return m, nil
+}
+
+func (m *Model) prepareDatabaseAction() bool {
+	if m.selectedProfileName() == "" || m.selectedDatabase() == nil {
+		return false
+	}
+	database := m.selectedDatabase()
+	m.taskProfileName = m.selectedProfileName()
+	m.taskDatabaseName = database.Logical
+	m.taskDatabasePhysical = database.Physical
+	return true
+}
+
+func (m *Model) queueSelectedDatabaseTask(kind taskKind, updateAll bool) tea.Cmd {
+	if !m.prepareDatabaseAction() {
+		return nil
+	}
+	return m.queueTask(taskRequest{
+		Kind:             kind,
+		ProfileName:      m.taskProfileName,
+		DatabaseName:     m.taskDatabaseName,
+		DatabasePhysical: m.taskDatabasePhysical,
+		UpdateAll:        updateAll,
+	})
+}
+
+func (m *Model) openDropConfirmation() {
+	if !m.prepareDatabaseAction() {
+		return
+	}
+	m.modal = modalConfirmDrop
+}
+
+func (m *Model) openInitForm() {
+	if !m.prepareDatabaseAction() {
+		return
+	}
+	m.initModules = "base"
+	m.formField = 0
+	m.modal = modalInitDatabase
+}
+
+func (m *Model) openBackupForm() {
+	if !m.prepareDatabaseAction() {
+		return
+	}
+	m.backupDestination = ""
+	m.backupFormat = "zip"
+	m.backupFilestore = true
+	m.backupForce = false
+	m.formField = 0
+	m.modal = modalBackupDatabase
+}
+
+func (m *Model) openRestoreForm() {
+	if !m.prepareDatabaseAction() {
+		return
+	}
+	m.restoreSource = ""
+	m.restoreCopy = true
+	m.restoreForce = false
+	m.restoreNeutralize = false
+	m.restoreJobs = "1"
+	m.formField = 0
+	m.modal = modalRestoreDatabase
 }
 
 func (m *Model) refreshProfiles() tea.Cmd {
@@ -378,6 +491,28 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modal = modalNone
 			return m, m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})
 		}
+	case modalConfirmDrop:
+		switch msg.String() {
+		case "esc", "n", "N":
+			m.modal = modalNone
+		case "enter", "y", "Y":
+			m.modal = modalNone
+			return m, m.queueTask(taskRequest{
+				Kind:             taskDrop,
+				ProfileName:      m.taskProfileName,
+				DatabaseName:     m.taskDatabaseName,
+				DatabasePhysical: m.taskDatabasePhysical,
+				Yes:              true,
+			})
+		}
+	case modalConfirmRestore:
+		switch msg.String() {
+		case "esc", "n", "N":
+			m.modal = modalRestoreDatabase
+		case "enter", "y", "Y":
+			m.modal = modalNone
+			return m, m.queueRestoreTask()
+		}
 	case modalRunVersion:
 		switch msg.String() {
 		case "esc":
@@ -390,9 +525,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modal = modalNone
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version})
 		case "backspace", "ctrl+h":
-			if len(m.versionInput) > 0 {
-				m.versionInput = m.versionInput[:len(m.versionInput)-1]
-			}
+			m.versionInput = removeLastRune(m.versionInput)
 		case "ctrl+u":
 			m.versionInput = ""
 		default:
@@ -402,15 +535,209 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.versionInput += value
 			}
 		}
+	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
+		switch msg.String() {
+		case "esc":
+			m.modal = modalNone
+		case "enter":
+			return m, m.submitDatabaseForm()
+		case "tab":
+			m.moveFormField(1)
+		case "shift+tab":
+			m.moveFormField(-1)
+		case "backspace", "ctrl+h":
+			m.removeFormText()
+		case "ctrl+u":
+			m.clearFormText()
+		case " ":
+			if !m.toggleFormField() {
+				m.appendFormText(" ")
+			}
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.appendFormText(value)
+			}
+		}
 	}
 	return m, nil
+}
+
+func (m *Model) submitDatabaseForm() tea.Cmd {
+	switch m.modal {
+	case modalInitDatabase:
+		modules := strings.TrimSpace(m.initModules)
+		if modules == "" {
+			return nil
+		}
+		m.modal = modalNone
+		return m.queueTask(taskRequest{
+			Kind:             taskInit,
+			ProfileName:      m.taskProfileName,
+			DatabaseName:     m.taskDatabaseName,
+			DatabasePhysical: m.taskDatabasePhysical,
+			Modules:          modules,
+		})
+	case modalBackupDatabase:
+		m.modal = modalNone
+		return m.queueTask(taskRequest{
+			Kind:             taskBackup,
+			ProfileName:      m.taskProfileName,
+			DatabaseName:     m.taskDatabaseName,
+			DatabasePhysical: m.taskDatabasePhysical,
+			Destination:      strings.TrimSpace(m.backupDestination),
+			Format:           m.backupFormat,
+			Filestore:        m.backupFilestore,
+			Force:            m.backupForce,
+		})
+	case modalRestoreDatabase:
+		if strings.TrimSpace(m.restoreSource) == "" {
+			return nil
+		}
+		if m.restoreForce || !m.restoreCopy {
+			m.modal = modalConfirmRestore
+			return nil
+		}
+		m.modal = modalNone
+		return m.queueRestoreTask()
+	}
+	return nil
+}
+
+func (m *Model) queueRestoreTask() tea.Cmd {
+	return m.queueTask(taskRequest{
+		Kind:             taskRestore,
+		ProfileName:      m.taskProfileName,
+		DatabaseName:     m.taskDatabaseName,
+		DatabasePhysical: m.taskDatabasePhysical,
+		Source:           strings.TrimSpace(m.restoreSource),
+		CopyDatabase:     m.restoreCopy,
+		Force:            m.restoreForce,
+		Neutralize:       m.restoreNeutralize,
+		Jobs:             m.restoreJobs,
+	})
+}
+
+func (m *Model) formFieldCount() int {
+	switch m.modal {
+	case modalInitDatabase:
+		return 1
+	case modalBackupDatabase:
+		return 4
+	case modalRestoreDatabase:
+		return 5
+	default:
+		return 0
+	}
+}
+
+func (m *Model) moveFormField(delta int) {
+	count := m.formFieldCount()
+	if count == 0 {
+		return
+	}
+	m.formField = (m.formField + delta + count) % count
+}
+
+func (m *Model) toggleFormField() bool {
+	switch m.modal {
+	case modalBackupDatabase:
+		switch m.formField {
+		case 1:
+			formats := []string{"zip", "dump", "folder"}
+			for index, format := range formats {
+				if m.backupFormat == format {
+					m.backupFormat = formats[(index+1)%len(formats)]
+					return true
+				}
+			}
+			m.backupFormat = formats[0]
+			return true
+		case 2:
+			m.backupFilestore = !m.backupFilestore
+			return true
+		case 3:
+			m.backupForce = !m.backupForce
+			return true
+		}
+	case modalRestoreDatabase:
+		switch m.formField {
+		case 1:
+			m.restoreCopy = !m.restoreCopy
+			return true
+		case 2:
+			m.restoreForce = !m.restoreForce
+			return true
+		case 3:
+			m.restoreNeutralize = !m.restoreNeutralize
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) formText() *string {
+	switch m.modal {
+	case modalInitDatabase:
+		if m.formField == 0 {
+			return &m.initModules
+		}
+	case modalBackupDatabase:
+		switch m.formField {
+		case 0:
+			return &m.backupDestination
+		}
+	case modalRestoreDatabase:
+		switch m.formField {
+		case 0:
+			return &m.restoreSource
+		case 4:
+			return &m.restoreJobs
+		}
+	}
+	return nil
+}
+
+func (m *Model) appendFormText(value string) {
+	input := m.formText()
+	if input != nil {
+		*input += value
+	}
+}
+
+func (m *Model) removeFormText() {
+	input := m.formText()
+	if input != nil {
+		*input = removeLastRune(*input)
+	}
+}
+
+func (m *Model) clearFormText() {
+	input := m.formText()
+	if input != nil {
+		*input = ""
+	}
+}
+
+func removeLastRune(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+	return string(runes[:len(runes)-1])
 }
 
 func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	m.taskID++
 	m.pendingTask = &request
 	m.taskProfileName = request.ProfileName
+	m.taskDatabaseName = request.DatabaseName
+	m.taskDatabasePhysical = request.DatabasePhysical
 	m.taskName = taskLabel(request.Kind) + " " + request.ProfileName
+	if request.DatabaseName != "" {
+		m.taskName += "/" + request.DatabaseName
+	}
 	m.taskStatus = "starting"
 	m.taskOutput = ""
 	m.taskErr = nil
@@ -464,6 +791,19 @@ func (m *Model) refreshAfterTask(profileName string) tea.Cmd {
 	m.loading = true
 	m.err = nil
 	return LoadProfilesCmd(m.ctx, m.service)
+}
+
+func (m *Model) refreshDatabasesAfterMissing() tea.Cmd {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
+		return nil
+	}
+	m.databaseRequest++
+	m.databasePhase = phaseLoading
+	m.databaseErr = nil
+	m.databaseInfoPhase = phaseIdle
+	m.databaseInfoErr = nil
+	return LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest)
 }
 
 func appendTaskOutput(existing, next string) string {
@@ -974,10 +1314,16 @@ func (m *Model) footerView() string {
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
 		keys = "tab focus  ↑/↓ move  " + profileActionHints() + "  ctrl+r refresh  ? help  q quit"
 	}
+	if m.focus == focusDatabases && m.selectedDatabase() != nil {
+		keys = "tab focus  ↑/↓ move  " + databaseActionHints() + "  ctrl+r refresh  ? help  q quit"
+	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  r refresh  q quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k move  " + profileActionHints() + "  ctrl+r refresh  ? hide help"
+		}
+		if m.focus == focusDatabases && m.selectedDatabase() != nil {
+			keys = "tab/←/→ focus  ↑/↓/j/k move  " + databaseActionHints() + "  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -991,6 +1337,10 @@ func (m *Model) footerView() string {
 
 func profileActionHints() string {
 	return "x start  r restart  R recreate  s stop  d remove"
+}
+
+func databaseActionHints() string {
+	return "i init  u update  U update-all  d drop  b backup  R restore"
 }
 
 func (m *Model) modalView() string {
@@ -1013,6 +1363,66 @@ func (m *Model) modalView() string {
 			"",
 			mutedStyle.Render("type a version  enter run  esc cancel"),
 		}
+	case modalConfirmDrop:
+		lines = []string{
+			titleStyle.Render("Drop database " + m.taskDatabaseName + "?"),
+			"Profile: " + m.taskProfileName,
+			"Physical database: " + m.taskDatabasePhysical,
+			warningStyle.Render("This permanently deletes the database and its filestore."),
+			"",
+			mutedStyle.Render("enter/y confirm  n/esc cancel"),
+		}
+	case modalInitDatabase:
+		lines = []string{
+			titleStyle.Render("Initialize database"),
+			"Profile: " + m.taskProfileName,
+			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
+			m.formLine("modules", m.initModules, 0, true),
+			"",
+			mutedStyle.Render("tab field  type  enter run  esc cancel"),
+		}
+	case modalBackupDatabase:
+		destination := m.backupDestination
+		if destination == "" {
+			destination = "(default backups/<database>_...zip)"
+		}
+		lines = []string{
+			titleStyle.Render("Backup database"),
+			"Profile: " + m.taskProfileName,
+			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
+			m.formLine("destination", destination, 0, m.formField == 0),
+			m.formLine("format", m.backupFormat, 1, false),
+			m.formLine("filestore", yesNo(m.backupFilestore), 2, false),
+			m.formLine("overwrite", yesNo(m.backupForce), 3, false),
+			"",
+			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
+		}
+	case modalRestoreDatabase:
+		source := m.restoreSource
+		if source == "" {
+			source = "(required)"
+		}
+		lines = []string{
+			titleStyle.Render("Restore database"),
+			"Profile: " + m.taskProfileName,
+			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
+			m.formLine("source", source, 0, m.formField == 0),
+			m.formLine("mode", restoreMode(m.restoreCopy), 1, false),
+			m.formLine("overwrite", yesNo(m.restoreForce), 2, false),
+			m.formLine("neutralize", yesNo(m.restoreNeutralize), 3, false),
+			m.formLine("jobs", m.restoreJobs, 4, m.formField == 4),
+			"",
+			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
+		}
+	case modalConfirmRestore:
+		lines = []string{
+			titleStyle.Render("Confirm destructive restore"),
+			"Database: " + m.taskDatabaseName,
+			"Source: " + m.restoreSource,
+			warningStyle.Render("Move or overwrite can replace existing database data."),
+			"",
+			mutedStyle.Render("enter/y confirm  n/esc back"),
+		}
 	}
 	modalWidth := m.width - 4
 	if modalWidth < 20 {
@@ -1025,6 +1435,31 @@ func (m *Model) modalView() string {
 		modalWidth = 72
 	}
 	return lipgloss.NewStyle().Width(modalWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(activeBorderStyle).Render(strings.Join(lines, "\n"))
+}
+
+func (m *Model) formLine(label, value string, field int, textField bool) string {
+	if textField && m.formField == field {
+		value += "▏"
+	}
+	line := label + ": " + value
+	if m.formField == field {
+		return activeStyle.Render("▸ " + line)
+	}
+	return "  " + line
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func restoreMode(copyDatabase bool) string {
+	if copyDatabase {
+		return "copy"
+	}
+	return "move"
 }
 
 func (m *Model) smallView() string {
@@ -1041,7 +1476,11 @@ func (m *Model) smallView() string {
 			lines = append(lines, m.row(profile.Name+"  "+profileState(profile.State), index == m.profileIndex && m.focus == focusProfiles))
 		}
 	}
-	lines = append(lines, "", mutedStyle.Render(profileActionHints()+"  ctrl+r refresh  ? help  q quit"))
+	hints := profileActionHints()
+	if m.focus == focusDatabases && m.selectedDatabase() != nil {
+		hints = databaseActionHints()
+	}
+	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q quit"))
 	if task := m.taskView(); task != "" {
 		lines = append(lines, "", task)
 	}

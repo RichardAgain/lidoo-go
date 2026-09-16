@@ -16,7 +16,7 @@ func Update(name, database string, updateAll bool, state files.State, options ..
 	}()
 
 	logicalDatabase := database
-	database, err = resolveDatabaseName(state, name, database)
+	database, err = resolveExistingDatabaseName(state, name, database)
 	if err != nil {
 		return result, err
 	}

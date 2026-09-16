@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"lidoo/internal/files"
 	"lidoo/internal/odoo"
 	"lidoo/internal/profileio"
+	"lidoo/internal/tui"
 )
 
 func main() {
@@ -87,6 +89,8 @@ func main() {
 	exitCode := 0
 
 	switch command {
+	case "tui":
+		err = tui.Run(context.Background())
 	case "list":
 		var profiles []docker.ProfileSummary
 		profiles, err = docker.ListProfiles(state)
@@ -720,7 +724,7 @@ func validatePositionals(command string, positional []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: lidoo restore --name <profile> --database <database> [options] <source>")
 		}
-	case "list", "status", "logs", "init", "update", "drop", "run", "wait", "recreate", "stop", "restart", "remove":
+	case "tui", "list", "status", "logs", "init", "update", "drop", "run", "wait", "recreate", "stop", "restart", "remove":
 		if len(positional) != 0 {
 			return fmt.Errorf("%s does not accept positional arguments", command)
 		}
@@ -733,7 +737,8 @@ func validatePositionals(command string, positional []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <list|status|logs|init|update|drop|backup|restore|run|wait|recreate|stop|restart|remove|db> [options]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <tui|list|status|logs|init|update|drop|backup|restore|run|wait|recreate|stop|restart|remove|db> [options]")
+	fmt.Fprintln(os.Stderr, "  tui")
 	fmt.Fprintln(os.Stderr, "  list")
 	fmt.Fprintln(os.Stderr, "  status [--name <profile>]")
 	fmt.Fprintln(os.Stderr, "  logs --name <profile> [--follow] [--tail N]")

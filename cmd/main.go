@@ -68,8 +68,9 @@ func main() {
 	}
 
 	profileLifecycle := isProfileLifecycleCommand(command)
+	databaseMutation := isDatabaseMutationCommand(command)
 	mutatesState := commandMutatesState(command, positional)
-	if profileLifecycle {
+	if profileLifecycle || databaseMutation {
 		mutatesState = false
 	}
 	var err error
@@ -77,7 +78,7 @@ func main() {
 	var stateLock *files.StateLock
 	var service *app.Service
 	var readStateErr bool
-	if profileLifecycle {
+	if profileLifecycle || databaseMutation {
 		service, err = app.Open()
 	} else if command != "tui" {
 		if mutatesState {
@@ -101,6 +102,10 @@ func main() {
 	}
 
 	profileOptions := app.ProfileOperationOptions{
+		Output:      os.Stdout,
+		ErrorOutput: os.Stderr,
+	}
+	databaseOptions := app.DatabaseOperationOptions{
 		Output:      os.Stdout,
 		ErrorOutput: os.Stderr,
 	}
@@ -128,11 +133,11 @@ func main() {
 	case "logs":
 		err = docker.Logs(name, follow, tail)
 	case "init":
-		err = odoo.Init(name, database, modules, state)
+		_, err = service.InitializeDatabase(context.Background(), name, database, modules, databaseOptions)
 	case "update":
-		err = odoo.Update(name, database, updateAll, state)
+		_, err = service.UpdateDatabase(context.Background(), name, database, updateAll, databaseOptions)
 	case "drop":
-		err = odoo.Drop(name, database, yes, state)
+		_, err = service.DropDatabase(context.Background(), name, database, yes, databaseOptions)
 	case "backup":
 		backupPath := ""
 		if len(positional) == 1 {
@@ -600,6 +605,15 @@ func confirmProfileRemoval(confirmation app.ProfileConfirmation) (bool, error) {
 		return false, fmt.Errorf("read confirmation: %w", err)
 	}
 	return strings.EqualFold(answer, "y"), nil
+}
+
+func isDatabaseMutationCommand(command string) bool {
+	switch command {
+	case "init", "update", "drop":
+		return true
+	default:
+		return false
+	}
 }
 
 func commandMutatesState(command string, positional []string) bool {

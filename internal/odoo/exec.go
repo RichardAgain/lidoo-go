@@ -24,10 +24,14 @@ exec "$@"
 `
 
 func run(container string, command ...string) error {
-	return runWithOutput(container, os.Stdout, os.Stderr, command...)
+	return runWithCommandOptions(container, docker.CommandOptions{Stdout: os.Stdout, Stderr: os.Stderr}, command...)
 }
 
 func runWithOutput(container string, stdout, stderr io.Writer, command ...string) error {
+	return runWithCommandOptions(container, docker.CommandOptions{Stdout: stdout, Stderr: stderr}, command...)
+}
+
+func runWithCommandOptions(container string, options docker.CommandOptions, command ...string) error {
 	if len(command) == 0 {
 		return errors.New("cannot execute an empty command")
 	}
@@ -36,9 +40,17 @@ func runWithOutput(container string, stdout, stderr io.Writer, command ...string
 	args = append(args, "sh", "-c", execScript, "lidoo")
 	args = append(args, command...)
 
-	stdoutWriter := newCleanOutputWriter(stdout)
-	stderrWriter := newCleanOutputWriter(stderr)
-	err := docker.ExecWithOutput(container, stdoutWriter, stderrWriter, args...)
+	if options.Stdout == nil {
+		options.Stdout = os.Stdout
+	}
+	if options.Stderr == nil {
+		options.Stderr = os.Stderr
+	}
+	stdoutWriter := newCleanOutputWriter(options.Stdout)
+	stderrWriter := newCleanOutputWriter(options.Stderr)
+	options.Stdout = stdoutWriter
+	options.Stderr = stderrWriter
+	err := docker.ExecWithOutputOptions(container, options, args...)
 	if flushErr := stdoutWriter.Flush(); err == nil {
 		err = flushErr
 	}

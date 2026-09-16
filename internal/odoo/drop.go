@@ -8,35 +8,46 @@ import (
 	"lidoo/internal/files"
 )
 
-func Drop(name, database string, yes bool, state files.State) error {
+func Drop(name, database string, yes bool, state files.State, options ...OperationOptions) (result OperationResult, err error) {
+	stdout, stderr, operationOptions := newOperationStreams(options)
+	result.ProfileName = name
+	defer func() {
+		result.Output = stdout.String()
+		result.ErrorOutput = stderr.String()
+	}()
+
 	if err := validateDatabaseOperationInputs(name, database); err != nil {
-		return err
+		return result, err
 	}
 	if err := validateDropDatabase(database); err != nil {
-		return err
+		return result, err
 	}
 	if !yes {
-		return errors.New("drop requires --yes")
+		return result, errors.New("drop requires --yes")
 	}
 
-	database, err := resolveDatabaseName(state, name, database)
+	logicalDatabase := database
+	database, err = resolveDatabaseName(state, name, database)
 	if err != nil {
-		return err
+		return result, err
 	}
+	result.LogicalDatabase = logicalDatabase
+	result.PhysicalDatabase = database
 
-	container, err := docker.RequireRunningProfile(name)
+	commandOptions := stdout.commandOptions(stderr, operationOptions.Context)
+	container, err := docker.RequireRunningProfileWithOptions(name, commandOptions)
 	if err != nil {
-		return err
+		return result, err
 	}
-	fmt.Printf("dropping database %q from profile %q\n", database, name)
+	fmt.Fprintf(stdout, "dropping database %q from profile %q\n", database, name)
 	args := []string{
 		"click-odoo-dropdb",
 		"--log-level=error",
 		database,
 	}
-	if err := run(container, args...); err != nil {
-		return fmt.Errorf("drop database %q: %w", database, err)
+	if err := runWithCommandOptions(container, commandOptions, args...); err != nil {
+		return result, fmt.Errorf("drop database %q: %w", database, err)
 	}
-	fmt.Printf("database %q dropped\n", database)
-	return nil
+	fmt.Fprintf(stdout, "database %q dropped\n", database)
+	return result, nil
 }

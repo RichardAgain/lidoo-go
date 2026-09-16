@@ -116,14 +116,18 @@ func ProfileState(name string) (string, bool, error) {
 }
 
 func RequireRunningProfile(name string) (string, error) {
-	exists, err := findContainerByName(name)
+	return RequireRunningProfileWithOptions(name, CommandOptions{})
+}
+
+func RequireRunningProfileWithOptions(name string, options CommandOptions) (string, error) {
+	exists, err := findContainerByNameWithOptions(name, options)
 	if err != nil {
 		return "", err
 	}
 	if !exists {
 		return "", fmt.Errorf("no profile with name %q", name)
 	}
-	running, err := containerIsRunning(name)
+	running, err := containerIsRunningWithOptions(name, options)
 	if err != nil {
 		return "", err
 	}

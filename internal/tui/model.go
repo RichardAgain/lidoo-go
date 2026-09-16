@@ -44,7 +44,6 @@ type Model struct {
 	focus                  focusArea
 	loading                bool
 	err                    error
-	status                 string
 	showHelp               bool
 	width                  int
 	height                 int
@@ -63,8 +62,7 @@ type Model struct {
 	addonErr               error
 	watchEvents            <-chan app.ProfileInvalidation
 	watchErrors            <-chan error
-	watcherStarted         bool
-	watcherConnected       bool
+	watcherDisconnected    bool
 	profileListOnlyRefresh bool
 	pendingDatabaseRefresh bool
 }
@@ -86,7 +84,6 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 		ctx:           ctx,
 		service:       service,
 		loading:       true,
-		status:        "Loading profiles",
 		width:         80,
 		height:        24,
 		profilePhase:  phaseLoading,
@@ -113,7 +110,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setProfiles(msg.Profiles)
 		m.loading = false
 		m.err = nil
-		m.status = "Ready"
 		if listOnly && m.selectedProfileName() == m.profileResourceName {
 			return m, nil
 		}
@@ -122,19 +118,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profileListOnlyRefresh = false
 		m.loading = false
 		m.err = msg.Err
-		m.status = "Profile refresh failed"
 		return m, nil
 	case ProfileWatcherStartedMsg:
 		m.watchEvents = msg.Events
 		m.watchErrors = msg.Errors
-		m.watcherStarted = true
-		m.watcherConnected = true
+		m.watcherDisconnected = false
 		return m, WaitProfileInvalidationCmd(m.watchEvents, m.watchErrors)
 	case ProfileInvalidationMsg:
 		return m, tea.Batch(WaitProfileInvalidationCmd(m.watchEvents, m.watchErrors), m.handleInvalidation(msg.Invalidation))
 	case ProfileWatcherDisconnectedMsg:
-		m.watcherConnected = false
-		m.status = "Docker event watcher disconnected"
+		m.watcherDisconnected = true
 		return m, nil
 	case ProfileDetailLoadedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -152,7 +145,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingDatabaseRefresh = false
 		m.profilePhase = phaseError
 		m.profileDetailErr = msg.Err
-		m.status = "Profile details unavailable"
 		return m, nil
 	case DatabasesLoadedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -175,7 +167,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.databasePhase = phaseReady
-		m.status = "Ready"
 		return m, m.beginDatabaseInfoLoad()
 	case DatabasesFailedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -186,10 +177,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.databaseInfoPhase = phaseUnavailable
 		if m.profileIsRunning() {
 			m.databasePhase = phaseError
-			m.status = "Database refresh failed"
 		} else {
 			m.databasePhase = phaseUnavailable
-			m.status = "Databases unavailable while profile is stopped"
 		}
 		return m, nil
 	case DatabaseInfoLoadedMsg:
@@ -206,7 +195,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.databaseInfoPhase = phaseError
 		m.databaseInfoErr = msg.Err
-		m.status = "Database details unavailable"
 		return m, nil
 	case AddonsLoadedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -227,7 +215,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.addonPhase = phaseError
 		m.addonErr = msg.Err
-		m.status = "Add-on refresh failed"
 		return m, nil
 	default:
 		return m, nil
@@ -252,7 +239,6 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.profileListOnlyRefresh = false
 		m.loading = true
 		m.err = nil
-		m.status = "Refreshing profiles"
 		return m, LoadProfilesCmd(m.ctx, m.service)
 	case "?":
 		m.showHelp = !m.showHelp
@@ -314,10 +300,8 @@ func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd
 	}
 	if invalidation.ProfileName != m.selectedProfileName() {
 		m.profileListOnlyRefresh = true
-		m.status = "Refreshing " + invalidation.ProfileName
 		return LoadProfilesCmd(m.ctx, m.service)
 	}
-	m.status = "Refreshing " + invalidation.ProfileName
 	m.profileListOnlyRefresh = false
 	m.pendingDatabaseRefresh = invalidation.Kind == app.ProfileRuntimeChanged
 	m.profileRequest++
@@ -345,7 +329,6 @@ func (m *Model) afterProfileDetailLoaded() tea.Cmd {
 	if !strings.EqualFold(m.profileDetail.DockerState, "running") {
 		m.databasePhase = phaseUnavailable
 		m.databaseInfoPhase = phaseUnavailable
-		m.status = "Databases unavailable while profile is stopped"
 		return nil
 	}
 	m.databasePhase = phaseLoading
@@ -496,7 +479,11 @@ func (m *Model) leftView(width int) string {
 		profileRows = append(profileRows, m.row(row, index == m.profileIndex && m.focus == focusProfiles))
 	}
 	if len(profileRows) == 0 {
-		profileRows = append(profileRows, mutedStyle.Render("  no profiles found"))
+		if m.loading {
+			profileRows = append(profileRows, mutedStyle.Render("  loading..."))
+		} else {
+			profileRows = append(profileRows, mutedStyle.Render("  no profiles found"))
+		}
 	}
 
 	selectedName := m.selectedProfileName()
@@ -567,14 +554,29 @@ func (m *Model) addonRows() string {
 }
 
 func (m *Model) rightView() string {
+	var content string
 	switch m.focus {
 	case focusDatabases:
-		return m.databaseDetailView()
+		content = m.databaseDetailView()
 	case focusAddons:
-		return m.addonDetailView()
+		content = m.addonDetailView()
 	default:
-		return m.profileDetailView()
+		content = m.profileDetailView()
 	}
+	warnings := make([]string, 0, 3)
+	if m.loading {
+		warnings = append(warnings, mutedStyle.Render("Loading profiles..."))
+	}
+	if m.err != nil {
+		warnings = append(warnings, errorStyle.Render(m.err.Error()))
+	}
+	if m.watcherDisconnected {
+		warnings = append(warnings, warningStyle.Render("Docker event watcher disconnected"))
+	}
+	if len(warnings) == 0 {
+		return content
+	}
+	return strings.Join(append(warnings, "", content), "\n")
 }
 
 func (m *Model) profileDetailView() string {
@@ -692,22 +694,18 @@ func (m *Model) row(value string, selected bool) string {
 }
 
 func (m *Model) footerView() string {
-	status := m.status
-	if status == "" {
-		status = "Ready"
-	}
-	if m.watcherStarted && !m.watcherConnected {
-		status += "  Docker events disconnected"
-	}
 	keys := "tab focus  ↑/↓ move  r refresh  ? help  q quit"
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  r refresh  q quit  ? hide help"
 	}
-	return mutedStyle.Render(status) + "  " + keys
+	return mutedStyle.Render(keys)
 }
 
 func (m *Model) smallView() string {
 	lines := []string{titleStyle.Render("Lidoo"), mutedStyle.Render("Terminal too small for the full layout")}
+	if m.loading {
+		lines = append(lines, mutedStyle.Render("Loading profiles..."))
+	}
 	if m.err != nil {
 		lines = append(lines, errorStyle.Render(m.err.Error()))
 	}

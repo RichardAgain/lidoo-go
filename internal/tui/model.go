@@ -434,28 +434,6 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == focusDatabases {
 			m.openBackupForm()
 		}
-	case "o":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			profileName := m.selectedProfileName()
-			m.interactivePreparing = true
-			m.taskName = "logs " + profileName
-			m.taskStatus = "loading"
-			m.taskOutput = ""
-			m.taskErr = nil
-			m.err = nil
-			return m, LoadProfileLogsCmd(m.ctx, m.service, profileName, -1)
-		}
-	case "L":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			profileName := m.selectedProfileName()
-			m.interactivePreparing = true
-			m.taskName = "follow logs " + profileName
-			m.taskStatus = "preparing"
-			m.taskOutput = ""
-			m.taskErr = nil
-			m.err = nil
-			return m, PrepareProfileLogsCmd(m.ctx, m.service, profileName, true, -1)
-		}
 	case "p":
 		if m.focus == focusDatabases {
 			database := m.selectedDatabase()
@@ -1485,7 +1463,7 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "x start  r restart  R recreate  s stop  d remove  o logs  L follow"
+	return "x start  r restart  R recreate  s stop  d remove"
 }
 
 func databaseActionHints() string {

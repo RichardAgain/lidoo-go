@@ -1230,14 +1230,15 @@ func (m *Model) addonRows() string {
 
 func (m *Model) rightView() string {
 	var content string
-	switch m.focus {
+	switch m.activeTab() {
 	case focusDatabases:
-		content = m.databaseDetailView()
+		content = m.databaseTabView()
 	case focusAddons:
-		content = m.addonDetailView()
+		content = m.addonTabView()
 	default:
 		content = m.profileDetailView()
 	}
+	content = m.tabBar() + "\n\n" + content
 	warnings := make([]string, 0, 3)
 	if m.loading {
 		warnings = append(warnings, mutedStyle.Render("Loading profiles..."))
@@ -1255,6 +1256,57 @@ func (m *Model) rightView() string {
 		return content
 	}
 	return strings.Join(append(warnings, "", content), "\n")
+}
+
+func (m *Model) activeTab() focusArea {
+	if m.focus == focusProfiles {
+		return focusInfo
+	}
+	return m.focus
+}
+
+func (m *Model) tabBar() string {
+	tabs := []struct {
+		name  string
+		focus focusArea
+	}{
+		{name: "Databases", focus: focusDatabases},
+		{name: "Add-ons", focus: focusAddons},
+		{name: "Info", focus: focusInfo},
+	}
+	labels := make([]string, 0, len(tabs))
+	for _, tab := range tabs {
+		label := "  " + tab.name
+		if m.activeTab() == tab.focus {
+			label = activeStyle.Render("▸ " + tab.name)
+		}
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, "    ")
+}
+
+func (m *Model) databaseTabView() string {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
+		profileName = "none"
+	}
+	return strings.Join([]string{
+		titleStyle.Render("Databases: " + profileName),
+		m.databaseRows(),
+		m.databaseDetailView(),
+	}, "\n\n")
+}
+
+func (m *Model) addonTabView() string {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
+		profileName = "none"
+	}
+	return strings.Join([]string{
+		titleStyle.Render("Add-ons: " + profileName),
+		m.addonRows(),
+		m.addonDetailView(),
+	}, "\n\n")
 }
 
 func (m *Model) taskView() string {

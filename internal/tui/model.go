@@ -1144,47 +1144,38 @@ func (m *Model) View() string {
 }
 
 func (m *Model) leftView(width int) string {
-	profileRows := make([]string, 0, len(m.profiles))
-	for index, profile := range m.profiles {
-		row := profile.Name + "  " + profileState(profile.State)
-		profileRows = append(profileRows, m.row(row, index == m.profileIndex && m.focus == focusProfiles))
-	}
-	if len(profileRows) == 0 {
+	lines := []string{titleStyle.Render("Profiles")}
+	if len(m.profiles) == 0 {
 		if m.loading {
-			profileRows = append(profileRows, mutedStyle.Render("  loading..."))
+			lines = append(lines, mutedStyle.Render("loading..."))
 		} else {
-			profileRows = append(profileRows, mutedStyle.Render("  no profiles found"))
+			lines = append(lines, mutedStyle.Render("no profiles found"))
 		}
+		return strings.Join(lines, "\n")
 	}
 
-	selectedName := m.selectedProfileName()
-	if selectedName == "" {
-		selectedName = "none"
+	cards := make([]string, 0, len(m.profiles))
+	for index, profile := range m.profiles {
+		cards = append(cards, m.profileCard(width, profile, index == m.profileIndex))
 	}
-	sections := []string{
-		m.resourceSection(width, "Profiles", strings.Join(profileRows, "\n"), m.focus == focusProfiles),
-		m.resourceSection(width, "Databases: "+selectedName, m.databaseRows(), m.focus == focusDatabases),
-		m.resourceSection(width, "Add-ons: "+selectedName, m.addonRows(), m.focus == focusAddons),
-	}
-	return strings.Join(sections, "\n\n")
+	return strings.Join(append(lines, strings.Join(cards, "\n\n")), "\n\n")
 }
 
-func (m *Model) resourceSection(width int, title, body string, selected bool) string {
-	sectionWidth := width - 2
-	if sectionWidth < 1 {
-		sectionWidth = 1
+func (m *Model) profileCard(width int, profile docker.ProfileSummary, selected bool) string {
+	cardWidth := width - 2
+	if cardWidth < 1 {
+		cardWidth = 1
 	}
-	heading := titleStyle
 	border := borderStyle
 	if selected {
-		heading = activeStyle
 		border = activeBorderStyle
 	}
+	row := m.row(profile.Name+"  "+profileState(profile.State), selected)
 	return lipgloss.NewStyle().
-		Width(sectionWidth).
+		Width(cardWidth).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(border).
-		Render(heading.Render(title) + "\n" + body)
+		Render(row)
 }
 
 func (m *Model) databaseRows() string {

@@ -1045,6 +1045,8 @@ func (m *Model) moveFocusedSelection(delta int) tea.Cmd {
 		}
 	case focusAddons:
 		m.moveIndex(&m.addonIndex, len(m.addons), delta)
+	case focusInfo:
+		// Profile information has no independently navigable rows.
 	}
 	return nil
 }
@@ -1451,20 +1453,26 @@ func (m *Model) row(value string, selected bool) string {
 }
 
 func (m *Model) footerView() string {
-	keys := "tab focus  ↑/↓ move  r refresh  ? help  q quit"
+	keys := "tab/←/→ focus  ctrl+r refresh  ? help  q quit"
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab focus  ↑/↓ move  " + profileActionHints() + "  ctrl+r refresh  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  ctrl+r refresh  ? help  q quit"
 	}
 	if m.focus == focusDatabases && m.selectedDatabase() != nil {
-		keys = "tab focus  ↑/↓ move  " + databaseActionHints() + "  ctrl+r refresh  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ databases  " + databaseActionHints() + "  ctrl+r refresh  ? help  q quit"
+	}
+	if m.focus == focusAddons && len(m.addons) > 0 {
+		keys = "tab/←/→ focus  ↑/↓ add-ons  ctrl+r refresh  ? help  q quit"
 	}
 	if m.showHelp {
-		keys = "tab/←/→ focus  ↑/↓/j/k move  r refresh  q quit  ? hide help"
+		keys = "tab/←/→ focus  ↑/↓/j/k move  ctrl+r refresh  q quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k move  " + profileActionHints() + "  ctrl+r refresh  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusDatabases && m.selectedDatabase() != nil {
-			keys = "tab/←/→ focus  ↑/↓/j/k move  " + databaseActionHints() + "  ctrl+r refresh  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k databases  " + databaseActionHints() + "  ctrl+r refresh  ? hide help"
+		}
+		if m.focus == focusAddons && len(m.addons) > 0 {
+			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -1612,10 +1620,11 @@ func (m *Model) smallView() string {
 		lines = append(lines, errorStyle.Render(m.err.Error()))
 	}
 	if len(m.profiles) > 0 {
-		lines = append(lines, "", titleStyle.Render("Profiles"))
+		cards := make([]string, 0, len(m.profiles))
 		for index, profile := range m.profiles {
-			lines = append(lines, m.row(profile.Name+"  "+profileState(profile.State), index == m.profileIndex && m.focus == focusProfiles))
+			cards = append(cards, m.profileCard(m.width, profile, index == m.profileIndex))
 		}
+		lines = append(lines, "", titleStyle.Render("Profiles"), strings.Join(cards, "\n\n"))
 	}
 	hints := profileActionHints()
 	if m.focus == focusDatabases && m.selectedDatabase() != nil {

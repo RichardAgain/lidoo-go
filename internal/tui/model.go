@@ -21,6 +21,7 @@ const (
 	focusProfiles focusArea = iota
 	focusDatabases
 	focusAddons
+	focusInfo
 )
 
 type modalMode uint8
@@ -381,10 +382,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "tab", "right", "l":
-		m.focus = (m.focus + 1) % 3
+		m.focus = (m.focus + 1) % 4
 		return m, nil
 	case "shift+tab", "left", "h":
-		m.focus = (m.focus + 2) % 3
+		m.focus = (m.focus + 3) % 4
 		return m, nil
 	case "up", "k":
 		return m, m.moveFocusedSelection(-1)

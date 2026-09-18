@@ -110,6 +110,7 @@ type Model struct {
 	taskCancelRequested    bool
 	interactivePreparing   bool
 	formField              int
+	initDatabaseName       string
 	initModules            string
 	backupDestination      string
 	backupFormat           string
@@ -513,9 +514,16 @@ func (m *Model) openDropConfirmation() {
 }
 
 func (m *Model) openInitForm() {
-	if !m.prepareDatabaseAction() {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
 		return
 	}
+	m.taskProfileName = profileName
+	m.initDatabaseName = ""
+	if database := m.selectedDatabase(); database != nil {
+		m.initDatabaseName = database.Logical
+	}
+	m.taskDatabaseName = m.initDatabaseName
 	m.initModules = "base"
 	m.formField = 0
 	m.modal = modalInitDatabase
@@ -640,15 +648,17 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) submitDatabaseForm() tea.Cmd {
 	switch m.modal {
 	case modalInitDatabase:
+		databaseName := strings.TrimSpace(m.initDatabaseName)
 		modules := strings.TrimSpace(m.initModules)
-		if modules == "" {
+		if databaseName == "" || modules == "" {
 			return nil
 		}
+		m.taskDatabaseName = databaseName
 		m.modal = modalNone
 		return m.queueTask(taskRequest{
 			Kind:             taskInit,
 			ProfileName:      m.taskProfileName,
-			DatabaseName:     m.taskDatabaseName,
+			DatabaseName:     databaseName,
 			DatabasePhysical: m.taskDatabasePhysical,
 			Modules:          modules,
 		})
@@ -695,7 +705,7 @@ func (m *Model) queueRestoreTask() tea.Cmd {
 func (m *Model) formFieldCount() int {
 	switch m.modal {
 	case modalInitDatabase:
-		return 1
+		return 2
 	case modalBackupDatabase:
 		return 4
 	case modalRestoreDatabase:
@@ -753,7 +763,10 @@ func (m *Model) toggleFormField() bool {
 func (m *Model) formText() *string {
 	switch m.modal {
 	case modalInitDatabase:
-		if m.formField == 0 {
+		switch m.formField {
+		case 0:
+			return &m.initDatabaseName
+		case 1:
 			return &m.initModules
 		}
 	case modalBackupDatabase:
@@ -1407,7 +1420,25 @@ func (m *Model) databaseTabView() string {
 		titleStyle.Render("Databases: " + profileName),
 		m.databaseRows(),
 		m.databaseDetailView(),
+		m.databaseActionsView(),
 	}, "\n\n")
+}
+
+func (m *Model) databaseActionsView() string {
+	lines := []string{titleStyle.Render("Database actions")}
+	if m.selectedProfileName() == "" {
+		return strings.Join(append(lines, mutedStyle.Render("Select a profile to enable actions")), "\n")
+	}
+	if m.selectedDatabase() == nil {
+		return strings.Join(append(lines,
+			activeStyle.Render("i init new database"),
+			mutedStyle.Render("Select a database for update, drop, backup, restore, or psql"),
+		), "\n")
+	}
+	return strings.Join(append(lines,
+		mutedStyle.Render("i init   u update   U update-all   d drop"),
+		mutedStyle.Render("b backup   R restore   p psql"),
+	), "\n")
 }
 
 func (m *Model) addonTabView() string {
@@ -1571,8 +1602,12 @@ func (m *Model) footerView() string {
 	if m.focus == focusLogs && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ scroll  ctrl+r refresh logs  ? help  q quit"
 	}
-	if m.focus == focusDatabases && m.selectedDatabase() != nil {
-		keys = "tab/←/→ focus  ↑/↓ databases  " + databaseActionHints() + "  ctrl+r refresh  ? help  q quit"
+	if m.focus == focusDatabases && m.selectedProfileName() != "" {
+		keys = "tab/←/→ focus  ↑/↓ databases  i init new database"
+		if m.selectedDatabase() != nil {
+			keys += "  " + databaseActionHints()
+		}
+		keys += "  ctrl+r refresh  ? help  q quit"
 	}
 	if m.focus == focusAddons && len(m.addons) > 0 {
 		keys = "tab/←/→ focus  ↑/↓ add-ons  ctrl+r refresh  ? help  q quit"
@@ -1585,8 +1620,12 @@ func (m *Model) footerView() string {
 		if m.focus == focusLogs && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k scroll  f/pgdn  b/pgup  ctrl+r refresh logs  ? hide help"
 		}
-		if m.focus == focusDatabases && m.selectedDatabase() != nil {
-			keys = "tab/←/→ focus  ↑/↓/j/k databases  " + databaseActionHints() + "  ctrl+r refresh  ? hide help"
+		if m.focus == focusDatabases && m.selectedProfileName() != "" {
+			keys = "tab/←/→ focus  ↑/↓/j/k databases  i init new database"
+			if m.selectedDatabase() != nil {
+				keys += "  " + databaseActionHints()
+			}
+			keys += "  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusAddons && len(m.addons) > 0 {
 			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  ctrl+r refresh  ? hide help"
@@ -1642,8 +1681,8 @@ func (m *Model) modalView() string {
 		lines = []string{
 			titleStyle.Render("Initialize database"),
 			"Profile: " + m.taskProfileName,
-			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
-			m.formLine("modules", m.initModules, 0, true),
+			m.formLine("database", m.initDatabaseName, 0, true),
+			m.formLine("modules", m.initModules, 1, true),
 			"",
 			mutedStyle.Render("tab field  type  enter run  esc cancel"),
 		}
@@ -1743,9 +1782,15 @@ func (m *Model) smallView() string {
 		}
 		lines = append(lines, "", titleStyle.Render("Profiles"), strings.Join(cards, "\n\n"))
 	}
+	if m.focus == focusDatabases && m.selectedProfileName() != "" {
+		lines = append(lines, "", m.databaseTabView())
+	}
 	hints := profileActionHints()
-	if m.focus == focusDatabases && m.selectedDatabase() != nil {
-		hints = databaseActionHints()
+	if m.focus == focusDatabases {
+		hints = "i init new database"
+		if m.selectedDatabase() != nil {
+			hints = databaseActionHints()
+		}
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q quit"))
 	if task := m.taskView(); task != "" {

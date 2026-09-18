@@ -1363,7 +1363,6 @@ func (m *Model) logTabView(width int) string {
 		profileName = "none"
 	}
 	return strings.Join([]string{
-		titleStyle.Render("Logs: " + profileName),
 		m.logContainer(width, m.logContent()),
 	}, "\n\n")
 }
@@ -1421,28 +1420,9 @@ func (m *Model) databaseTabView() string {
 		profileName = "none"
 	}
 	return strings.Join([]string{
-		titleStyle.Render("Databases: " + profileName),
 		m.databaseRows(),
 		m.databaseDetailView(),
-		m.databaseActionsView(),
 	}, "\n\n")
-}
-
-func (m *Model) databaseActionsView() string {
-	lines := []string{titleStyle.Render("Database actions")}
-	if m.selectedProfileName() == "" {
-		return strings.Join(append(lines, mutedStyle.Render("Select a profile to enable actions")), "\n")
-	}
-	if m.selectedDatabase() == nil {
-		return strings.Join(append(lines,
-			activeStyle.Render("i init new database"),
-			mutedStyle.Render("Select a database for update, drop, backup, restore, or psql"),
-		), "\n")
-	}
-	return strings.Join(append(lines,
-		mutedStyle.Render("i init   u update   U update-all   d drop"),
-		mutedStyle.Render("b backup   R restore   p psql"),
-	), "\n")
 }
 
 func (m *Model) addonTabView() string {
@@ -1607,7 +1587,7 @@ func (m *Model) footerView() string {
 		keys = "tab/←/→ focus  ↑/↓ scroll  ctrl+r refresh logs  ? help  q quit"
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ databases  i init new database"
+		keys = "tab/←/→ focus  ↑/↓ databases  i init"
 		if m.selectedDatabase() != nil {
 			keys += "  " + databaseActionHints()
 		}
@@ -1649,7 +1629,7 @@ func profileActionHints() string {
 }
 
 func databaseActionHints() string {
-	return "i init  u update  U update-all  d drop  b backup  R restore  p psql"
+	return "u update  U update-all  d drop  b backup  R restore  p psql"
 }
 
 func (m *Model) modalView() string {

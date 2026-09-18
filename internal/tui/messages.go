@@ -113,11 +113,13 @@ type TaskCancelledMsg struct {
 }
 
 type ProfileLogsLoadedMsg struct {
+	RequestID   uint64
 	ProfileName string
 	Output      string
 }
 
 type ProfileLogsFailedMsg struct {
+	RequestID   uint64
 	ProfileName string
 	Err         error
 }

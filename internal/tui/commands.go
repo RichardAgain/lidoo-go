@@ -124,16 +124,16 @@ func LoadAddonsCmd(ctx context.Context, service *app.Service, profileName string
 	}
 }
 
-func LoadProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, tail int) tea.Cmd {
+func LoadProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		if service == nil {
-			return ProfileLogsFailedMsg{ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
+			return ProfileLogsFailedMsg{RequestID: requestID, ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
 		}
-		output, err := service.ProfileLogs(ctx, profileName, tail)
+		output, err := service.ProfileLogsSinceStart(ctx, profileName)
 		if err != nil {
-			return ProfileLogsFailedMsg{ProfileName: profileName, Err: err}
+			return ProfileLogsFailedMsg{RequestID: requestID, ProfileName: profileName, Err: err}
 		}
-		return ProfileLogsLoadedMsg{ProfileName: profileName, Output: output}
+		return ProfileLogsLoadedMsg{RequestID: requestID, ProfileName: profileName, Output: output}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -19,9 +20,11 @@ type focusArea uint8
 
 const (
 	focusProfiles focusArea = iota
+	focusLogs
 	focusDatabases
 	focusAddons
 	focusInfo
+	focusAreaCount
 )
 
 type modalMode uint8
@@ -53,6 +56,13 @@ type Model struct {
 	service                *app.Service
 	profiles               []docker.ProfileSummary
 	profileIndex           int
+	logPhase               resourcePhase
+	logOutput              string
+	logErr                 error
+	logRequest             uint64
+	logResourceName        string
+	logViewport            viewport.Model
+	logViewportReady       bool
 	databases              []odoo.Database
 	databaseIndex          int
 	addons                 []addons.AddonStatus
@@ -134,6 +144,8 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 		width:         80,
 		height:        24,
 		profilePhase:  phaseLoading,
+		logPhase:      phaseIdle,
+		logViewport:   viewport.New(1, 1),
 		databasePhase: phaseIdle,
 		addonPhase:    phaseIdle,
 	}
@@ -330,12 +342,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finishTask("cancelled", msg.Output, nil)
 		return m, m.refreshAfterTask(msg.ProfileName)
 	case ProfileLogsLoadedMsg:
-		m.interactivePreparing = false
-		m.retainInteractiveOutput("logs "+msg.ProfileName, msg.Output, nil)
+		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) {
+			return m, nil
+		}
+		m.logPhase = phaseReady
+		m.logOutput = msg.Output
+		m.logErr = nil
 		return m, nil
 	case ProfileLogsFailedMsg:
-		m.interactivePreparing = false
-		m.retainInteractiveOutput("logs "+msg.ProfileName, "", msg.Err)
+		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) {
+			return m, nil
+		}
+		m.logPhase = phaseError
+		m.logErr = msg.Err
 		return m, nil
 	case InteractiveCommandReadyMsg:
 		m.interactivePreparing = false
@@ -377,16 +396,22 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.focus == focusLogs {
+		switch msg.String() {
+		case "up", "k", "down", "j", "pgup", "pgdown", "f", "b", "u", "ctrl+u", "d", "ctrl+d", " ":
+			var cmd tea.Cmd
+			m.logViewport, cmd = m.logViewport.Update(msg)
+			return m, cmd
+		}
+	}
 
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "tab", "right", "l":
-		m.focus = (m.focus + 1) % 4
-		return m, nil
+		return m, m.moveFocus(1)
 	case "shift+tab", "left", "h":
-		m.focus = (m.focus + 3) % 4
-		return m, nil
+		return m, m.moveFocus(-1)
 	case "up", "k":
 		return m, m.moveFocusedSelection(-1)
 	case "down", "j":
@@ -906,6 +931,8 @@ func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
 }
 
 func (m *Model) beginProfileResources() tea.Cmd {
+	profileName := m.selectedProfileName()
+	previousLogProfile := m.logResourceName
 	m.pendingDatabaseRefresh = false
 	m.profileRequest++
 	m.databaseRequest++
@@ -918,25 +945,41 @@ func (m *Model) beginProfileResources() tea.Cmd {
 	m.databaseInfoErr = nil
 	m.databases = nil
 	m.databaseIndex = 0
+	m.logRequest++
+	if previousLogProfile != profileName {
+		m.logPhase = phaseIdle
+		m.logOutput = ""
+		m.logErr = nil
+		m.logResourceName = ""
+		m.logViewportReady = false
+	}
 	m.addonPhase = phaseLoading
 	m.addonErr = nil
 	m.addons = nil
 	m.addonIndex = 0
 
-	profileName := m.selectedProfileName()
 	m.profileResourceName = profileName
 	if profileName == "" {
 		m.profilePhase = phaseEmpty
 		m.databasePhase = phaseEmpty
 		m.databaseInfoPhase = phaseEmpty
+		m.logPhase = phaseEmpty
+		m.logOutput = ""
+		m.logErr = nil
+		m.logResourceName = ""
+		m.logViewportReady = false
 		m.addonPhase = phaseEmpty
 		return nil
 	}
-	return tea.Batch(
+	commands := []tea.Cmd{
 		LoadProfileDetailCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
-	)
+	}
+	if m.focus == focusLogs {
+		commands = append(commands, m.beginLogLoad())
+	}
+	return tea.Batch(commands...)
 }
 
 func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd {
@@ -963,7 +1006,11 @@ func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd
 		m.databaseErr = nil
 		m.databaseInfoErr = nil
 	}
-	return LoadProfileDetailCmd(m.ctx, m.service, invalidation.ProfileName, m.profileRequest)
+	commands := []tea.Cmd{LoadProfileDetailCmd(m.ctx, m.service, invalidation.ProfileName, m.profileRequest)}
+	if m.focus == focusLogs {
+		commands = append(commands, m.beginLogLoad())
+	}
+	return tea.Batch(commands...)
 }
 
 func (m *Model) afterProfileDetailLoaded() tea.Cmd {
@@ -993,6 +1040,27 @@ func (m *Model) updateProfileSummary(detail docker.ProfileDetail) {
 		m.profiles[index].Version = detail.OdooVersion
 		return
 	}
+}
+
+func (m *Model) beginLogLoad() tea.Cmd {
+	m.logRequest++
+	m.logPhase = phaseLoading
+	m.logErr = nil
+	profileName := m.selectedProfileName()
+	m.logResourceName = profileName
+	if profileName == "" {
+		m.logPhase = phaseEmpty
+		return nil
+	}
+	return LoadProfileLogsCmd(m.ctx, m.service, profileName, m.logRequest)
+}
+
+func (m *Model) moveFocus(delta int) tea.Cmd {
+	m.focus = focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount))
+	if m.focus == focusLogs {
+		return m.beginLogLoad()
+	}
+	return nil
 }
 
 func (m *Model) beginDatabaseInfoLoad() tea.Cmd {
@@ -1051,6 +1119,10 @@ func (m *Model) currentProfileRequest(requestID uint64, profileName string) bool
 func (m *Model) currentDatabaseRequest(requestID uint64, profileName, databasePhysical string) bool {
 	database := m.selectedDatabase()
 	return requestID == m.databaseRequest && profileName == m.selectedProfileName() && database != nil && database.Physical == databasePhysical
+}
+
+func (m *Model) currentLogRequest(requestID uint64, profileName string) bool {
+	return requestID == m.logRequest && profileName != "" && profileName == m.selectedProfileName() && profileName == m.logResourceName
 }
 
 func (m *Model) selectedProfile() *docker.ProfileSummary {
@@ -1113,7 +1185,7 @@ func (m *Model) View() string {
 	}
 
 	left := lipgloss.NewStyle().Width(leftWidth).Render(m.leftView(leftWidth))
-	right := lipgloss.NewStyle().Width(rightWidth).Render(m.rightView())
+	right := lipgloss.NewStyle().Width(rightWidth).Render(m.rightView(rightWidth))
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 	footer := m.footerView()
 	view := main + "\n" + mutedStyle.Render(strings.Repeat("─", m.width)) + "\n" + footer
@@ -1208,9 +1280,11 @@ func (m *Model) addonRows() string {
 	}
 }
 
-func (m *Model) rightView() string {
+func (m *Model) rightView(width int) string {
 	var content string
 	switch m.activeTab() {
+	case focusLogs:
+		content = m.logTabView(width)
 	case focusDatabases:
 		content = m.databaseTabView()
 	case focusAddons:
@@ -1250,6 +1324,7 @@ func (m *Model) tabBar() string {
 		name  string
 		focus focusArea
 	}{
+		{name: "Log", focus: focusLogs},
 		{name: "Databases", focus: focusDatabases},
 		{name: "Add-ons", focus: focusAddons},
 		{name: "Info", focus: focusInfo},
@@ -1263,6 +1338,64 @@ func (m *Model) tabBar() string {
 		labels = append(labels, label)
 	}
 	return strings.Join(labels, "    ")
+}
+
+func (m *Model) logTabView(width int) string {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
+		profileName = "none"
+	}
+	return strings.Join([]string{
+		titleStyle.Render("Logs: " + profileName),
+		m.logContainer(width, m.logContent()),
+	}, "\n\n")
+}
+
+func (m *Model) logContent() string {
+	output := strings.TrimRight(m.logOutput, "\n")
+	status := ""
+	switch m.logPhase {
+	case phaseLoading:
+		status = mutedStyle.Render("refreshing profile logs...")
+	case phaseReady:
+		if output == "" {
+			status = mutedStyle.Render("no log output")
+		}
+	case phaseError:
+		status = errorStyle.Render("refresh failed: " + errorText(m.logErr))
+	case phaseEmpty:
+		status = mutedStyle.Render("select a profile to load logs")
+	case phaseIdle:
+		status = mutedStyle.Render("focus Log to load profile logs")
+	}
+	if status == "" {
+		return output
+	}
+	if output == "" {
+		return status
+	}
+	return status + "\n\n" + output
+}
+
+func (m *Model) logContainer(width int, content string) string {
+	height := m.height - 10
+	if height < 4 {
+		height = 4
+	}
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderStyle).
+		Padding(0, 1)
+	wasBottom := !m.logViewportReady || m.logViewport.AtBottom()
+	m.logViewport.Width = width
+	m.logViewport.Height = height
+	m.logViewport.Style = style
+	m.logViewport.SetContent(content)
+	if wasBottom {
+		m.logViewport.GotoBottom()
+	}
+	m.logViewportReady = true
+	return m.logViewport.View()
 }
 
 func (m *Model) databaseTabView() string {
@@ -1435,6 +1568,9 @@ func (m *Model) footerView() string {
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  ctrl+r refresh  ? help  q quit"
 	}
+	if m.focus == focusLogs && m.selectedProfileName() != "" {
+		keys = "tab/←/→ focus  ↑/↓ scroll  ctrl+r refresh logs  ? help  q quit"
+	}
 	if m.focus == focusDatabases && m.selectedDatabase() != nil {
 		keys = "tab/←/→ focus  ↑/↓ databases  " + databaseActionHints() + "  ctrl+r refresh  ? help  q quit"
 	}
@@ -1445,6 +1581,9 @@ func (m *Model) footerView() string {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  ctrl+r refresh  q quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  ctrl+r refresh  ? hide help"
+		}
+		if m.focus == focusLogs && m.selectedProfileName() != "" {
+			keys = "tab/←/→ focus  ↑/↓/j/k scroll  f/pgdn  b/pgup  ctrl+r refresh logs  ? hide help"
 		}
 		if m.focus == focusDatabases && m.selectedDatabase() != nil {
 			keys = "tab/←/→ focus  ↑/↓/j/k databases  " + databaseActionHints() + "  ctrl+r refresh  ? hide help"

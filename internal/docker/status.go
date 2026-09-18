@@ -68,7 +68,8 @@ type runtimeMount struct {
 type inspectedContainer struct {
 	ID    string `json:"Id"`
 	State struct {
-		Status string `json:"Status"`
+		Status    string `json:"Status"`
+		StartedAt string `json:"StartedAt"`
 	} `json:"State"`
 	Config struct {
 		Image  string            `json:"Image"`
@@ -273,14 +274,18 @@ func Logs(name string, follow bool, tail int) error {
 }
 
 func LogsCommand(name string, follow bool, tail int) (*exec.Cmd, error) {
-	return logsCommand(context.Background(), name, follow, tail, os.Stderr)
+	return logsCommand(context.Background(), name, follow, tail, os.Stderr, false)
 }
 
 func LogsCommandWithContext(ctx context.Context, name string, follow bool, tail int) (*exec.Cmd, error) {
-	return logsCommand(ctx, name, follow, tail, io.Discard)
+	return logsCommand(ctx, name, follow, tail, io.Discard, false)
 }
 
-func logsCommand(ctx context.Context, name string, follow bool, tail int, lookupStderr io.Writer) (*exec.Cmd, error) {
+func LogsSinceStartCommandWithContext(ctx context.Context, name string) (*exec.Cmd, error) {
+	return logsCommand(ctx, name, false, -1, io.Discard, true)
+}
+
+func logsCommand(ctx context.Context, name string, follow bool, tail int, lookupStderr io.Writer, sinceStart bool) (*exec.Cmd, error) {
 	if name == "" {
 		return nil, fmt.Errorf("logs requires name")
 	}
@@ -298,6 +303,16 @@ func logsCommand(ctx context.Context, name string, follow bool, tail int, lookup
 		return nil, fmt.Errorf("no profile with name %q", name)
 	}
 	args := []string{"logs"}
+	if sinceStart {
+		startedAt, err := containerStartedAtWithOptions(containers[0], CommandOptions{Context: ctx, Stderr: lookupStderr})
+		if err != nil {
+			return nil, fmt.Errorf("inspect profile %q: %w", name, err)
+		}
+		if startedAt == "" {
+			return nil, fmt.Errorf("profile %q has no container start time", name)
+		}
+		args = append(args, "--since", startedAt)
+	}
 	if follow {
 		args = append(args, "--follow")
 	}
@@ -306,6 +321,14 @@ func logsCommand(ctx context.Context, name string, follow bool, tail int, lookup
 	}
 	args = append(args, containers[0])
 	return exec.CommandContext(ctx, "docker", args...), nil
+}
+
+func containerStartedAtWithOptions(id string, options CommandOptions) (string, error) {
+	output, err := dockerOutputWithOptions(options, "inspect", "--format", "{{.State.StartedAt}}", id)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func runDockerCommand(args ...string) error {

@@ -48,6 +48,18 @@ func (s *Service) ProfileLogs(ctx context.Context, profileName string, tail int)
 	if err != nil {
 		return "", err
 	}
+	return readProfileLogs(command)
+}
+
+func (s *Service) ProfileLogsSinceStart(ctx context.Context, profileName string) (string, error) {
+	command, err := docker.LogsSinceStartCommandWithContext(ctx, profileName)
+	if err != nil {
+		return "", err
+	}
+	return readProfileLogs(command)
+}
+
+func readProfileLogs(command *exec.Cmd) (string, error) {
 	var diagnostic bytes.Buffer
 	command.Stderr = &diagnostic
 	output, err := command.Output()
@@ -57,5 +69,11 @@ func (s *Service) ProfileLogs(ctx context.Context, profileName string, tail int)
 		}
 		return "", fmt.Errorf("read profile logs: %w", err)
 	}
-	return string(output), nil
+	if len(output) == 0 {
+		return diagnostic.String(), nil
+	}
+	if diagnostic.Len() == 0 {
+		return string(output), nil
+	}
+	return string(output) + "\n" + diagnostic.String(), nil
 }

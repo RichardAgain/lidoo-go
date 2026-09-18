@@ -124,14 +124,15 @@ type Model struct {
 }
 
 var (
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#7D78F2"})
-	activeStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#4338CA", Dark: "#A5B4FC"})
-	errorStyle        = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#F97068"})
-	mutedStyle        = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#667085", Dark: "#98A2B3"})
-	runningStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#027A48", Dark: "#6CE9A6"})
-	warningStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B54708", Dark: "#FEC84B"})
-	borderStyle       = lipgloss.AdaptiveColor{Light: "#D0D5DD", Dark: "#475467"}
-	activeBorderStyle = lipgloss.AdaptiveColor{Light: "#7D78F2", Dark: "#A5B4FC"}
+	titleStyle           = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#7D78F2"})
+	activeStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#4338CA", Dark: "#A5B4FC"})
+	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#F97068"})
+	mutedStyle           = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#667085", Dark: "#98A2B3"})
+	runningStyle         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#027A48", Dark: "#6CE9A6"})
+	warningStyle         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B54708", Dark: "#FEC84B"})
+	borderStyle          = lipgloss.AdaptiveColor{Light: "#D0D5DD", Dark: "#475467"}
+	activeBorderStyle    = lipgloss.AdaptiveColor{Light: "#7D78F2", Dark: "#A5B4FC"}
+	inspectedBorderStyle = lipgloss.AdaptiveColor{Light: "#A7A7E8", Dark: "#7684B2"}
 )
 
 func NewModel(ctx context.Context, service *app.Service) *Model {
@@ -1233,7 +1234,10 @@ func (m *Model) profileCard(width int, profile docker.ProfileSummary, selected b
 	}
 	border := borderStyle
 	if selected {
-		border = activeBorderStyle
+		border = inspectedBorderStyle
+		if m.focus == focusProfiles {
+			border = activeBorderStyle
+		}
 	}
 	row := m.row(profile.Name+"  "+profileState(profile.State), selected)
 	return lipgloss.NewStyle().
@@ -1345,8 +1349,8 @@ func (m *Model) tabBar() string {
 	labels := make([]string, 0, len(tabs))
 	for _, tab := range tabs {
 		label := "  " + tab.name
-		if m.activeTab() == tab.focus {
-			label = activeStyle.Render("▸ " + tab.name)
+		if m.focus != focusProfiles && m.activeTab() == tab.focus {
+			label = activeStyle.Render("  " + tab.name)
 		}
 		labels = append(labels, label)
 	}
@@ -1591,7 +1595,7 @@ func (m *Model) row(value string, selected bool) string {
 	if !selected {
 		return "  " + value
 	}
-	return activeStyle.Render("▸ " + value)
+	return activeStyle.Render("  " + value)
 }
 
 func (m *Model) footerView() string {
@@ -1748,7 +1752,7 @@ func (m *Model) formLine(label, value string, field int, textField bool) string 
 	}
 	line := label + ": " + value
 	if m.formField == field {
-		return activeStyle.Render("▸ " + line)
+		return activeStyle.Render("  " + line)
 	}
 	return "  " + line
 }

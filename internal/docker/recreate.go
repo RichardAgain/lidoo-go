@@ -30,6 +30,9 @@ func RecreateWithOptions(name string, state files.State, options CommandOptions)
 	if err != nil {
 		return err
 	}
+	if err := networkExistsWithContext(options.Context); err != nil {
+		return err
+	}
 	if running {
 		if err := StopWithOptions(name, options); err != nil {
 			return fmt.Errorf("stop container %q: %w", name, err)

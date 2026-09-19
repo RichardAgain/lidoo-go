@@ -54,6 +54,9 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 	if err := ValidateProfileName(name); err != nil {
 		return err
 	}
+	if err := networkExistsWithContext(options.Context); err != nil {
+		return err
+	}
 
 	storedVersion, err := profile.Version(state, name)
 	if err != nil {
@@ -130,9 +133,6 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 
 	if _, err := os.Stat(databaseEnvFile); err != nil {
 		return fmt.Errorf("%q not found: %w", databaseEnvFile, err)
-	}
-	if err := networkExistsWithContext(options.Context); err != nil {
-		return err
 	}
 	if err := EnsureVolumeWithContext(options.Context); err != nil {
 		return fmt.Errorf("ensure filestore volume: %w", err)

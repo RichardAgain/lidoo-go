@@ -19,6 +19,9 @@ func RestartWithOptions(name string, options CommandOptions) error {
 	if len(containers) == 0 {
 		return fmt.Errorf("no running container with name %q", name)
 	}
+	if err := networkExistsWithContext(options.Context); err != nil {
+		return err
+	}
 	for _, container := range containers {
 		if err := dockerQuietWithOptions(options, "restart", container); err != nil {
 			return fmt.Errorf("restart container %s: %w", container, err)

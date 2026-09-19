@@ -105,6 +105,7 @@ type Model struct {
 	taskStatus             string
 	taskOutput             string
 	taskErr                error
+	taskNotice             string
 	taskStarting           bool
 	taskRunning            bool
 	taskCancelRequested    bool
@@ -391,12 +392,19 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modal != modalNone {
 		return m.updateModalKey(msg)
 	}
-	if m.taskStarting || m.taskRunning || m.interactivePreparing {
+	if m.interactivePreparing {
 		switch msg.String() {
 		case "c", "ctrl+c":
 			m.cancelTask()
 		}
 		return m, nil
+	}
+	if m.taskActive() {
+		switch msg.String() {
+		case "c", "ctrl+c":
+			m.cancelTask()
+			return m, nil
+		}
 	}
 	if m.focus == focusLogs {
 		switch msg.String() {
@@ -440,6 +448,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			if m.rejectMutatingAction() {
+				return m, nil
+			}
 			m.taskProfileName = m.selectedProfileName()
 			m.modal = modalConfirmRemove
 		} else if m.focus == focusDatabases {
@@ -463,6 +474,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if m.focus == focusDatabases {
+			if m.rejectMutatingAction() {
+				return m, nil
+			}
 			database := m.selectedDatabase()
 			if database != nil {
 				profileName := m.selectedProfileName()
@@ -508,7 +522,7 @@ func (m *Model) queueSelectedDatabaseTask(kind taskKind, updateAll bool) tea.Cmd
 }
 
 func (m *Model) openDropConfirmation() {
-	if !m.prepareDatabaseAction() {
+	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
 	m.modal = modalConfirmDrop
@@ -516,7 +530,7 @@ func (m *Model) openDropConfirmation() {
 
 func (m *Model) openInitForm() {
 	profileName := m.selectedProfileName()
-	if profileName == "" {
+	if profileName == "" || m.rejectMutatingAction() {
 		return
 	}
 	m.taskProfileName = profileName
@@ -531,7 +545,7 @@ func (m *Model) openInitForm() {
 }
 
 func (m *Model) openBackupForm() {
-	if !m.prepareDatabaseAction() {
+	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
 	m.backupDestination = ""
@@ -543,7 +557,7 @@ func (m *Model) openBackupForm() {
 }
 
 func (m *Model) openRestoreForm() {
-	if !m.prepareDatabaseAction() {
+	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
 	m.restoreSource = ""
@@ -816,6 +830,9 @@ func removeLastRune(value string) string {
 }
 
 func (m *Model) queueTask(request taskRequest) tea.Cmd {
+	if m.rejectMutatingAction() {
+		return nil
+	}
 	m.taskID++
 	m.pendingTask = &request
 	m.taskProfileName = request.ProfileName
@@ -828,6 +845,7 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	m.taskStatus = "starting"
 	m.taskOutput = ""
 	m.taskErr = nil
+	m.taskNotice = ""
 	m.taskStarting = true
 	m.taskRunning = false
 	m.taskCancelRequested = false
@@ -837,6 +855,18 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	}
 	m.taskContext, m.taskCancel = context.WithCancel(taskBaseContext)
 	return StartTaskCmd(m.taskID)
+}
+
+func (m *Model) taskActive() bool {
+	return m.taskStarting || m.taskRunning
+}
+
+func (m *Model) rejectMutatingAction() bool {
+	if !m.taskActive() {
+		return false
+	}
+	m.taskNotice = "task already running"
+	return true
 }
 
 func (m *Model) cancelTask() {
@@ -864,6 +894,7 @@ func (m *Model) finishTask(status, output string, taskErr error) {
 	m.pendingTask = nil
 	m.taskStarting = false
 	m.taskRunning = false
+	m.taskNotice = ""
 	m.taskStatus = status
 	m.taskCancelRequested = false
 	m.taskOutput = strings.TrimSpace(output)
@@ -1442,6 +1473,9 @@ func (m *Model) taskView() string {
 		return ""
 	}
 	lines := []string{titleStyle.Render("Latest task"), m.taskName + "  " + taskStatus(m.taskStatus)}
+	if m.taskNotice != "" {
+		lines = append(lines, errorStyle.Render(m.taskNotice))
+	}
 	if m.taskErr != nil {
 		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
 	}

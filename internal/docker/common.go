@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -171,19 +170,9 @@ func dockerQuiet(args ...string) error {
 func dockerQuietWithOptions(options CommandOptions, args ...string) error {
 	options = normalizeCommandOptions(options)
 	cmd := exec.CommandContext(options.Context, "docker", args...)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	if err := cmd.Run(); err != nil {
-		if output.Len() > 0 {
-			fmt.Fprint(options.Stderr, output.String())
-		}
-		if contextErr := options.Context.Err(); contextErr != nil {
-			return contextErr
-		}
-		return err
-	}
-	return nil
+	cmd.Stdout = options.Stdout
+	cmd.Stderr = options.Stderr
+	return commandError(options.Context, cmd.Run())
 }
 
 func dockerCommandAvailable(args ...string) bool {

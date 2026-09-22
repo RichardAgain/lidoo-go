@@ -51,16 +51,29 @@ const (
 	phaseError
 )
 
+const maxLogBufferSize = 64 * 1024
+
+type profileLogBuffer struct {
+	output            string
+	containerSnapshot string
+	containerLoaded   bool
+}
+
 type Model struct {
 	ctx                    context.Context
 	service                *app.Service
 	profiles               []docker.ProfileSummary
 	profileIndex           int
 	logPhase               resourcePhase
-	logOutput              string
+	profileLogs            map[string]*profileLogBuffer
 	logErr                 error
 	logRequest             uint64
 	logResourceName        string
+	logContext             context.Context
+	logCancel              context.CancelFunc
+	logProgress            <-chan profileLogStreamEvent
+	logSnapshotPending     bool
+	logPendingOutput       string
 	logViewport            viewport.Model
 	logViewportReady       bool
 	databases              []odoo.Database
@@ -97,13 +110,12 @@ type Model struct {
 	pendingTask            *taskRequest
 	taskContext            context.Context
 	taskCancel             context.CancelFunc
-	taskProgress           <-chan string
+	taskProgress           <-chan taskProgressEvent
 	taskProfileName        string
 	taskDatabaseName       string
 	taskDatabasePhysical   string
 	taskName               string
 	taskStatus             string
-	taskOutput             string
 	taskErr                error
 	taskNotice             string
 	taskStarting           bool
@@ -148,6 +160,7 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 		height:        24,
 		profilePhase:  phaseLoading,
 		logPhase:      phaseIdle,
+		profileLogs:   make(map[string]*profileLogBuffer),
 		logViewport:   viewport.New(1, 1),
 		databasePhase: phaseIdle,
 		addonPhase:    phaseIdle,
@@ -293,18 +306,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.taskStarting = false
 		m.taskRunning = true
 		m.taskStatus = "running"
-		progress := make(chan string, 32)
+		progress := make(chan taskProgressEvent, 32)
 		m.taskProgress = progress
 		return m, tea.Batch(
 			ExecuteProfileTaskCmd(m.taskContext, m.service, request, msg.ID, progress),
 			WaitTaskProgressCmd(msg.ID, progress),
 		)
 	case TaskProgressMsg:
-		if !m.currentTask(msg.ID) || !m.taskRunning {
+		if !m.currentTask(msg.ID) || !m.taskRunning || msg.ProfileName != m.taskProfileName {
 			return m, nil
 		}
 		if msg.Text != "" {
-			m.taskOutput = appendTaskOutput(m.taskOutput, msg.Text)
+			m.appendTaskLog(msg.ProfileName, msg.Text)
 		}
 		if m.taskProgress == nil {
 			return m, nil
@@ -320,7 +333,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.currentTask(msg.ID) {
 			return m, nil
 		}
-		m.finishTask("completed", msg.Output, nil)
+		m.finishTask("completed", nil)
 		return m, m.refreshAfterTask(msg.ProfileName)
 	case TaskFailedMsg:
 		if !m.currentTask(msg.ID) {
@@ -328,12 +341,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var required *app.ProfileVersionRequiredError
 		if errors.As(msg.Err, &required) {
-			m.finishTask("version required", msg.Output, nil)
+			m.finishTask("version required", nil)
 			m.modal = modalRunVersion
 			m.versionInput = ""
 			return m, nil
 		}
-		m.finishTask("failed", msg.Output, msg.Err)
+		m.finishTask("failed", msg.Err)
 		if errors.Is(msg.Err, odoo.ErrDatabaseNotFound) && msg.ProfileName == m.selectedProfileName() {
 			return m, m.refreshDatabasesAfterMissing()
 		}
@@ -342,27 +355,62 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.currentTask(msg.ID) {
 			return m, nil
 		}
-		m.finishTask("cancelled", msg.Output, nil)
+		m.finishTask("cancelled", nil)
 		return m, m.refreshAfterTask(msg.ProfileName)
 	case ProfileLogsLoadedMsg:
 		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) {
 			return m, nil
 		}
+		m.mergeContainerLogs(msg.ProfileName, msg.Output)
+		m.flushPendingContainerLogs(msg.ProfileName)
+		m.logSnapshotPending = false
 		m.logPhase = phaseReady
-		m.logOutput = msg.Output
 		m.logErr = nil
 		return m, nil
 	case ProfileLogsFailedMsg:
 		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) {
 			return m, nil
 		}
+		m.flushPendingContainerLogs(msg.ProfileName)
+		m.logSnapshotPending = false
 		m.logPhase = phaseError
 		m.logErr = msg.Err
+		return m, nil
+	case ProfileLogStreamMsg:
+		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) || msg.Text == "" {
+			return m, nil
+		}
+		if m.logSnapshotPending {
+			m.logPendingOutput = appendBoundedOutput(m.logPendingOutput, msg.Text)
+		} else {
+			m.appendContainerLog(msg.ProfileName, msg.Text)
+		}
+		if m.logProgress == nil {
+			return m, nil
+		}
+		return m, WaitProfileLogStreamCmd(msg.ProfileName, msg.RequestID, m.logProgress)
+	case ProfileLogStreamFailedMsg:
+		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) {
+			return m, nil
+		}
+		m.flushPendingContainerLogs(msg.ProfileName)
+		m.logSnapshotPending = false
+		m.logProgress = nil
+		m.logPhase = phaseError
+		m.logErr = msg.Err
+		return m, nil
+	case ProfileLogStreamDoneMsg:
+		if !m.currentLogRequest(msg.RequestID, msg.ProfileName) {
+			return m, nil
+		}
+		m.flushPendingContainerLogs(msg.ProfileName)
+		m.logSnapshotPending = false
+		m.logProgress = nil
 		return m, nil
 	case InteractiveCommandReadyMsg:
 		m.interactivePreparing = false
 		if msg.Command == nil {
-			m.retainInteractiveOutput(interactiveTaskName(msg), "", errors.New("interactive command is unavailable"))
+			m.retainInteractiveOutput(interactiveTaskName(msg), errors.New("interactive command is unavailable"))
 			return m, nil
 		}
 		return m, tea.ExecProcess(msg.Command, func(err error) tea.Msg {
@@ -375,13 +423,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case InteractiveCommandFailedMsg:
 		m.interactivePreparing = false
-		m.retainInteractiveOutput(interactiveTaskName(msg), "", msg.Err)
+		m.retainInteractiveOutput(interactiveTaskName(msg), msg.Err)
 		if errors.Is(msg.Err, odoo.ErrDatabaseNotFound) && msg.ProfileName == m.selectedProfileName() {
 			return m, m.refreshDatabasesAfterMissing()
 		}
 		return m, nil
 	case InteractiveCommandFinishedMsg:
-		m.retainInteractiveOutput(interactiveTaskName(msg), "", msg.Err)
+		m.retainInteractiveOutput(interactiveTaskName(msg), msg.Err)
 		return m, nil
 	default:
 		return m, nil
@@ -483,7 +531,6 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.interactivePreparing = true
 				m.taskName = "psql " + profileName + "/" + database.Logical
 				m.taskStatus = "preparing"
-				m.taskOutput = ""
 				m.taskErr = nil
 				m.err = nil
 				return m, PrepareDatabaseShellCmd(m.ctx, m.service, profileName, database.Logical)
@@ -843,7 +890,6 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 		m.taskName += "/" + request.DatabaseName
 	}
 	m.taskStatus = "starting"
-	m.taskOutput = ""
 	m.taskErr = nil
 	m.taskNotice = ""
 	m.taskStarting = true
@@ -884,7 +930,7 @@ func (m *Model) currentTask(id uint64) bool {
 	return id == m.taskID && (m.taskStarting || m.taskRunning)
 }
 
-func (m *Model) finishTask(status, output string, taskErr error) {
+func (m *Model) finishTask(status string, taskErr error) {
 	if m.taskCancel != nil {
 		m.taskCancel()
 	}
@@ -897,17 +943,15 @@ func (m *Model) finishTask(status, output string, taskErr error) {
 	m.taskNotice = ""
 	m.taskStatus = status
 	m.taskCancelRequested = false
-	m.taskOutput = strings.TrimSpace(output)
 	m.taskErr = taskErr
 }
 
-func (m *Model) retainInteractiveOutput(name, output string, taskErr error) {
+func (m *Model) retainInteractiveOutput(name string, taskErr error) {
 	m.taskName = name
 	m.taskStatus = "completed"
 	if taskErr != nil {
 		m.taskStatus = "failed"
 	}
-	m.taskOutput = strings.TrimSpace(output)
 	m.taskErr = taskErr
 	m.interactivePreparing = false
 }
@@ -952,15 +996,111 @@ func (m *Model) refreshDatabasesAfterMissing() tea.Cmd {
 	return LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest)
 }
 
-func appendTaskOutput(existing, next string) string {
-	next = strings.TrimSpace(next)
+func appendBoundedOutput(existing, next string) string {
 	if next == "" {
 		return existing
 	}
-	if existing == "" {
+	combined := existing + next
+	if len(combined) <= maxLogBufferSize {
+		return combined
+	}
+	start := len(combined) - maxLogBufferSize
+	for start < len(combined) && (combined[start]&0xc0) == 0x80 {
+		start++
+	}
+	return combined[start:]
+}
+
+func (m *Model) profileLogBuffer(profileName string) *profileLogBuffer {
+	if m.profileLogs == nil {
+		m.profileLogs = make(map[string]*profileLogBuffer)
+	}
+	buffer := m.profileLogs[profileName]
+	if buffer == nil {
+		buffer = &profileLogBuffer{}
+		m.profileLogs[profileName] = buffer
+	}
+	return buffer
+}
+
+func (m *Model) profileLogOutput(profileName string) string {
+	if profileName == "" {
+		return ""
+	}
+	return m.profileLogBuffer(profileName).output
+}
+
+func (m *Model) appendTaskLog(profileName, output string) {
+	if profileName == "" || output == "" {
+		return
+	}
+	buffer := m.profileLogBuffer(profileName)
+	buffer.output = appendBoundedOutput(buffer.output, output)
+}
+
+func (m *Model) appendContainerLog(profileName, output string) {
+	if profileName == "" || output == "" {
+		return
+	}
+	buffer := m.profileLogBuffer(profileName)
+	buffer.output = appendBoundedOutput(buffer.output, output)
+	buffer.containerSnapshot = appendBoundedOutput(buffer.containerSnapshot, output)
+	buffer.containerLoaded = true
+}
+
+func (m *Model) flushPendingContainerLogs(profileName string) {
+	if m.logPendingOutput == "" {
+		return
+	}
+	buffer := m.profileLogBuffer(profileName)
+	output := outputSuffix(buffer.containerSnapshot, m.logPendingOutput)
+	buffer.output = appendBoundedOutput(buffer.output, output)
+	buffer.containerSnapshot = appendBoundedOutput(buffer.containerSnapshot, output)
+	buffer.containerLoaded = true
+	m.logPendingOutput = ""
+}
+
+func (m *Model) mergeContainerLogs(profileName, output string) {
+	buffer := m.profileLogBuffer(profileName)
+	snapshot := appendBoundedOutput("", output)
+	if !buffer.containerLoaded {
+		buffer.output = appendBoundedOutput(snapshot, buffer.output)
+		buffer.containerLoaded = true
+	} else {
+		buffer.output = appendBoundedOutput(buffer.output, outputSuffix(buffer.containerSnapshot, snapshot))
+	}
+	buffer.containerSnapshot = snapshot
+}
+
+func outputSuffix(previous, next string) string {
+	if previous == "" || next == "" {
 		return next
 	}
-	return existing + "\n" + next
+	prefix := make([]int, len(next))
+	for index := 1; index < len(next); index++ {
+		matched := prefix[index-1]
+		for matched > 0 && next[index] != next[matched] {
+			matched = prefix[matched-1]
+		}
+		if next[index] == next[matched] {
+			matched++
+		}
+		prefix[index] = matched
+	}
+
+	matched := 0
+	for index := 0; index < len(previous); index++ {
+		for matched > 0 && previous[index] != next[matched] {
+			matched = prefix[matched-1]
+		}
+		if previous[index] == next[matched] {
+			matched++
+		}
+		if matched == len(next) && index < len(previous)-1 {
+			matched = prefix[matched-1]
+		}
+	}
+	return next[matched:]
 }
 
 func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
@@ -990,10 +1130,10 @@ func (m *Model) beginProfileResources() tea.Cmd {
 	m.databaseInfoErr = nil
 	m.databases = nil
 	m.databaseIndex = 0
+	m.stopLogStream()
 	m.logRequest++
 	if previousLogProfile != profileName {
 		m.logPhase = phaseIdle
-		m.logOutput = ""
 		m.logErr = nil
 		m.logResourceName = ""
 		m.logViewportReady = false
@@ -1009,7 +1149,6 @@ func (m *Model) beginProfileResources() tea.Cmd {
 		m.databasePhase = phaseEmpty
 		m.databaseInfoPhase = phaseEmpty
 		m.logPhase = phaseEmpty
-		m.logOutput = ""
 		m.logErr = nil
 		m.logResourceName = ""
 		m.logViewportReady = false
@@ -1088,22 +1227,53 @@ func (m *Model) updateProfileSummary(detail docker.ProfileDetail) {
 }
 
 func (m *Model) beginLogLoad() tea.Cmd {
+	m.stopLogStream()
 	m.logRequest++
 	m.logPhase = phaseLoading
 	m.logErr = nil
+	m.logSnapshotPending = true
+	m.logPendingOutput = ""
 	profileName := m.selectedProfileName()
 	m.logResourceName = profileName
 	if profileName == "" {
 		m.logPhase = phaseEmpty
+		m.logSnapshotPending = false
 		return nil
 	}
-	return LoadProfileLogsCmd(m.ctx, m.service, profileName, m.logRequest)
+	baseContext := m.ctx
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+	m.logContext, m.logCancel = context.WithCancel(baseContext)
+	progress := make(chan profileLogStreamEvent, 32)
+	m.logProgress = progress
+	return tea.Batch(
+		LoadProfileLogsCmd(m.logContext, m.service, profileName, m.logRequest),
+		FollowProfileLogsCmd(m.logContext, m.service, profileName, m.logRequest, progress),
+		WaitProfileLogStreamCmd(profileName, m.logRequest, progress),
+	)
+}
+
+func (m *Model) stopLogStream() {
+	if m.logCancel != nil {
+		m.logCancel()
+	}
+	m.logContext = nil
+	m.logCancel = nil
+	m.logProgress = nil
+	m.logSnapshotPending = false
+	m.logPendingOutput = ""
 }
 
 func (m *Model) moveFocus(delta int) tea.Cmd {
+	previousFocus := m.focus
 	m.focus = focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount))
 	if m.focus == focusLogs {
 		return m.beginLogLoad()
+	}
+	if previousFocus == focusLogs {
+		m.stopLogStream()
+		m.logRequest++
 	}
 	return nil
 }
@@ -1389,17 +1559,14 @@ func (m *Model) tabBar() string {
 }
 
 func (m *Model) logTabView(width int) string {
-	profileName := m.selectedProfileName()
-	if profileName == "" {
-		profileName = "none"
-	}
-	return strings.Join([]string{
-		m.logContainer(width, m.logContent()),
-	}, "\n\n")
+	return m.logContainer(width, m.logContent())
 }
 
 func (m *Model) logContent() string {
-	output := strings.TrimRight(m.logOutput, "\n")
+	output := m.profileLogOutput(m.selectedProfileName())
+	if m.logSnapshotPending && m.selectedProfileName() == m.logResourceName {
+		output = appendBoundedOutput(output, m.logPendingOutput)
+	}
 	status := ""
 	switch m.logPhase {
 	case phaseLoading:
@@ -1478,9 +1645,6 @@ func (m *Model) taskView() string {
 	}
 	if m.taskErr != nil {
 		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
-	}
-	if m.taskOutput != "" {
-		lines = append(lines, mutedStyle.Render("output:"), m.taskOutput)
 	}
 	return strings.Join(lines, "\n")
 }

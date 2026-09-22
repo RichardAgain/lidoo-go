@@ -1,12 +1,9 @@
 package tui
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"strconv"
-	"strings"
-	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -81,10 +78,15 @@ func StartTaskCmd(id uint64) tea.Cmd {
 	}
 }
 
-func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request taskRequest, id uint64, progress chan<- string) tea.Cmd {
+type taskProgressEvent struct {
+	ProfileName string
+	Text        string
+	Result      tea.Msg
+}
+
+func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request taskRequest, id uint64, progress chan<- taskProgressEvent) tea.Cmd {
 	return func() tea.Msg {
-		output := &taskOutputWriter{progress: progress}
-		_, _ = output.Write([]byte("running " + taskLabel(request.Kind) + " for " + request.ProfileName + taskDatabaseSuffix(request) + "\n"))
+		output := &taskOutputWriter{profileName: request.ProfileName, progress: progress}
 		profileOptions := app.ProfileOperationOptions{Output: output, ErrorOutput: output}
 		databaseOptions := app.DatabaseOperationOptions{Output: output, ErrorOutput: output}
 		var err error
@@ -121,57 +123,42 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 				err = errors.New("unknown profile task")
 			}
 		}
-		close(progress)
 		if errors.Is(err, context.Canceled) {
-			return TaskCancelledMsg{ID: id, ProfileName: request.ProfileName, Output: output.String()}
+			progress <- taskProgressEvent{Result: TaskCancelledMsg{ID: id, ProfileName: request.ProfileName}}
+		} else if err != nil {
+			progress <- taskProgressEvent{Result: TaskFailedMsg{ID: id, ProfileName: request.ProfileName, Err: err}}
+		} else {
+			progress <- taskProgressEvent{Result: TaskCompletedMsg{ID: id, ProfileName: request.ProfileName}}
 		}
-		if err != nil {
-			return TaskFailedMsg{ID: id, ProfileName: request.ProfileName, Err: err, Output: output.String()}
-		}
-		return TaskCompletedMsg{ID: id, ProfileName: request.ProfileName, Output: output.String()}
+		close(progress)
+		return nil
 	}
 }
 
-func taskDatabaseSuffix(request taskRequest) string {
-	if request.DatabaseName == "" {
-		return ""
-	}
-	return "/" + request.DatabaseName
-}
-
-func WaitTaskProgressCmd(id uint64, progress <-chan string) tea.Cmd {
+func WaitTaskProgressCmd(id uint64, progress <-chan taskProgressEvent) tea.Cmd {
 	return func() tea.Msg {
-		text, ok := <-progress
+		event, ok := <-progress
 		if !ok {
 			return TaskProgressDoneMsg{ID: id}
 		}
-		return TaskProgressMsg{ID: id, Text: text}
+		if event.Result != nil {
+			return event.Result
+		}
+		return TaskProgressMsg{ID: id, ProfileName: event.ProfileName, Text: event.Text}
 	}
 }
 
 type taskOutputWriter struct {
-	output   bytes.Buffer
-	progress chan<- string
-	mu       sync.Mutex
+	profileName string
+	progress    chan<- taskProgressEvent
 }
 
 func (writer *taskOutputWriter) Write(data []byte) (int, error) {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-
-	count, err := writer.output.Write(data)
-	text := strings.TrimSpace(string(data))
-	if text != "" && writer.progress != nil {
-		select {
-		case writer.progress <- text:
-		default:
-		}
+	if len(data) == 0 {
+		return 0, nil
 	}
-	return count, err
-}
-
-func (writer *taskOutputWriter) String() string {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	return strings.TrimSpace(writer.output.String())
+	if writer.progress != nil {
+		writer.progress <- taskProgressEvent{ProfileName: writer.profileName, Text: string(data)}
+	}
+	return len(data), nil
 }

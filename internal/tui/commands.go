@@ -137,17 +137,63 @@ func LoadProfileLogsCmd(ctx context.Context, service *app.Service, profileName s
 	}
 }
 
-func PrepareProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, follow bool, tail int) tea.Cmd {
+type profileLogStreamEvent struct {
+	Text string
+	Err  error
+}
+
+func FollowProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, requestID uint64, stream chan<- profileLogStreamEvent) tea.Cmd {
 	return func() tea.Msg {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		if service == nil {
-			return InteractiveCommandFailedMsg{Kind: interactiveProfileLogs, ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
+			stream <- profileLogStreamEvent{Err: errors.New("workspace service is unavailable")}
+			close(stream)
+			return nil
 		}
-		command, err := service.ProfileLogsCommand(ctx, profileName, follow, tail)
-		if err != nil {
-			return InteractiveCommandFailedMsg{Kind: interactiveProfileLogs, ProfileName: profileName, Err: err}
+		command, err := service.ProfileLogsCommand(ctx, profileName, true, 0)
+		if err == nil {
+			writer := profileLogStreamWriter{ctx: ctx, stream: stream}
+			command.Stdout = writer
+			command.Stderr = writer
+			err = command.Run()
 		}
-		return InteractiveCommandReadyMsg{Kind: interactiveProfileLogs, ProfileName: profileName, Command: command}
+		if err != nil && ctx.Err() == nil {
+			stream <- profileLogStreamEvent{Err: err}
+		}
+		close(stream)
+		return nil
 	}
+}
+
+func WaitProfileLogStreamCmd(profileName string, requestID uint64, stream <-chan profileLogStreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-stream
+		if !ok {
+			return ProfileLogStreamDoneMsg{RequestID: requestID, ProfileName: profileName}
+		}
+		if event.Err != nil {
+			return ProfileLogStreamFailedMsg{RequestID: requestID, ProfileName: profileName, Err: event.Err}
+		}
+		return ProfileLogStreamMsg{RequestID: requestID, ProfileName: profileName, Text: event.Text}
+	}
+}
+
+type profileLogStreamWriter struct {
+	ctx    context.Context
+	stream chan<- profileLogStreamEvent
+}
+
+func (writer profileLogStreamWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	select {
+	case writer.stream <- profileLogStreamEvent{Text: string(data)}:
+	case <-writer.ctx.Done():
+	}
+	return len(data), nil
 }
 
 func PrepareDatabaseShellCmd(ctx context.Context, service *app.Service, profileName, databaseName string) tea.Cmd {

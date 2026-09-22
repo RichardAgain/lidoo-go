@@ -85,8 +85,9 @@ type TaskStartedMsg struct {
 }
 
 type TaskProgressMsg struct {
-	ID   uint64
-	Text string
+	ID          uint64
+	ProfileName string
+	Text        string
 }
 
 type TaskProgressDoneMsg struct {
@@ -96,20 +97,17 @@ type TaskProgressDoneMsg struct {
 type TaskCompletedMsg struct {
 	ID          uint64
 	ProfileName string
-	Output      string
 }
 
 type TaskFailedMsg struct {
 	ID          uint64
 	ProfileName string
 	Err         error
-	Output      string
 }
 
 type TaskCancelledMsg struct {
 	ID          uint64
 	ProfileName string
-	Output      string
 }
 
 type ProfileLogsLoadedMsg struct {
@@ -124,12 +122,26 @@ type ProfileLogsFailedMsg struct {
 	Err         error
 }
 
+type ProfileLogStreamMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Text        string
+}
+
+type ProfileLogStreamFailedMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Err         error
+}
+
+type ProfileLogStreamDoneMsg struct {
+	RequestID   uint64
+	ProfileName string
+}
+
 type interactiveKind uint8
 
-const (
-	interactiveProfileLogs interactiveKind = iota
-	interactiveDatabaseShell
-)
+const interactiveDatabaseShell interactiveKind = iota
 
 type InteractiveCommandReadyMsg struct {
 	Kind         interactiveKind

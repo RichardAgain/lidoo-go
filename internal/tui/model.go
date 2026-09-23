@@ -21,7 +21,6 @@ type focusArea uint8
 
 const (
 	focusProfiles focusArea = iota
-	focusLogs
 	focusDatabases
 	focusAddons
 	focusInfo
@@ -226,6 +225,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profileDetail = msg.Detail
 		m.profileDetailErr = nil
 		m.updateProfileSummary(msg.Detail)
+		if m.focus == focusProfiles && !m.profileIsRunning() {
+			m.setProfileLogsUnavailable(msg.ProfileName)
+		}
 		return m, m.afterProfileDetailLoaded()
 	case ProfileDetailFailedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -468,9 +470,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.focus == focusLogs {
+	if m.focus == focusProfiles {
 		switch msg.String() {
-		case "up", "k", "down", "j", "pgup", "pgdown", "f", "b", "u", "ctrl+u", "d", "ctrl+d", " ":
+		case "pgup", "pgdown", "f", "b", "ctrl+u", "ctrl+d", " ":
 			var cmd tea.Cmd
 			m.logViewport, cmd = m.logViewport.Update(msg)
 			return m, cmd
@@ -1182,7 +1184,7 @@ func (m *Model) beginProfileResources() tea.Cmd {
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
 	}
-	if m.focus == focusLogs {
+	if m.focus == focusProfiles {
 		commands = append(commands, m.beginLogLoad())
 	}
 	return tea.Batch(commands...)
@@ -1213,8 +1215,12 @@ func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd
 		m.databaseInfoErr = nil
 	}
 	commands := []tea.Cmd{LoadProfileDetailCmd(m.ctx, m.service, invalidation.ProfileName, m.profileRequest)}
-	if m.focus == focusLogs {
-		commands = append(commands, m.beginLogLoad())
+	if m.focus == focusProfiles {
+		if invalidation.Kind == app.ProfileRuntimeUnavailable {
+			m.setProfileLogsUnavailable(invalidation.ProfileName)
+		} else {
+			commands = append(commands, m.beginLogLoad())
+		}
 	}
 	return tea.Batch(commands...)
 }
@@ -1249,6 +1255,15 @@ func (m *Model) updateProfileSummary(detail docker.ProfileDetail) {
 	}
 }
 
+func (m *Model) setProfileLogsUnavailable(profileName string) {
+	m.stopLogStream()
+	m.logRequest++
+	m.logPhase = phaseUnavailable
+	m.logErr = nil
+	m.logResourceName = profileName
+	m.logViewportReady = false
+}
+
 func (m *Model) beginLogLoad() tea.Cmd {
 	m.stopLogStream()
 	m.logRequest++
@@ -1260,6 +1275,11 @@ func (m *Model) beginLogLoad() tea.Cmd {
 	m.logResourceName = profileName
 	if profileName == "" {
 		m.logPhase = phaseEmpty
+		m.logSnapshotPending = false
+		return nil
+	}
+	if !m.profileIsRunning() {
+		m.logPhase = phaseUnavailable
 		m.logSnapshotPending = false
 		return nil
 	}
@@ -1291,10 +1311,10 @@ func (m *Model) stopLogStream() {
 func (m *Model) moveFocus(delta int) tea.Cmd {
 	previousFocus := m.focus
 	m.focus = focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount))
-	if m.focus == focusLogs {
+	if m.focus == focusProfiles {
 		return m.beginLogLoad()
 	}
-	if previousFocus == focusLogs {
+	if previousFocus == focusProfiles {
 		m.stopLogStream()
 		m.logRequest++
 	}
@@ -1569,9 +1589,9 @@ func (m *Model) addonRows() string {
 
 func (m *Model) rightView(width int) string {
 	var content string
-	switch m.activeTab() {
-	case focusLogs:
-		content = m.logTabView(width)
+	switch m.focus {
+	case focusProfiles:
+		content = m.logView(width)
 	case focusDatabases:
 		content = m.databaseTabView()
 	case focusAddons:
@@ -1599,19 +1619,11 @@ func (m *Model) rightView(width int) string {
 	return strings.Join(append(warnings, "", content), "\n")
 }
 
-func (m *Model) activeTab() focusArea {
-	if m.focus == focusProfiles {
-		return focusInfo
-	}
-	return m.focus
-}
-
 func (m *Model) tabBar() string {
 	tabs := []struct {
 		name  string
 		focus focusArea
 	}{
-		{name: "Log", focus: focusLogs},
 		{name: "Databases", focus: focusDatabases},
 		{name: "Add-ons", focus: focusAddons},
 		{name: "Info", focus: focusInfo},
@@ -1619,7 +1631,7 @@ func (m *Model) tabBar() string {
 	labels := make([]string, 0, len(tabs))
 	for _, tab := range tabs {
 		label := "  " + tab.name
-		if m.focus != focusProfiles && m.activeTab() == tab.focus {
+		if m.focus == tab.focus {
 			label = activeStyle.Render("  " + tab.name)
 		}
 		labels = append(labels, label)
@@ -1627,11 +1639,15 @@ func (m *Model) tabBar() string {
 	return strings.Join(labels, "    ")
 }
 
-func (m *Model) logTabView(width int) string {
+func (m *Model) logView(width int) string {
 	return m.logContainer(width, m.logContent())
 }
 
 func (m *Model) logContent() string {
+	if m.selectedProfile() != nil && !m.profileIsRunning() {
+		return mutedStyle.Render("start the container to see logs")
+	}
+
 	output := m.profileLogOutput(m.selectedProfileName())
 	if m.logSnapshotPending && m.selectedProfileName() == m.logResourceName {
 		output = appendBoundedOutput(output, m.logPendingOutput)
@@ -1649,7 +1665,7 @@ func (m *Model) logContent() string {
 	case phaseEmpty:
 		status = mutedStyle.Render("select a profile to load logs")
 	case phaseIdle:
-		status = mutedStyle.Render("focus Log to load profile logs")
+		status = mutedStyle.Render("select a profile to load logs")
 	}
 	if status == "" {
 		return output
@@ -1848,10 +1864,7 @@ func (m *Model) row(value string, selected bool) string {
 func (m *Model) footerView() string {
 	keys := "tab/←/→ focus  ctrl+r refresh  ? help  q quit"
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  ctrl+r refresh  ? help  q quit"
-	}
-	if m.focus == focusLogs && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ scroll  ctrl+r refresh logs  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? help  q quit"
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ databases  i init"
@@ -1866,10 +1879,7 @@ func (m *Model) footerView() string {
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  ctrl+r refresh  q quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  ctrl+r refresh  ? hide help"
-		}
-		if m.focus == focusLogs && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k scroll  f/pgdn  b/pgup  ctrl+r refresh logs  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusDatabases && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k databases  i init new database"

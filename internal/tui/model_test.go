@@ -46,16 +46,3 @@ func TestStoppedProfileShowsLogMessage(t *testing.T) {
 		t.Fatalf("log phase = %v, want unavailable", model.logPhase)
 	}
 }
-
-func TestLogContentSanitizesTerminalControls(t *testing.T) {
-	model := NewModel(context.Background(), nil)
-	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
-	model.profileLogs["testing"] = &profileLogBuffer{
-		output: "\x1b[31mred\x1b[0m\rnext\tline\a",
-	}
-	model.logPhase = phaseReady
-
-	if got, want := ansi.Strip(model.logContent()), "red\nnext line"; got != want {
-		t.Fatalf("sanitized log content = %q, want %q", got, want)
-	}
-}

@@ -11,10 +11,11 @@ import (
 
 // ProfileSummary is the runtime-facing data needed to list a profile.
 type ProfileSummary struct {
-	Name    string
-	State   string
-	URL     string
-	Version string
+	Name              string
+	State             string
+	URL               string
+	Version           string
+	PendingRecreation RecreationStatus
 }
 
 // ListProfiles returns profiles known by workspace state, Docker, or both.
@@ -57,6 +58,7 @@ func ListProfiles(state files.State) ([]ProfileSummary, error) {
 		}
 		if container, ok := runtime[name]; ok {
 			summary.State = container.State
+			summary.PendingRecreation = recreationStatus(state, config, container.Mounts)
 			if container.Version != "" {
 				summary.Version = container.Version
 			}

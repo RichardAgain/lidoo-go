@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
@@ -1648,9 +1649,9 @@ func (m *Model) logContent() string {
 		return mutedStyle.Render("start the container to see logs")
 	}
 
-	output := m.profileLogOutput(m.selectedProfileName())
+	output := sanitizeLogOutput(m.profileLogOutput(m.selectedProfileName()))
 	if m.logSnapshotPending && m.selectedProfileName() == m.logResourceName {
-		output = appendBoundedOutput(output, m.logPendingOutput)
+		output = appendBoundedOutput(output, sanitizeLogOutput(m.logPendingOutput))
 	}
 	status := ""
 	switch m.logPhase {
@@ -1674,6 +1675,23 @@ func (m *Model) logContent() string {
 		return status
 	}
 	return status + "\n\n" + output
+}
+
+func sanitizeLogOutput(output string) string {
+	output = ansi.Strip(output)
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\r':
+			return '\n'
+		case '\t':
+			return ' '
+		default:
+			if unicode.IsControl(r) {
+				return -1
+			}
+			return r
+		}
+	}, output)
 }
 
 func (m *Model) logContainer(width int, content string) string {

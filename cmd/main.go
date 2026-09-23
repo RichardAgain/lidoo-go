@@ -102,6 +102,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	if commandNeedsSharedServices(command, positional) {
+		err = docker.EnsureSharedServices(docker.CommandOptions{
+			Context: context.Background(),
+			Stdout:  os.Stdout,
+			Stderr:  os.Stderr,
+		})
+		if err != nil {
+			if stateLock != nil {
+				_ = stateLock.Close()
+			}
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(docker.ExitCode(err))
+		}
+	}
+
 	profileOptions := app.ProfileOperationOptions{
 		Output:      os.Stdout,
 		ErrorOutput: os.Stderr,
@@ -597,6 +612,26 @@ func isProfileLifecycleCommand(command string) bool {
 	default:
 		return false
 	}
+}
+
+func commandNeedsSharedServices(command string, positional []string) bool {
+	switch command {
+	case "tui", "run", "wait", "restart", "recreate", "remove",
+		"init", "update", "drop", "backup", "restore":
+		return true
+	case "db":
+		return len(positional) > 0 && (positional[0] == "list" || positional[0] == "info" || positional[0] == "shell")
+	case "addons":
+		if len(positional) == 0 || (positional[0] != "attach" && positional[0] != "detach") {
+			return false
+		}
+		for _, argument := range positional[1:] {
+			if argument == "--recreate" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func confirmProfileRemoval(confirmation app.ProfileConfirmation) (bool, error) {

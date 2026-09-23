@@ -163,9 +163,13 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 		addonPaths = append(addonPaths, "/opt/addons/"+mount.Name)
 	}
 
+	addonPath := strings.Join(addonPaths, ",")
+	if len(addonNames) > 0 {
+		containerArgs = append(containerArgs, "--env", "LIDOO_ADDONS_PATH="+addonPath)
+	}
 	containerArgs = append(containerArgs, image, "odoo", "--dev=all")
 	if len(addonNames) > 0 {
-		containerArgs = append(containerArgs, "--addons-path="+strings.Join(addonPaths, ","))
+		containerArgs = append(containerArgs, "--addons-path="+addonPath)
 	}
 	containerArgs = append(containerArgs, databaseFilter(prefix))
 	fmt.Fprintf(options.Stdout, "starting profile %q\n", name)

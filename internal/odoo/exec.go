@@ -20,7 +20,14 @@ if ! command -v "$1" >/dev/null 2>&1; then
   echo "profile image is missing click-odoo-contrib (required command: $1); rebuild and recreate the profile" >&2
   exit 127
 fi
-exec "$@"
+if [ -n "${LIDOO_ADDONS_PATH:-}" ]; then
+  cli_config=$(mktemp)
+  trap 'rm -f "$cli_config"' 0
+  sed '/^[[:space:]]*addons_path[[:space:]]*=/d' "${ODOO_RC:-/etc/odoo/odoo.conf}" > "$cli_config"
+  printf 'addons_path = %s\n' "$LIDOO_ADDONS_PATH" >> "$cli_config"
+  export ODOO_RC="$cli_config"
+fi
+"$@"
 `
 
 func run(container string, command ...string) error {

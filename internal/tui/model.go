@@ -1468,39 +1468,43 @@ func (m *Model) profileCard(width int, profile docker.ProfileSummary, selected b
 	if selected {
 		name = activeStyle.Render(name)
 	}
-	header := cardHeader(name, profileState(profile.State), cardWidth)
-	footer := "  " + m.profileCardStatus(profile)
-	topBorder := lipgloss.RoundedBorder()
-	topBorder.Bottom = ""
-	topBorder.BottomLeft = ""
-	topBorder.BottomRight = ""
-	bottomBorder := lipgloss.RoundedBorder()
-	bottomBorder.TopLeft = "├"
-	bottomBorder.TopRight = "┤"
+	border := lipgloss.RoundedBorder()
+	borderLine := lipgloss.NewStyle().Foreground(borderColor)
+	horizontal := borderLine.Render(strings.Repeat(border.Top, cardWidth))
+	vertical := borderLine.Render(border.Left)
+	rightVertical := borderLine.Render(border.Right)
+	headerRows := cardRows(cardHeader(name, profileState(profile.State), cardWidth), cardWidth)
+	footerRows := cardRows(m.profileCardStatus(profile), cardWidth)
+	lines := []string{borderLine.Render(border.TopLeft) + horizontal + borderLine.Render(border.TopRight)}
+	for _, row := range headerRows {
+		lines = append(lines, vertical+row+rightVertical)
+	}
+	lines = append(lines, borderLine.Render("├"+strings.Repeat(border.Top, cardWidth)+"┤"))
+	for _, row := range footerRows {
+		lines = append(lines, vertical+row+rightVertical)
+	}
+	lines = append(lines, borderLine.Render(border.BottomLeft)+horizontal+borderLine.Render(border.BottomRight))
+	return strings.Join(lines, "\n")
+}
 
-	top := lipgloss.NewStyle().
-		Width(cardWidth).
-		Border(topBorder).
-		BorderForeground(borderColor).
-		Render(header)
-	bottom := lipgloss.NewStyle().
-		Width(cardWidth).
-		Border(bottomBorder).
-		BorderForeground(borderColor).
-		Render(footer)
-	return top + "\n" + bottom
+func cardRows(value string, width int) []string {
+	wrapped := lipgloss.NewStyle().Width(width).Render(value)
+	lines := strings.Split(wrapped, "\n")
+	for index, line := range lines {
+		padding := width - lipgloss.Width(line)
+		if padding > 0 {
+			lines[index] += strings.Repeat(" ", padding)
+		}
+	}
+	return lines
 }
 
 func cardHeader(name, state string, width int) string {
-	contentWidth := width - 4
-	if contentWidth < 1 {
-		contentWidth = 1
+	gap := width - lipgloss.Width(name) - lipgloss.Width(state)
+	if gap < 1 {
+		gap = 1
 	}
-	gap := contentWidth - lipgloss.Width(name) - lipgloss.Width(state)
-	if gap < 2 {
-		gap = 2
-	}
-	return "  " + name + strings.Repeat(" ", gap) + state
+	return name + strings.Repeat(" ", gap) + state
 }
 
 func (m *Model) profileCardStatus(profile docker.ProfileSummary) string {

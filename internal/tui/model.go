@@ -1222,6 +1222,7 @@ func (m *Model) updateProfileSummary(detail docker.ProfileDetail) {
 		m.profiles[index].State = detail.DockerState
 		m.profiles[index].URL = detail.URL
 		m.profiles[index].Version = detail.OdooVersion
+		m.profiles[index].PendingRecreation = detail.PendingRecreation
 		return
 	}
 }
@@ -1433,19 +1434,58 @@ func (m *Model) profileCard(width int, profile docker.ProfileSummary, selected b
 	if cardWidth < 1 {
 		cardWidth = 1
 	}
-	border := borderStyle
+	borderColor := borderStyle
 	if selected {
-		border = inspectedBorderStyle
+		borderColor = inspectedBorderStyle
 		if m.focus == focusProfiles {
-			border = activeBorderStyle
+			borderColor = activeBorderStyle
 		}
 	}
-	row := m.row(profile.Name+"  "+profileState(profile.State), selected)
-	return lipgloss.NewStyle().
+
+	name := profile.Name
+	if selected {
+		name = activeStyle.Render(name)
+	}
+	header := cardHeader(name, profileState(profile.State), cardWidth)
+	footer := "  " + profileCardStatus(profile)
+	topBorder := lipgloss.RoundedBorder()
+	topBorder.Bottom = ""
+	topBorder.BottomLeft = ""
+	topBorder.BottomRight = ""
+	bottomBorder := lipgloss.RoundedBorder()
+	bottomBorder.TopLeft = "├"
+	bottomBorder.TopRight = "┤"
+
+	top := lipgloss.NewStyle().
 		Width(cardWidth).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(border).
-		Render(row)
+		Border(topBorder).
+		BorderForeground(borderColor).
+		Render(header)
+	bottom := lipgloss.NewStyle().
+		Width(cardWidth).
+		Border(bottomBorder).
+		BorderForeground(borderColor).
+		Render(footer)
+	return top + "\n" + bottom
+}
+
+func cardHeader(name, state string, width int) string {
+	contentWidth := width - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	gap := contentWidth - lipgloss.Width(name) - lipgloss.Width(state)
+	if gap < 2 {
+		gap = 2
+	}
+	return "  " + name + strings.Repeat(" ", gap) + state
+}
+
+func profileCardStatus(profile docker.ProfileSummary) string {
+	if profile.PendingRecreation.Pending {
+		return warningStyle.Render("pending recreation ")
+	}
+	return mutedStyle.Render(profile.URL)
 }
 
 func (m *Model) databaseRows() string {

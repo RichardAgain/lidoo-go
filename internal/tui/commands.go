@@ -3,12 +3,36 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
+	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"lidoo/internal/app"
 	"lidoo/internal/odoo"
 )
+
+func OpenProfileURLCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		var command *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			command = exec.Command("open", url)
+		case "windows":
+			command = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		default:
+			command = exec.Command("xdg-open", url)
+		}
+		if err := command.Start(); err != nil {
+			return ProfileURLOpenFailedMsg{Err: fmt.Errorf("open profile URL %q: %w", url, err)}
+		}
+		if err := command.Process.Release(); err != nil {
+			return ProfileURLOpenFailedMsg{Err: fmt.Errorf("release browser process for %q: %w", url, err)}
+		}
+		return nil
+	}
+}
 
 func LoadProfilesCmd(ctx context.Context, service *app.Service) tea.Cmd {
 	return func() tea.Msg {

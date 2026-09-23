@@ -9,6 +9,10 @@ import (
 	"lidoo/internal/odoo"
 )
 
+type ProfileURLOpenFailedMsg struct {
+	Err error
+}
+
 type ProfilesLoadedMsg struct {
 	Profiles []docker.ProfileSummary
 }

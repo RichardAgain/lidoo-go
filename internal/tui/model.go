@@ -186,6 +186,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.activitySpinner, cmd = m.activitySpinner.Update(msg)
 		return m, cmd
+	case ProfileURLOpenFailedMsg:
+		m.err = msg.Err
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -485,6 +488,13 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.moveFocusedSelection(-1)
 	case "down", "j":
 		return m, m.moveFocusedSelection(1)
+	case "enter":
+		if m.focus == focusProfiles {
+			profile := m.selectedProfile()
+			if profile != nil {
+				return m, OpenProfileURLCmd(profile.URL)
+			}
+		}
 	case "x":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName()})
@@ -1878,7 +1888,7 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "x start  r restart  R recreate  s stop  d remove"
+	return "enter open  x start  r restart  R recreate  s stop  d remove"
 }
 
 func databaseActionHints() string {

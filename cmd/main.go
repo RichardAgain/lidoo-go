@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -246,10 +247,11 @@ func main() {
 				}
 			}
 		case len(positional) > 0 && positional[0] == "add":
-			if len(positional) != 3 {
-				err = errors.New("usage: lidoo addons add <addon name> <git url>")
-			} else {
-				err = addons.Add(positional[1], positional[2], state)
+			var addonName, url string
+			var options addons.AddOptions
+			addonName, url, options, err = parseAddonAddArgs(positional[1:])
+			if err == nil {
+				err = addons.Add(addonName, url, options, state)
 			}
 		case len(positional) > 0 && positional[0] == "attach":
 			var profile string
@@ -290,7 +292,7 @@ func main() {
 				err = addons.Pull(positional[1], state)
 			}
 		default:
-			err = errors.New("usage: lidoo addons add <addon name> <git url> | lidoo addons attach|detach --name <profile> <addon name> [<addon name> ...] | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
+			err = errors.New("usage: lidoo addons add <addon name> <git url> [--depth N] [--branch <branch>] | lidoo addons attach|detach --name <profile> <addon name> [<addon name> ...] | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 		}
 	default:
 		usage()
@@ -736,6 +738,65 @@ func parseAddonRemoveArgs(args []string, yes, force bool) (string, bool, bool, e
 	return positional[0], yes, force, nil
 }
 
+func parseAddonAddArgs(args []string) (string, string, addons.AddOptions, error) {
+	const usage = "usage: lidoo addons add <addon name> <git url> [--depth N] [--branch <branch>]"
+	var positional []string
+	var options addons.AddOptions
+	var branchSet, depthSet bool
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--branch" || arg == "--depth":
+			if i+1 >= len(args) {
+				return "", "", options, errors.New(usage)
+			}
+			i++
+			if arg == "--branch" {
+				if branchSet || args[i] == "" || strings.HasPrefix(args[i], "-") {
+					return "", "", options, errors.New(usage)
+				}
+				options.Branch = args[i]
+				branchSet = true
+			} else {
+				if depthSet {
+					return "", "", options, errors.New(usage)
+				}
+				depth, err := strconv.Atoi(args[i])
+				if err != nil || depth < 1 {
+					return "", "", options, errors.New(usage)
+				}
+				options.Depth = depth
+				depthSet = true
+			}
+		case strings.HasPrefix(arg, "--branch="):
+			if branchSet || strings.TrimPrefix(arg, "--branch=") == "" {
+				return "", "", options, errors.New(usage)
+			}
+			options.Branch = strings.TrimPrefix(arg, "--branch=")
+			branchSet = true
+		case strings.HasPrefix(arg, "--depth="):
+			if depthSet {
+				return "", "", options, errors.New(usage)
+			}
+			depth, err := strconv.Atoi(strings.TrimPrefix(arg, "--depth="))
+			if err != nil || depth < 1 {
+				return "", "", options, errors.New(usage)
+			}
+			options.Depth = depth
+			depthSet = true
+		case strings.HasPrefix(arg, "-"):
+			return "", "", options, fmt.Errorf("unknown addons add option %q", arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 2 || (options.Branch != "" && (strings.TrimSpace(options.Branch) != options.Branch || strings.HasPrefix(options.Branch, "-"))) {
+		return "", "", options, errors.New(usage)
+	}
+	return positional[0], positional[1], options, nil
+}
+
 func parseWorktreeArgs(args []string) (string, string, string, bool, error) {
 	var positional []string
 	var branch string
@@ -814,7 +875,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  profile import <file> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons list")
 	fmt.Fprintln(os.Stderr, "       lidoo addons status [<addon name>]")
-	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url>")
+	fmt.Fprintln(os.Stderr, "       lidoo addons add <addon name> <git url> [--depth N] [--branch <branch>]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons rm <addon name> [--yes] [--force]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons worktree <source> <name> --branch <branch> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons fetch <addon name>")

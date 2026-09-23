@@ -45,6 +45,33 @@ type taskRequest struct {
 	Jobs             string
 }
 
+func taskActionLabel(kind taskKind) string {
+	switch kind {
+	case taskRun:
+		return "starting"
+	case taskStop:
+		return "stopping"
+	case taskRestart:
+		return "restarting"
+	case taskRecreate:
+		return "recreating"
+	case taskRemove:
+		return "removing"
+	case taskInit:
+		return "initializing"
+	case taskUpdate:
+		return "updating"
+	case taskDrop:
+		return "dropping"
+	case taskBackup:
+		return "backing up"
+	case taskRestore:
+		return "restoring"
+	default:
+		return "working"
+	}
+}
+
 func taskLabel(kind taskKind) string {
 	switch kind {
 	case taskRun:

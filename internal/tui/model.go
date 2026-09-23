@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -108,6 +109,8 @@ type Model struct {
 	versionInput           string
 	taskID                 uint64
 	pendingTask            *taskRequest
+	activeTaskKind         taskKind
+	activitySpinner        spinner.Model
 	taskContext            context.Context
 	taskCancel             context.CancelFunc
 	taskProgress           <-chan taskProgressEvent
@@ -153,17 +156,18 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 		ctx = context.Background()
 	}
 	return &Model{
-		ctx:           ctx,
-		service:       service,
-		loading:       true,
-		width:         80,
-		height:        24,
-		profilePhase:  phaseLoading,
-		logPhase:      phaseIdle,
-		profileLogs:   make(map[string]*profileLogBuffer),
-		logViewport:   viewport.New(1, 1),
-		databasePhase: phaseIdle,
-		addonPhase:    phaseIdle,
+		ctx:             ctx,
+		service:         service,
+		loading:         true,
+		width:           80,
+		height:          24,
+		profilePhase:    phaseLoading,
+		logPhase:        phaseIdle,
+		profileLogs:     make(map[string]*profileLogBuffer),
+		logViewport:     viewport.New(1, 1),
+		databasePhase:   phaseIdle,
+		addonPhase:      phaseIdle,
+		activitySpinner: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(activeStyle)),
 	}
 }
 
@@ -175,6 +179,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
+	case spinner.TickMsg:
+		if !m.taskActive() {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.activitySpinner, cmd = m.activitySpinner.Update(msg)
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -882,6 +893,7 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	}
 	m.taskID++
 	m.pendingTask = &request
+	m.activeTaskKind = request.Kind
 	m.taskProfileName = request.ProfileName
 	m.taskDatabaseName = request.DatabaseName
 	m.taskDatabasePhysical = request.DatabasePhysical
@@ -900,7 +912,7 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 		taskBaseContext = context.Background()
 	}
 	m.taskContext, m.taskCancel = context.WithCancel(taskBaseContext)
-	return StartTaskCmd(m.taskID)
+	return tea.Batch(StartTaskCmd(m.taskID), m.activitySpinner.Tick)
 }
 
 func (m *Model) taskActive() bool {
@@ -1447,7 +1459,7 @@ func (m *Model) profileCard(width int, profile docker.ProfileSummary, selected b
 		name = activeStyle.Render(name)
 	}
 	header := cardHeader(name, profileState(profile.State), cardWidth)
-	footer := "  " + profileCardStatus(profile)
+	footer := "  " + m.profileCardStatus(profile)
 	topBorder := lipgloss.RoundedBorder()
 	topBorder.Bottom = ""
 	topBorder.BottomLeft = ""
@@ -1481,7 +1493,10 @@ func cardHeader(name, state string, width int) string {
 	return "  " + name + strings.Repeat(" ", gap) + state
 }
 
-func profileCardStatus(profile docker.ProfileSummary) string {
+func (m *Model) profileCardStatus(profile docker.ProfileSummary) string {
+	if m.taskActive() && m.taskProfileName == profile.Name {
+		return activeStyle.Render(taskActionLabel(m.activeTaskKind)) + " " + m.activitySpinner.View()
+	}
 	if profile.PendingRecreation.Pending {
 		return warningStyle.Render("pending recreation ")
 	}

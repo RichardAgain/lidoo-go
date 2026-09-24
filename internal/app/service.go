@@ -126,6 +126,39 @@ func (s *Service) Addons(ctx context.Context, profileName string) ([]addons.Addo
 	return selected, nil
 }
 
+// AvailableAddons returns registered add-ons not currently attached to a profile.
+// Results retain the sorted order of addons.List.
+func (s *Service) AvailableAddons(ctx context.Context, profileName string) ([]addons.AddonStatus, error) {
+	state, err := s.readState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	config, found, err := profile.Lookup(state, profileName)
+	if err != nil {
+		return nil, fmt.Errorf("read profile %q: %w", profileName, err)
+	}
+	attached := make(map[string]bool, len(config.Addons))
+	if found {
+		for _, name := range config.Addons {
+			attached[name] = true
+		}
+	}
+	statuses, err := addons.List(state)
+	if err != nil {
+		return nil, err
+	}
+	available := make([]addons.AddonStatus, 0, len(statuses))
+	for _, status := range statuses {
+		if !attached[status.Name] {
+			available = append(available, status)
+		}
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	return available, nil
+}
+
 func (s *Service) readState(ctx context.Context) (files.State, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err

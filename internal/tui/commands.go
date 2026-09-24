@@ -148,6 +148,19 @@ func LoadAddonsCmd(ctx context.Context, service *app.Service, profileName string
 	}
 }
 
+func LoadAvailableAddonsCmd(ctx context.Context, service *app.Service, profileName string, requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return AvailableAddonsFailedMsg{RequestID: requestID, ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
+		}
+		addons, err := service.AvailableAddons(ctx, profileName)
+		if err != nil {
+			return AvailableAddonsFailedMsg{RequestID: requestID, ProfileName: profileName, Err: err}
+		}
+		return AvailableAddonsLoadedMsg{RequestID: requestID, ProfileName: profileName, Addons: addons}
+	}
+}
+
 func LoadProfileLogsCmd(ctx context.Context, service *app.Service, profileName string, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
 		if service == nil {

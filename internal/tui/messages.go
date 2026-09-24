@@ -84,6 +84,18 @@ type AddonsFailedMsg struct {
 	Err         error
 }
 
+type AvailableAddonsLoadedMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Addons      []addons.AddonStatus
+}
+
+type AvailableAddonsFailedMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Err         error
+}
+
 type TaskStartedMsg struct {
 	ID uint64
 }

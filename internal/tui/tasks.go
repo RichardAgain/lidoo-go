@@ -23,6 +23,10 @@ const (
 	taskDrop
 	taskBackup
 	taskRestore
+	taskAttachAddons
+	taskDetachAddons
+	taskFetchAddon
+	taskPullAddon
 )
 
 type taskRequest struct {
@@ -43,6 +47,9 @@ type taskRequest struct {
 	CopyDatabase     bool
 	Neutralize       bool
 	Jobs             string
+	AddonNames       []string
+	AddonName        string
+	Recreate         bool
 }
 
 func taskActionLabel(kind taskKind) string {
@@ -67,6 +74,14 @@ func taskActionLabel(kind taskKind) string {
 		return "backing up"
 	case taskRestore:
 		return "restoring"
+	case taskAttachAddons:
+		return "attaching"
+	case taskDetachAddons:
+		return "detaching"
+	case taskFetchAddon:
+		return "fetching"
+	case taskPullAddon:
+		return "pulling"
 	default:
 		return "working"
 	}
@@ -94,6 +109,14 @@ func taskLabel(kind taskKind) string {
 		return "backup"
 	case taskRestore:
 		return "restore"
+	case taskAttachAddons:
+		return "attach add-ons"
+	case taskDetachAddons:
+		return "detach add-ons"
+	case taskFetchAddon:
+		return "fetch add-on"
+	case taskPullAddon:
+		return "pull add-on"
 	default:
 		return "profile operation"
 	}
@@ -116,6 +139,7 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 		output := &taskOutputWriter{profileName: request.ProfileName, progress: progress}
 		profileOptions := app.ProfileOperationOptions{Output: output, ErrorOutput: output}
 		databaseOptions := app.DatabaseOperationOptions{Output: output, ErrorOutput: output}
+		addonOptions := app.AddonOperationOptions{Output: output, ErrorOutput: output}
 		var err error
 		if service == nil {
 			err = errors.New("workspace service is unavailable")
@@ -146,6 +170,14 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 				} else {
 					_, err = service.RestoreDatabase(ctx, request.ProfileName, request.DatabaseName, request.Source, request.CopyDatabase, request.Force, request.Neutralize, jobs, databaseOptions)
 				}
+			case taskAttachAddons:
+				err = service.AttachAddons(ctx, app.AddonMountInput{ProfileName: request.ProfileName, AddonNames: request.AddonNames, Recreate: request.Recreate}, addonOptions)
+			case taskDetachAddons:
+				err = service.DetachAddons(ctx, app.AddonMountInput{ProfileName: request.ProfileName, AddonNames: request.AddonNames, Recreate: request.Recreate}, addonOptions)
+			case taskFetchAddon:
+				err = service.FetchAddon(ctx, request.AddonName, addonOptions)
+			case taskPullAddon:
+				err = service.PullAddon(ctx, request.AddonName, addonOptions)
 			default:
 				err = errors.New("unknown profile task")
 			}

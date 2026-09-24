@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -39,6 +40,11 @@ const (
 	modalRestoreDatabase
 	modalConfirmRestore
 	modalAddonMount
+	modalCloneAddon
+	modalWorktreeAddon
+	modalConfirmWorktreeAddon
+	modalRemoveAddon
+	modalConfirmAddonRemove
 )
 
 type resourcePhase uint8
@@ -109,6 +115,16 @@ type Model struct {
 	addonChoiceSelected    map[string]bool
 	addonMountAttach       bool
 	addonMountRecreate     bool
+	addonFormErr           error
+	cloneAddonName         string
+	cloneAddonURL          string
+	cloneAddonDepth        string
+	cloneAddonBranch       string
+	worktreeAddonSource    string
+	worktreeAddonName      string
+	worktreeAddonBranch    string
+	removeAddonName        string
+	removeAddonForce       bool
 	watchEvents            <-chan app.ProfileInvalidation
 	watchErrors            <-chan error
 	watcherDisconnected    bool
@@ -130,6 +146,7 @@ type Model struct {
 	taskStatus             string
 	taskErr                error
 	taskNotice             string
+	taskOutput             string
 	taskStarting           bool
 	taskRunning            bool
 	taskCancelRequested    bool
@@ -379,7 +396,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Text != "" {
-			m.appendTaskLog(msg.ProfileName, msg.Text)
+			if msg.ProfileName == "" {
+				m.taskOutput = appendBoundedOutput(m.taskOutput, msg.Text)
+			} else {
+				m.appendTaskLog(msg.ProfileName, msg.Text)
+			}
 		}
 		if m.taskProgress == nil {
 			return m, nil
@@ -546,6 +567,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName()})
+		} else if m.focus == focusAddons {
+			m.openRemoveAddonForm()
 		}
 	case "r":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -578,6 +601,14 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		if m.focus == focusAddons {
 			return m, m.openAddonMountChooser(true)
+		}
+	case "c":
+		if m.focus == focusAddons {
+			m.openCloneAddonForm()
+		}
+	case "w":
+		if m.focus == focusAddons {
+			m.openWorktreeAddonForm()
 		}
 	case "f":
 		if m.focus == focusAddons {
@@ -728,6 +759,48 @@ func (m *Model) openAddonMountChooser(attach bool) tea.Cmd {
 	return nil
 }
 
+func (m *Model) openCloneAddonForm() {
+	if m.rejectMutatingAction() {
+		return
+	}
+	m.cloneAddonName = ""
+	m.cloneAddonURL = ""
+	m.cloneAddonDepth = "0"
+	m.cloneAddonBranch = ""
+	m.addonFormErr = nil
+	m.formField = 0
+	m.modal = modalCloneAddon
+}
+
+func (m *Model) openWorktreeAddonForm() {
+	if m.rejectMutatingAction() {
+		return
+	}
+	m.worktreeAddonSource = ""
+	if addon := m.selectedAddon(); addon != nil {
+		m.worktreeAddonSource = addon.Name
+	}
+	m.worktreeAddonName = ""
+	m.worktreeAddonBranch = ""
+	m.addonFormErr = nil
+	m.formField = 0
+	m.modal = modalWorktreeAddon
+}
+
+func (m *Model) openRemoveAddonForm() {
+	if m.rejectMutatingAction() {
+		return
+	}
+	m.removeAddonName = ""
+	if addon := m.selectedAddon(); addon != nil {
+		m.removeAddonName = addon.Name
+	}
+	m.removeAddonForce = false
+	m.addonFormErr = nil
+	m.formField = 0
+	m.modal = modalRemoveAddon
+}
+
 func (m *Model) queueSelectedAddonTask(kind taskKind) tea.Cmd {
 	addon := m.selectedAddon()
 	if addon == nil || m.selectedProfileName() == "" {
@@ -812,6 +885,35 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modal = modalNone
 			return m, m.queueRestoreTask()
 		}
+	case modalConfirmWorktreeAddon:
+		switch msg.String() {
+		case "esc", "n", "N":
+			m.modal = modalWorktreeAddon
+		case "enter", "y", "Y":
+			request := taskRequest{
+				Kind:        taskWorktreeAddon,
+				AddonName:   strings.TrimSpace(m.worktreeAddonName),
+				AddonSource: strings.TrimSpace(m.worktreeAddonSource),
+				AddonBranch: strings.TrimSpace(m.worktreeAddonBranch),
+				Yes:         true,
+			}
+			m.modal = modalNone
+			return m, m.queueTask(request)
+		}
+	case modalConfirmAddonRemove:
+		switch msg.String() {
+		case "esc", "n", "N":
+			m.modal = modalRemoveAddon
+		case "enter", "y", "Y":
+			request := taskRequest{
+				Kind:      taskRemoveAddon,
+				AddonName: strings.TrimSpace(m.removeAddonName),
+				Force:     m.removeAddonForce,
+				Yes:       true,
+			}
+			m.modal = modalNone
+			return m, m.queueTask(request)
+		}
 	case modalAddonMount:
 		switch msg.String() {
 		case "esc", "n", "N":
@@ -878,8 +980,87 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.appendFormText(value)
 			}
 		}
+	case modalCloneAddon, modalWorktreeAddon, modalRemoveAddon:
+		switch msg.String() {
+		case "esc":
+			m.modal = modalNone
+		case "enter":
+			return m, m.submitAddonForm()
+		case "tab":
+			m.moveFormField(1)
+		case "shift+tab":
+			m.moveFormField(-1)
+		case "backspace", "ctrl+h":
+			m.removeFormText()
+			m.addonFormErr = nil
+		case "ctrl+u":
+			m.clearFormText()
+			m.addonFormErr = nil
+		case " ":
+			if !m.toggleFormField() {
+				m.appendFormText(" ")
+			}
+			m.addonFormErr = nil
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.appendFormText(value)
+				m.addonFormErr = nil
+			}
+		}
 	}
 	return m, nil
+}
+
+func (m *Model) submitAddonForm() tea.Cmd {
+	switch m.modal {
+	case modalCloneAddon:
+		name := strings.TrimSpace(m.cloneAddonName)
+		url := strings.TrimSpace(m.cloneAddonURL)
+		if name == "" || url == "" {
+			m.addonFormErr = errors.New("add-on name and Git URL are required")
+			return nil
+		}
+		depth := 0
+		if value := strings.TrimSpace(m.cloneAddonDepth); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 0 {
+				m.addonFormErr = errors.New("clone depth must be a non-negative number")
+				return nil
+			}
+			depth = parsed
+		}
+		request := taskRequest{
+			Kind:      taskAddAddon,
+			AddonName: name,
+			AddonURL:  url,
+			AddonOptions: addons.AddOptions{
+				Depth:  depth,
+				Branch: strings.TrimSpace(m.cloneAddonBranch),
+			},
+		}
+		m.modal = modalNone
+		return m.queueTask(request)
+	case modalWorktreeAddon:
+		source := strings.TrimSpace(m.worktreeAddonSource)
+		name := strings.TrimSpace(m.worktreeAddonName)
+		branch := strings.TrimSpace(m.worktreeAddonBranch)
+		if source == "" || name == "" || branch == "" {
+			m.addonFormErr = errors.New("source add-on, worktree name, and branch are required")
+			return nil
+		}
+		m.addonFormErr = nil
+		m.modal = modalConfirmWorktreeAddon
+	case modalRemoveAddon:
+		if strings.TrimSpace(m.removeAddonName) == "" {
+			m.addonFormErr = errors.New("add-on name is required")
+			return nil
+		}
+		m.addonFormErr = nil
+		m.modal = modalConfirmAddonRemove
+	}
+	return nil
 }
 
 func (m *Model) submitDatabaseForm() tea.Cmd {
@@ -941,6 +1122,12 @@ func (m *Model) queueRestoreTask() tea.Cmd {
 
 func (m *Model) formFieldCount() int {
 	switch m.modal {
+	case modalCloneAddon:
+		return 4
+	case modalWorktreeAddon:
+		return 3
+	case modalRemoveAddon:
+		return 2
 	case modalInitDatabase:
 		return 2
 	case modalBackupDatabase:
@@ -962,6 +1149,11 @@ func (m *Model) moveFormField(delta int) {
 
 func (m *Model) toggleFormField() bool {
 	switch m.modal {
+	case modalRemoveAddon:
+		if m.formField == 1 {
+			m.removeAddonForce = !m.removeAddonForce
+			return true
+		}
 	case modalBackupDatabase:
 		switch m.formField {
 		case 1:
@@ -999,6 +1191,30 @@ func (m *Model) toggleFormField() bool {
 
 func (m *Model) formText() *string {
 	switch m.modal {
+	case modalCloneAddon:
+		switch m.formField {
+		case 0:
+			return &m.cloneAddonName
+		case 1:
+			return &m.cloneAddonURL
+		case 2:
+			return &m.cloneAddonDepth
+		case 3:
+			return &m.cloneAddonBranch
+		}
+	case modalWorktreeAddon:
+		switch m.formField {
+		case 0:
+			return &m.worktreeAddonSource
+		case 1:
+			return &m.worktreeAddonName
+		case 2:
+			return &m.worktreeAddonBranch
+		}
+	case modalRemoveAddon:
+		if m.formField == 0 {
+			return &m.removeAddonName
+		}
 	case modalInitDatabase:
 		switch m.formField {
 		case 0:
@@ -1061,18 +1277,29 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	m.taskProfileName = request.ProfileName
 	m.taskDatabaseName = request.DatabaseName
 	m.taskDatabasePhysical = request.DatabasePhysical
-	m.taskName = taskLabel(request.Kind) + " " + request.ProfileName
+	m.taskName = taskLabel(request.Kind)
+	if request.ProfileName != "" {
+		m.taskName += " " + request.ProfileName
+	}
 	if request.DatabaseName != "" {
 		m.taskName += "/" + request.DatabaseName
 	}
 	if request.AddonName != "" {
-		m.taskName += "/" + request.AddonName
+		if request.ProfileName == "" {
+			m.taskName += " " + request.AddonName
+		} else {
+			m.taskName += "/" + request.AddonName
+		}
 	} else if len(request.AddonNames) > 0 {
 		m.taskName += ": " + strings.Join(request.AddonNames, ", ")
+	}
+	if request.AddonSource != "" {
+		m.taskName += " from " + request.AddonSource
 	}
 	m.taskStatus = "starting"
 	m.taskErr = nil
 	m.taskNotice = ""
+	m.taskOutput = ""
 	m.taskStarting = true
 	m.taskRunning = false
 	m.taskCancelRequested = false
@@ -1894,6 +2121,17 @@ func (m *Model) taskView() string {
 	if m.taskErr != nil {
 		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
 	}
+	if m.taskProfileName == "" && m.taskOutput != "" {
+		lines = append(lines, mutedStyle.Render(taskOutputTail(m.taskOutput, 6)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func taskOutputTail(output string, maxLines int) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -2036,8 +2274,8 @@ func (m *Model) footerView() string {
 		}
 		keys += "  ctrl+r refresh  ? help  q quit"
 	}
-	if m.focus == focusAddons && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil) + "  ctrl+r refresh  ? help  q quit"
+	if m.focus == focusAddons {
+		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  ctrl+r refresh  ? help  q quit"
 	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  ctrl+r refresh  q quit  ? hide help"
@@ -2051,8 +2289,8 @@ func (m *Model) footerView() string {
 			}
 			keys += "  ctrl+r refresh  ? hide help"
 		}
-		if m.focus == focusAddons && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  " + addonActionHints(m.selectedAddon() != nil) + "  ctrl+r refresh  ? hide help"
+		if m.focus == focusAddons {
+			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -2072,8 +2310,11 @@ func databaseActionHints() string {
 	return "u update  U update-all  d drop  b backup  R restore  p psql"
 }
 
-func addonActionHints(hasSelection bool) string {
-	hints := "a attach"
+func addonActionHints(hasSelection, hasProfile bool) string {
+	hints := "c clone  w worktree  x remove"
+	if hasProfile {
+		hints = "a attach  " + hints
+	}
 	if hasSelection {
 		hints += "  d detach  f fetch  p pull"
 	}
@@ -2160,6 +2401,60 @@ func (m *Model) modalView() string {
 			"",
 			mutedStyle.Render("enter/y confirm  n/esc back"),
 		}
+	case modalCloneAddon:
+		lines = []string{
+			titleStyle.Render("Clone and register add-on"),
+			m.formLine("name", m.cloneAddonName, 0, true),
+			m.formLine("Git URL", m.cloneAddonURL, 1, true),
+			m.formLine("depth (0 = full)", m.cloneAddonDepth, 2, true),
+			m.formLine("branch (optional)", m.cloneAddonBranch, 3, true),
+		}
+		if m.addonFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
+		}
+		lines = append(lines, "", mutedStyle.Render("tab field  type  enter clone  esc cancel"))
+	case modalWorktreeAddon:
+		lines = []string{
+			titleStyle.Render("Create add-on worktree"),
+			m.formLine("source add-on", m.worktreeAddonSource, 0, true),
+			m.formLine("worktree name", m.worktreeAddonName, 1, true),
+			m.formLine("branch", m.worktreeAddonBranch, 2, true),
+		}
+		if m.addonFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
+		}
+		lines = append(lines, "", mutedStyle.Render("tab field  type  enter continue  esc cancel"))
+	case modalConfirmWorktreeAddon:
+		lines = []string{
+			titleStyle.Render("Confirm worktree creation"),
+			"Source: " + strings.TrimSpace(m.worktreeAddonSource),
+			"Name: " + strings.TrimSpace(m.worktreeAddonName),
+			"Branch: " + strings.TrimSpace(m.worktreeAddonBranch),
+			warningStyle.Render("If the branch is missing locally and remotely, create it."),
+			"Existing parent/worktree rules still apply.",
+			"",
+			mutedStyle.Render("enter/y confirm  n/esc back"),
+		}
+	case modalRemoveAddon:
+		lines = []string{
+			titleStyle.Render("Remove add-on checkout"),
+			m.formLine("name", m.removeAddonName, 0, true),
+			m.formLine("force dirty checkout", yesNo(m.removeAddonForce), 1, false),
+			warningStyle.Render("Attached profiles and registered child worktrees block removal."),
+		}
+		if m.addonFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
+		}
+		lines = append(lines, "", mutedStyle.Render("tab field  space toggle force  enter review  esc cancel"))
+	case modalConfirmAddonRemove:
+		lines = []string{
+			titleStyle.Render("Remove add-on " + strings.TrimSpace(m.removeAddonName) + "?"),
+			warningStyle.Render("This removes the checkout/worktree; attached profiles and child worktrees block removal."),
+		}
+		if m.removeAddonForce {
+			lines = append(lines, warningStyle.Render("Force may discard uncommitted changes."))
+		}
+		lines = append(lines, "", mutedStyle.Render("enter/y confirm  n/esc back"))
 	case modalAddonMount:
 		lines = m.addonMountModalLines()
 	}
@@ -2280,7 +2575,7 @@ func (m *Model) smallView() string {
 		}
 	}
 	if m.focus == focusAddons {
-		hints = addonActionHints(m.selectedAddon() != nil)
+		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q quit"))
 	if task := m.taskView(); task != "" {

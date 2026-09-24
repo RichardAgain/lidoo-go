@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"lidoo/internal/addons"
 	"lidoo/internal/app"
 )
 
@@ -27,6 +28,9 @@ const (
 	taskDetachAddons
 	taskFetchAddon
 	taskPullAddon
+	taskAddAddon
+	taskWorktreeAddon
+	taskRemoveAddon
 )
 
 type taskRequest struct {
@@ -49,6 +53,10 @@ type taskRequest struct {
 	Jobs             string
 	AddonNames       []string
 	AddonName        string
+	AddonURL         string
+	AddonOptions     addons.AddOptions
+	AddonSource      string
+	AddonBranch      string
 	Recreate         bool
 }
 
@@ -82,6 +90,12 @@ func taskActionLabel(kind taskKind) string {
 		return "fetching"
 	case taskPullAddon:
 		return "pulling"
+	case taskAddAddon:
+		return "cloning"
+	case taskWorktreeAddon:
+		return "creating worktree"
+	case taskRemoveAddon:
+		return "removing"
 	default:
 		return "working"
 	}
@@ -117,6 +131,12 @@ func taskLabel(kind taskKind) string {
 		return "fetch add-on"
 	case taskPullAddon:
 		return "pull add-on"
+	case taskAddAddon:
+		return "clone add-on"
+	case taskWorktreeAddon:
+		return "create worktree"
+	case taskRemoveAddon:
+		return "remove add-on"
 	default:
 		return "profile operation"
 	}
@@ -178,6 +198,12 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 				err = service.FetchAddon(ctx, request.AddonName, addonOptions)
 			case taskPullAddon:
 				err = service.PullAddon(ctx, request.AddonName, addonOptions)
+			case taskAddAddon:
+				err = service.AddAddon(ctx, app.AddAddonInput{Name: request.AddonName, URL: request.AddonURL, Options: request.AddonOptions}, addonOptions)
+			case taskWorktreeAddon:
+				err = service.WorktreeAddon(ctx, app.WorktreeAddonInput{Source: request.AddonSource, Name: request.AddonName, Branch: request.AddonBranch, Yes: request.Yes}, addonOptions)
+			case taskRemoveAddon:
+				err = service.RemoveAddon(ctx, app.RemoveAddonInput{Name: request.AddonName, Yes: request.Yes, Force: request.Force}, addonOptions)
 			default:
 				err = errors.New("unknown profile task")
 			}

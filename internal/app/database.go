@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"io"
 
 	"lidoo/internal/files"
@@ -81,32 +80,12 @@ func (s *Service) RestoreDatabase(ctx context.Context, name, database, source st
 	})
 }
 
-func (s *Service) withDatabaseOperation(ctx context.Context, operation func(files.State) (DatabaseOperationResult, error)) (result DatabaseOperationResult, err error) {
-	if err := contextError(ctx); err != nil {
-		return result, err
-	}
-	lock, err := files.AcquireStateLock()
-	if err != nil {
-		return result, err
-	}
-	defer func() {
-		closeErr := lock.Close()
-		if closeErr == nil {
-			return
-		}
-		if err == nil {
-			err = closeErr
-			return
-		}
-		err = fmt.Errorf("%w; additionally failed to release workspace lock: %v", err, closeErr)
-	}()
-
-	state, err := files.ReadState()
-	if err != nil {
-		return result, fmt.Errorf("read workspace state: %w", err)
-	}
-	if err := contextError(ctx); err != nil {
-		return result, err
-	}
-	return operation(state)
+func (s *Service) withDatabaseOperation(ctx context.Context, operation func(files.State) (DatabaseOperationResult, error)) (DatabaseOperationResult, error) {
+	var result DatabaseOperationResult
+	err := s.withWorkspaceOperation(ctx, false, func(state files.State) error {
+		var operationErr error
+		result, operationErr = operation(state)
+		return operationErr
+	})
+	return result, err
 }

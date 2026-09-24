@@ -10,6 +10,14 @@ import (
 )
 
 func DetachFromContainer(container string, names []string, state files.State) error {
+	return DetachFromContainerWithOptions(container, names, state, OperationOptions{})
+}
+
+func DetachFromContainerWithOptions(container string, names []string, state files.State, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	if err := operationOptions.Context.Err(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")
 	}

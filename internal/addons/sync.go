@@ -1,6 +1,7 @@
 package addons
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,25 +13,41 @@ import (
 )
 
 func Fetch(name string, state files.State) error {
-	entry, path, err := syncTarget(name, state)
+	return FetchWithOptions(name, state, OperationOptions{})
+}
+
+func FetchWithOptions(name string, state files.State, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	if err := operationOptions.Context.Err(); err != nil {
+		return err
+	}
+	entry, path, err := syncTargetWithOptions(name, state, operationOptions)
 	if err != nil {
 		return err
 	}
 	if entry.WorktreeOf != "" {
-		fmt.Printf("fetching worktree parent repository for addon %q\n", name)
+		fmt.Fprintf(operationOptions.Output, "fetching worktree parent repository for addon %q\n", name)
 	}
-	command := exec.Command("git", "-C", path, "fetch", "--all")
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+	command := exec.CommandContext(operationOptions.Context, "git", "-C", path, "fetch", "--all")
+	command.Stdout = operationOptions.Output
+	command.Stderr = operationOptions.ErrorOutput
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("fetch addon %q: %w", name, err)
 	}
-	fmt.Printf("addon %q fetched; no profile recreation is required\n", name)
+	fmt.Fprintf(operationOptions.Output, "addon %q fetched; no profile recreation is required\n", name)
 	return nil
 }
 
 func Pull(name string, state files.State) error {
-	entry, path, err := syncTarget(name, state)
+	return PullWithOptions(name, state, OperationOptions{})
+}
+
+func PullWithOptions(name string, state files.State, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	if err := operationOptions.Context.Err(); err != nil {
+		return err
+	}
+	entry, path, err := syncTargetWithOptions(name, state, operationOptions)
 	if err != nil {
 		return err
 	}
@@ -38,18 +55,18 @@ func Pull(name string, state files.State) error {
 		return fmt.Errorf("refusing to pull worktree addon %q; update its parent explicitly", name)
 	}
 
-	dirty, err := gitStatusDirty(path)
+	dirty, err := gitStatusDirtyWithContext(operationOptions.Context, path)
 	if err != nil {
 		return fmt.Errorf("inspect addon %q: %w", name, err)
 	}
 	if dirty {
 		return fmt.Errorf("refusing to pull addon %q: repository has uncommitted changes", name)
 	}
-	branch, err := currentBranch(path)
+	branch, err := currentBranchWithContext(operationOptions.Context, path)
 	if err != nil {
 		return fmt.Errorf("inspect addon %q branch: %w", name, err)
 	}
-	upstream, err := configuredUpstream(path)
+	upstream, err := configuredUpstreamWithContext(operationOptions.Context, path)
 	if err != nil {
 		return fmt.Errorf("inspect addon %q upstream: %w", name, err)
 	}
@@ -57,13 +74,13 @@ func Pull(name string, state files.State) error {
 		return fmt.Errorf("refusing to pull addon %q: current branch has no configured upstream", name)
 	}
 
-	command := exec.Command("git", "-C", path, "pull", "--ff-only")
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+	command := exec.CommandContext(operationOptions.Context, "git", "-C", path, "pull", "--ff-only")
+	command.Stdout = operationOptions.Output
+	command.Stderr = operationOptions.ErrorOutput
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("pull addon %q: %w", name, err)
 	}
-	newBranch, err := currentBranch(path)
+	newBranch, err := currentBranchWithContext(operationOptions.Context, path)
 	if err != nil {
 		return fmt.Errorf("verify addon %q branch: %w", name, err)
 	}
@@ -76,14 +93,15 @@ func Pull(name string, state files.State) error {
 		return fmt.Errorf("find profiles using addon %q: %w", name, err)
 	}
 	if len(profiles) == 0 {
-		fmt.Printf("addon %q pulled; no profile recreation is required\n", name)
+		fmt.Fprintf(operationOptions.Output, "addon %q pulled; no profile recreation is required\n", name)
 	} else {
-		fmt.Printf("addon %q pulled; source edits are live for profiles: %s (no recreation required)\n", name, strings.Join(profiles, ", "))
+		fmt.Fprintf(operationOptions.Output, "addon %q pulled; source edits are live for profiles: %s (no recreation required)\n", name, strings.Join(profiles, ", "))
 	}
 	return nil
 }
 
-func syncTarget(name string, state files.State) (Entry, string, error) {
+func syncTargetWithOptions(name string, state files.State, operationOptions OperationOptions) (Entry, string, error) {
+	operationOptions = normalizeOperationOptions(operationOptions)
 	if !validAddonName(name) {
 		return Entry{}, "", fmt.Errorf("invalid addon name %q", name)
 	}
@@ -105,16 +123,19 @@ func syncTarget(name string, state files.State) (Entry, string, error) {
 	if !info.IsDir() {
 		return Entry{}, "", fmt.Errorf("addon %q path %q is not a directory", name, path)
 	}
-	if err := validateGitRepository(path); err != nil {
+	if err := validateGitRepositoryWithOptions(path, operationOptions); err != nil {
 		return Entry{}, "", fmt.Errorf("addon %q is not a Git repository: %w", name, err)
 	}
 	return entry, path, nil
 }
 
-func currentBranch(path string) (string, error) {
-	command := exec.Command("git", "-C", path, "symbolic-ref", "--quiet", "--short", "HEAD")
+func currentBranchWithContext(ctx context.Context, path string) (string, error) {
+	command := exec.CommandContext(ctx, "git", "-C", path, "symbolic-ref", "--quiet", "--short", "HEAD")
 	output, err := command.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return "", errors.New("repository is in detached HEAD state")
@@ -128,10 +149,13 @@ func currentBranch(path string) (string, error) {
 	return branch, nil
 }
 
-func configuredUpstream(path string) (string, error) {
-	command := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+func configuredUpstreamWithContext(ctx context.Context, path string) (string, error) {
+	command := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
 	output, err := command.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return "", nil

@@ -1,6 +1,7 @@
 package addons
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,14 +13,20 @@ import (
 )
 
 func Worktree(source, name, branch string, state files.State) error {
-	return worktree(source, name, branch, false, state)
+	return WorktreeWithConfirmation(source, name, branch, false, state)
 }
 
 func WorktreeWithConfirmation(source, name, branch string, yes bool, state files.State) error {
-	return worktree(source, name, branch, yes, state)
+	operationOptions := OperationOptions{}
+	terminalConfirmation(&operationOptions)
+	return WorktreeWithOptions(source, name, branch, yes, state, operationOptions)
 }
 
-func worktree(source, name, branch string, yes bool, state files.State) error {
+func WorktreeWithOptions(source, name, branch string, yes bool, state files.State, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	if err := operationOptions.Context.Err(); err != nil {
+		return err
+	}
 	if !validAddonName(name) {
 		return fmt.Errorf("invalid addon name %q", name)
 	}
@@ -55,20 +62,20 @@ func worktree(source, name, branch string, yes bool, state files.State) error {
 	if !sourceInfo.IsDir() {
 		return fmt.Errorf("source addon %q path %q is not a directory", source, sourcePath)
 	}
-	if err := validateGitRepository(sourcePath); err != nil {
+	if err := validateGitRepositoryWithOptions(sourcePath, operationOptions); err != nil {
 		return fmt.Errorf("source addon %q is not a valid Git repository: %w", source, err)
 	}
-	localBranch, err := localBranchExists(sourcePath, branch)
+	localBranch, err := localBranchExists(operationOptions.Context, sourcePath, branch)
 	if err != nil {
 		return fmt.Errorf("check branch %q in source addon %q: %w", branch, source, err)
 	}
 
 	remoteBranch := ""
 	if !localBranch {
-		if err := fetchRemotes(sourcePath); err != nil {
+		if err := fetchRemotes(sourcePath, operationOptions); err != nil {
 			return fmt.Errorf("fetch branches for source addon %q: %w", source, err)
 		}
-		remoteBranch, err = findRemoteBranch(sourcePath, branch)
+		remoteBranch, err = findRemoteBranch(operationOptions.Context, sourcePath, branch)
 		if err != nil {
 			return fmt.Errorf("check remote branch %q in source addon %q: %w", branch, source, err)
 		}
@@ -96,30 +103,37 @@ func worktree(source, name, branch string, yes bool, state files.State) error {
 
 	branchCreated := false
 	if localBranch {
-		err = addWorktree(sourcePath, relativeDestination, branch, "", false)
+		err = addWorktree(sourcePath, relativeDestination, branch, "", false, operationOptions)
 	} else if remoteBranch != "" {
 		// Keep the worktree on a local branch while preserving the remote branch
 		// as its upstream.
-		err = addWorktree(sourcePath, relativeDestination, branch, remoteBranch, true)
+		err = addWorktree(sourcePath, relativeDestination, branch, remoteBranch, true, operationOptions)
 		branchCreated = err == nil
 	} else {
 		// Let Git report the missing branch before offering to create one.
-		err = addWorktree(sourcePath, relativeDestination, branch, branch, false)
+		err = addWorktree(sourcePath, relativeDestination, branch, branch, false, operationOptions)
 	}
 	if err != nil {
+		if operationOptions.Context.Err() != nil {
+			return operationOptions.Context.Err()
+		}
 		if localBranch || remoteBranch != "" {
 			return fmt.Errorf("create worktree %q: %w", name, err)
 		}
 
-		create, promptErr := confirmNewWorktree(branch, yes)
+		create := yes
+		var promptErr error
+		if !create {
+			create, promptErr = requestConfirmation(operationOptions, Confirmation{Kind: ConfirmNewWorktree, AddonName: branch})
+		}
 		if promptErr != nil {
 			return promptErr
 		}
 		if !create {
-			fmt.Printf("worktree %q was not created; branch %q was not created\n", name, branch)
+			fmt.Fprintf(operationOptions.Output, "worktree %q was not created; branch %q was not created\n", name, branch)
 			return nil
 		}
-		if err := addWorktree(sourcePath, relativeDestination, branch, "", true); err != nil {
+		if err := addWorktree(sourcePath, relativeDestination, branch, "", true, operationOptions); err != nil {
 			return fmt.Errorf("create worktree %q with new branch %q: %w", name, branch, err)
 		}
 		branchCreated = true
@@ -130,17 +144,17 @@ func worktree(source, name, branch string, yes bool, state files.State) error {
 	}
 	if branchCreated {
 		if remoteBranch != "" {
-			fmt.Printf("worktree %q created at %q; branch %q created: yes (from remote branch)\n", name, destination, branch)
+			fmt.Fprintf(operationOptions.Output, "worktree %q created at %q; branch %q created: yes (from remote branch)\n", name, destination, branch)
 		} else {
-			fmt.Printf("worktree %q created at %q; branch %q created: yes\n", name, destination, branch)
+			fmt.Fprintf(operationOptions.Output, "worktree %q created at %q; branch %q created: yes\n", name, destination, branch)
 		}
 	} else {
-		fmt.Printf("worktree %q created at %q; branch created: no (existing local branch)\n", name, destination)
+		fmt.Fprintf(operationOptions.Output, "worktree %q created at %q; branch created: no (existing local branch)\n", name, destination)
 	}
 	return nil
 }
 
-func addWorktree(sourcePath, destination, branch, startPoint string, createBranch bool) error {
+func addWorktree(sourcePath, destination, branch, startPoint string, createBranch bool, operationOptions OperationOptions) error {
 	args := []string{"-C", sourcePath, "worktree", "add"}
 	if createBranch {
 		args = append(args, "-b", branch)
@@ -150,15 +164,16 @@ func addWorktree(sourcePath, destination, branch, startPoint string, createBranc
 		args = append(args, startPoint)
 	}
 
-	cmd := exec.Command("git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := exec.CommandContext(operationOptions.Context, "git", args...)
+	cmd.Stdout = operationOptions.Output
+	cmd.Stderr = operationOptions.ErrorOutput
 	return cmd.Run()
 }
 
-func validateGitRepository(path string) error {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree")
-	cmd.Stderr = os.Stderr
+func validateGitRepositoryWithOptions(path string, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	cmd := exec.CommandContext(operationOptions.Context, "git", "-C", path, "rev-parse", "--is-inside-work-tree")
+	cmd.Stderr = operationOptions.ErrorOutput
 	output, err := cmd.Output()
 	if err != nil {
 		return err
@@ -169,9 +184,12 @@ func validateGitRepository(path string) error {
 	return nil
 }
 
-func localBranchExists(path, branch string) (bool, error) {
-	cmd := exec.Command("git", "-C", path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+func localBranchExists(ctx context.Context, path, branch string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return false, nil
@@ -181,26 +199,33 @@ func localBranchExists(path, branch string) (bool, error) {
 	return true, nil
 }
 
-func fetchRemotes(path string) error {
-	cmd := exec.Command("git", "-C", path, "fetch", "--all")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+func fetchRemotes(path string, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	cmd := exec.CommandContext(operationOptions.Context, "git", "-C", path, "fetch", "--all")
+	cmd.Stdout = operationOptions.Output
+	cmd.Stderr = operationOptions.ErrorOutput
 	return cmd.Run()
 }
 
-func findRemoteBranch(path, branch string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "remote")
+func findRemoteBranch(ctx context.Context, path, branch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", path, "remote")
 	output, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", err
 	}
 
 	for _, remote := range strings.Fields(string(output)) {
 		ref := "refs/remotes/" + remote + "/" + branch
-		check := exec.Command("git", "-C", path, "show-ref", "--verify", "--quiet", ref)
+		check := exec.CommandContext(ctx, "git", "-C", path, "show-ref", "--verify", "--quiet", ref)
 		if err := check.Run(); err == nil {
 			return ref, nil
 		} else {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
 			var exitErr *exec.ExitError
 			if !errors.As(err, &exitErr) {
 				return "", err
@@ -208,17 +233,4 @@ func findRemoteBranch(path, branch string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-func confirmNewWorktree(branch string, yes bool) (bool, error) {
-	if yes {
-		return true, nil
-	}
-
-	fmt.Fprintf(os.Stderr, "branch %q does not exist locally or remotely; create a new branch and worktree? [Y/N] ", branch)
-	var answer string
-	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
-		return false, fmt.Errorf("read confirmation: %w", err)
-	}
-	return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes"), nil
 }

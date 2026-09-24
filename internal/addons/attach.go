@@ -10,6 +10,14 @@ import (
 )
 
 func AttachToContainer(container string, names []string, state files.State) error {
+	return AttachToContainerWithOptions(container, names, state, OperationOptions{})
+}
+
+func AttachToContainerWithOptions(container string, names []string, state files.State, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
+	if err := operationOptions.Context.Err(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(container) == "" {
 		return errors.New("container name cannot be empty")
 	}
@@ -47,7 +55,7 @@ func AttachToContainer(container string, names []string, state files.State) erro
 		return fmt.Errorf("add container %q to state: %w", container, err)
 	}
 	if created {
-		fmt.Printf("\033[32mstate entry for container %q created\033[0m\n", container)
+		fmt.Fprintf(operationOptions.Output, "\033[32mstate entry for container %q created\033[0m\n", container)
 	}
 	if err := profile.Put(state, container, config); err != nil {
 		return fmt.Errorf("update container %q: %w", container, err)

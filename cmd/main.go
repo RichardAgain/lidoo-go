@@ -70,8 +70,9 @@ func main() {
 
 	profileLifecycle := isProfileLifecycleCommand(command)
 	databaseMutation := isDatabaseMutationCommand(command)
+	addonMutation := isAddonMutationCommand(command, positional)
 	mutatesState := commandMutatesState(command, positional)
-	if profileLifecycle || databaseMutation {
+	if profileLifecycle || databaseMutation || addonMutation {
 		mutatesState = false
 	}
 	var err error
@@ -79,7 +80,7 @@ func main() {
 	var stateLock *files.StateLock
 	var service *app.Service
 	var readStateErr bool
-	if profileLifecycle || databaseMutation {
+	if profileLifecycle || databaseMutation || addonMutation {
 		service, err = app.Open()
 	} else if command != "tui" {
 		if mutatesState {
@@ -124,6 +125,11 @@ func main() {
 	databaseOptions := app.DatabaseOperationOptions{
 		Output:      os.Stdout,
 		ErrorOutput: os.Stderr,
+	}
+	addonOptions := app.AddonOperationOptions{
+		Output:      os.Stdout,
+		ErrorOutput: os.Stderr,
+		Confirm:     confirmAddonOperation,
 	}
 	if profileLifecycle {
 		profileOptions.Confirm = confirmProfileRemoval
@@ -266,7 +272,7 @@ func main() {
 			var options addons.AddOptions
 			addonName, url, options, err = parseAddonAddArgs(positional[1:])
 			if err == nil {
-				err = addons.Add(addonName, url, options, state)
+				err = service.AddAddon(context.Background(), app.AddAddonInput{Name: addonName, URL: url, Options: options}, addonOptions)
 			}
 		case len(positional) > 0 && positional[0] == "attach":
 			var profile string
@@ -274,7 +280,7 @@ func main() {
 			var recreate bool
 			profile, addonNames, recreate, err = parseAddonArgs(positional[1:], name, "attach")
 			if err == nil {
-				err = changeAddonMounts(profile, addonNames, recreate, true, state)
+				err = service.AttachAddons(context.Background(), app.AddonMountInput{ProfileName: profile, AddonNames: addonNames, Recreate: recreate}, addonOptions)
 			}
 		case len(positional) > 0 && positional[0] == "detach":
 			var profile string
@@ -282,29 +288,29 @@ func main() {
 			var recreate bool
 			profile, addonNames, recreate, err = parseAddonArgs(positional[1:], name, "detach")
 			if err == nil {
-				err = changeAddonMounts(profile, addonNames, recreate, false, state)
+				err = service.DetachAddons(context.Background(), app.AddonMountInput{ProfileName: profile, AddonNames: addonNames, Recreate: recreate}, addonOptions)
 			}
 		case len(positional) > 0 && positional[0] == "rm":
 			var addonName string
 			var removeYes, removeForce bool
 			addonName, removeYes, removeForce, err = parseAddonRemoveArgs(positional[1:], yes, false)
 			if err == nil {
-				err = addons.Remove(addonName, removeYes, removeForce, state)
+				err = service.RemoveAddon(context.Background(), app.RemoveAddonInput{Name: addonName, Yes: removeYes, Force: removeForce}, addonOptions)
 			}
 		case len(positional) > 0 && positional[0] == "worktree":
 			var source, name, branch string
 			var worktreeYes bool
 			source, name, branch, worktreeYes, err = parseWorktreeArgs(positional[1:])
 			if err == nil {
-				err = addons.WorktreeWithConfirmation(source, name, branch, yes || worktreeYes, state)
+				err = service.WorktreeAddon(context.Background(), app.WorktreeAddonInput{Source: source, Name: name, Branch: branch, Yes: yes || worktreeYes}, addonOptions)
 			}
 		case len(positional) > 0 && (positional[0] == "fetch" || positional[0] == "pull"):
 			if len(positional) != 2 {
 				err = fmt.Errorf("usage: lidoo addons %s <addon name>", positional[0])
 			} else if positional[0] == "fetch" {
-				err = addons.Fetch(positional[1], state)
+				err = service.FetchAddon(context.Background(), positional[1], addonOptions)
 			} else {
-				err = addons.Pull(positional[1], state)
+				err = service.PullAddon(context.Background(), positional[1], addonOptions)
 			}
 		default:
 			err = errors.New("usage: lidoo addons add <addon name> <git url> [--depth N] [--branch <branch>] | lidoo addons attach|detach --name <profile> <addon name> [<addon name> ...] | lidoo addons worktree <source> <name> --branch <branch> [--yes]")
@@ -644,9 +650,37 @@ func confirmProfileRemoval(confirmation app.ProfileConfirmation) (bool, error) {
 	return strings.EqualFold(answer, "y"), nil
 }
 
+func confirmAddonOperation(confirmation app.AddonConfirmation) (bool, error) {
+	switch confirmation.Kind {
+	case addons.ConfirmNewWorktree:
+		fmt.Fprintf(os.Stderr, "branch %q does not exist locally or remotely; create a new branch and worktree? [Y/N] ", confirmation.AddonName)
+	case addons.ConfirmAddonRemoval:
+		fmt.Fprintf(os.Stderr, "remove addon %q and %s? [Y/N] ", confirmation.AddonName, confirmation.Action)
+	default:
+		return false, fmt.Errorf("unknown add-on confirmation kind %q", confirmation.Kind)
+	}
+	var answer string
+	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes"), nil
+}
+
 func isDatabaseMutationCommand(command string) bool {
 	switch command {
 	case "init", "update", "drop", "backup", "restore":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAddonMutationCommand(command string, positional []string) bool {
+	if command != "addons" || len(positional) == 0 {
+		return false
+	}
+	switch positional[0] {
+	case "add", "attach", "detach", "rm", "worktree", "pull", "fetch":
 		return true
 	default:
 		return false
@@ -658,60 +692,12 @@ func commandMutatesState(command string, positional []string) bool {
 	case "run", "stop", "restart", "recreate", "remove":
 		return true
 	case "addons":
-		if len(positional) == 0 {
-			return false
-		}
-		switch positional[0] {
-		case "add", "attach", "detach", "rm", "worktree", "pull", "fetch":
-			return true
-		default:
-			return false
-		}
+		return isAddonMutationCommand(command, positional)
 	case "profile":
 		return len(positional) > 0 && positional[0] == "import"
 	default:
 		return false
 	}
-}
-
-func changeAddonMounts(name string, addonNames []string, recreate, attach bool, state files.State) error {
-	if err := docker.ValidateProfileName(name); err != nil {
-		return err
-	}
-	previousState := files.CloneState(state)
-	var err error
-	if attach {
-		err = addons.AttachToContainer(name, addonNames, state)
-	} else {
-		err = addons.DetachFromContainer(name, addonNames, state)
-	}
-	if err != nil {
-		return err
-	}
-
-	exists, err := docker.ProfileExists(name)
-	if err != nil {
-		if recreate {
-			return fmt.Errorf("inspect profile %q before recreation: %w", name, err)
-		}
-		fmt.Fprintf(os.Stderr, "warning: addon mounts for profile %q changed, but its container could not be inspected: %v; recreate it explicitly before they apply\n", name, err)
-		return nil
-	}
-	if !exists {
-		fmt.Printf("profile %q has no container; addon mounts apply when it is run\n", name)
-		return nil
-	}
-	if !recreate {
-		fmt.Printf("profile %q addon mounts changed; recreate it before they apply (or use --recreate)\n", name)
-		return nil
-	}
-
-	fmt.Printf("recreating profile %q to apply addon mounts\n", name)
-	if err := docker.Recreate(name, state); err != nil {
-		files.RestoreState(state, previousState)
-		return fmt.Errorf("recreate profile %q after addon change: %w", name, err)
-	}
-	return nil
 }
 
 func parseAddonArgs(args []string, profile, action string) (string, []string, bool, error) {

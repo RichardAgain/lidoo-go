@@ -19,17 +19,23 @@ type AddOptions struct {
 }
 
 func Add(name, url string, options AddOptions, state files.State) error {
+	operationOptions := OperationOptions{}
+	return AddWithOptions(name, url, options, state, operationOptions)
+}
+
+func AddWithOptions(name, url string, cloneOptions AddOptions, state files.State, operationOptions OperationOptions) error {
+	operationOptions = normalizeOperationOptions(operationOptions)
 	if !validAddonName(name) {
 		return fmt.Errorf("invalid addon name %q", name)
 	}
 	if strings.TrimSpace(url) == "" {
 		return errors.New("git url cannot be empty")
 	}
-	if options.Depth < 0 {
+	if cloneOptions.Depth < 0 {
 		return errors.New("clone depth cannot be negative")
 	}
-	if options.Branch != "" && (strings.TrimSpace(options.Branch) != options.Branch || strings.HasPrefix(options.Branch, "-")) {
-		return fmt.Errorf("invalid branch %q", options.Branch)
+	if cloneOptions.Branch != "" && (strings.TrimSpace(cloneOptions.Branch) != cloneOptions.Branch || strings.HasPrefix(cloneOptions.Branch, "-")) {
+		return fmt.Errorf("invalid branch %q", cloneOptions.Branch)
 	}
 
 	if err := os.MkdirAll(addonsDir, 0o755); err != nil {
@@ -44,16 +50,16 @@ func Add(name, url string, options AddOptions, state files.State) error {
 	}
 
 	args := []string{"clone"}
-	if options.Depth > 0 {
-		args = append(args, "--depth", fmt.Sprint(options.Depth))
+	if cloneOptions.Depth > 0 {
+		args = append(args, "--depth", fmt.Sprint(cloneOptions.Depth))
 	}
-	if options.Branch != "" {
-		args = append(args, "--branch", options.Branch)
+	if cloneOptions.Branch != "" {
+		args = append(args, "--branch", cloneOptions.Branch)
 	}
 	args = append(args, "--", url, destination)
-	cmd := exec.Command("git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := exec.CommandContext(operationOptions.Context, "git", args...)
+	cmd.Stdout = operationOptions.Output
+	cmd.Stderr = operationOptions.ErrorOutput
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("clone addon %q: %w", name, err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
@@ -1817,7 +1818,11 @@ func (m *Model) profileIsRunning() bool {
 
 func (m *Model) View() string {
 	if m.width < 72 || m.height < 14 {
-		return m.smallView()
+		view := m.smallView()
+		if m.modal != modalNone {
+			return m.modalOverlay(view)
+		}
+		return view
 	}
 
 	leftWidth := m.width / 3
@@ -1839,9 +1844,32 @@ func (m *Model) View() string {
 	footer := m.footerView()
 	view := main + "\n" + mutedStyle.Render(strings.Repeat("─", m.width)) + "\n" + footer
 	if m.modal != modalNone {
-		view += "\n\n" + m.modalView()
+		return m.modalOverlay(view)
 	}
 	return view
+}
+
+func (m *Model) modalOverlay(background string) string {
+	base := strings.Split(lipgloss.NewStyle().Faint(true).Render(background), "\n")
+	modal := lipgloss.NewStyle().
+		Padding(0, 1).
+		Render(m.modalView())
+	modalLines := strings.Split(modal, "\n")
+	modalWidth := lipgloss.Width(modal)
+	left := (m.width - modalWidth) / 2
+	top := (m.height - len(modalLines)) / 2
+	if left < 0 {
+		left = 0
+	}
+	for row := range base {
+		if row < top || row >= top+len(modalLines) {
+			base[row] = lipgloss.NewStyle().Width(m.width).Render(base[row])
+			continue
+		}
+		modalLine := modalLines[row-top]
+		base[row] = ansi.Cut(base[row], 0, left) + modalLine + ansi.Cut(base[row], left+modalWidth, m.width)
+	}
+	return strings.Join(base, "\n")
 }
 
 func (m *Model) leftView(width int) string {
@@ -2585,11 +2613,7 @@ func (m *Model) smallView() string {
 	if m.showHelp {
 		lines = append(lines, mutedStyle.Render("tab focus  arrows or j/k move  c cancel task"))
 	}
-	view := strings.Join(lines, "\n")
-	if m.modal != modalNone {
-		view += "\n\n" + m.modalView()
-	}
-	return view
+	return strings.Join(lines, "\n")
 }
 
 func databaseLabel(database odoo.Database) string {

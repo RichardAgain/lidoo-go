@@ -1832,8 +1832,9 @@ func (m *Model) View() string {
 		return m.smallView()
 	}
 
-	left := lipgloss.NewStyle().Width(leftWidth).Render(m.leftView(leftWidth))
-	right := lipgloss.NewStyle().Width(rightWidth).Render(m.rightView(rightWidth))
+	mainHeight := m.height - 2 // separator and footer
+	left := lipgloss.NewStyle().Width(leftWidth).Height(mainHeight).Render(m.leftView(leftWidth))
+	right := lipgloss.NewStyle().Width(rightWidth).Height(mainHeight).Render(m.rightView(rightWidth))
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 	footer := m.footerView()
 	view := main + "\n" + mutedStyle.Render(strings.Repeat("─", m.width)) + "\n" + footer
@@ -2067,7 +2068,7 @@ func (m *Model) logContent() string {
 }
 
 func (m *Model) logContainer(width int, content string) string {
-	height := m.height - 10
+	height := m.height - 6
 	if height < 4 {
 		height = 4
 	}

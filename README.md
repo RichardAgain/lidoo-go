@@ -240,6 +240,64 @@ go run ./cmd wait --name testing --timeout 30s
 
 If startup exits or times out, inspect `lidoo logs --name testing`.
 
+## Interactive TUI
+
+`lidoo tui` (or `go run ./cmd tui`) opens the dashboard. Focus moves with
+`tab`/`←`/`→`; profiles, databases, and add-ons are separate panels.
+
+Profiles:
+
+- `n` creates a profile: choose an Odoo version from a select (discovered from
+  `docker/Dockerfile.*`, with already-built images tagged) or type a custom
+  one, then name the profile. It is created and started immediately.
+- `e` opens a settings panel. It lists one row per setting and only the field
+  you edit is persisted, so changing the database filter mode does not touch the
+  master password and vice versa:
+  - **database filter mode** — a select for `profile`, `disabled`, or `custom`.
+  - **filter pattern** — shown only in `custom` mode (the regular expression is
+    matched against physical database names).
+  - **Odoo master password** — `admin_passwd` (`/web/database`), not the admin
+    user's login password.
+  Use `↑`/`↓` to pick a row, `enter` to edit, `esc` to close. The Databases
+  panel then lists exactly the databases that mode exposes.
+- `space` toggles run/stop for the selected profile; `x` starts, `s` stops,
+  `r` restarts, `R` recreates, `enter` opens the URL, `d` removes. Actions that
+  do not apply (starting a running profile, stopping a stopped one) report a
+  notice instead of failing.
+
+Databases (the list follows the profile's database filter mode):
+
+- `a`/`A` changes the built-in `admin` user's password for the selected
+  database. It runs `odoo shell` inside the profile (the profile must be
+  running) and pipes the script on standard input, so the password never
+  appears in a process argument list. This is the user login password, **not**
+  `admin_passwd`.
+
+Add-ons:
+
+- `c` clones a new checkout.
+- `w` creates a worktree: choose the source add-on and then a branch from a
+  select (with a "New branch…" option).
+- `a` attaches and `d` detaches add-ons for the selected profile, `f` fetches,
+  `p` pulls, and `x` removes a checkout chosen from a select.
+
+Logs:
+
+- The profile panel shows only the container stream inline; Odoo lines are
+  compacted (level gutter, no date/pid, werkzeug access lines summarised with the
+  database name).
+- Task output is never mixed into that panel. The `Latest task` block below the
+  panel shows a short tail, and the full task stream lives in the viewer's
+  `tasks` source.
+- `L` opens the fullscreen viewer from any panel. `tab` cycles
+  `container` / `tasks` / `all`, `d` cycles the database filter, `1`–`4` filter
+  by minimum level (`all`, `info+`, `warn+`, `error`), `/` searches, `f` toggles
+  follow, and `g`/`G` jump to top/bottom. Mouse wheel and `pgup`/`pgdn` scroll.
+  Each profile keeps its own log buffer; profiles never share a stream.
+
+Changes that need a container rebuild stay pending until `R` recreates the
+profile, or the recreate option is chosen in the attach/detach dialog.
+
 ## Add-on maintenance
 
 `addons list` shows registered paths and attached profiles. `addons status`

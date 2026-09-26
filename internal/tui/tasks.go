@@ -9,6 +9,7 @@ import (
 
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
+	"lidoo/internal/profile"
 )
 
 type taskKind uint8
@@ -31,6 +32,8 @@ const (
 	taskAddAddon
 	taskWorktreeAddon
 	taskRemoveAddon
+	taskUpdateConfig
+	taskSetAdminPassword
 )
 
 type taskRequest struct {
@@ -58,6 +61,8 @@ type taskRequest struct {
 	AddonSource      string
 	AddonBranch      string
 	Recreate         bool
+	ConfigUpdate     *profile.ConfigUpdate
+	Password         string
 }
 
 func taskActionLabel(kind taskKind) string {
@@ -96,6 +101,10 @@ func taskActionLabel(kind taskKind) string {
 		return "creating worktree"
 	case taskRemoveAddon:
 		return "removing"
+	case taskUpdateConfig:
+		return "configuring"
+	case taskSetAdminPassword:
+		return "setting admin password"
 	default:
 		return "working"
 	}
@@ -137,6 +146,10 @@ func taskLabel(kind taskKind) string {
 		return "create worktree"
 	case taskRemoveAddon:
 		return "remove add-on"
+	case taskUpdateConfig:
+		return "configure profile"
+	case taskSetAdminPassword:
+		return "set admin password"
 	default:
 		return "profile operation"
 	}
@@ -204,6 +217,14 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 				err = service.WorktreeAddon(ctx, app.WorktreeAddonInput{Source: request.AddonSource, Name: request.AddonName, Branch: request.AddonBranch, Yes: request.Yes}, addonOptions)
 			case taskRemoveAddon:
 				err = service.RemoveAddon(ctx, app.RemoveAddonInput{Name: request.AddonName, Yes: request.Yes, Force: request.Force}, addonOptions)
+			case taskUpdateConfig:
+				if request.ConfigUpdate == nil {
+					err = errors.New("profile configuration update is missing")
+				} else {
+					err = service.UpdateProfileConfig(ctx, request.ProfileName, *request.ConfigUpdate, profileOptions)
+				}
+			case taskSetAdminPassword:
+				_, err = service.SetAdminPassword(ctx, request.ProfileName, request.DatabaseName, request.Password, databaseOptions)
 			default:
 				err = errors.New("unknown profile task")
 			}

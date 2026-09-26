@@ -18,7 +18,7 @@ func Run(ctx context.Context) error {
 	}
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	program := tea.NewProgram(NewModel(sessionCtx, service), tea.WithAltScreen(), tea.WithContext(sessionCtx))
+	program := tea.NewProgram(NewModel(sessionCtx, service), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(sessionCtx))
 	_, err = program.Run()
 	return err
 }

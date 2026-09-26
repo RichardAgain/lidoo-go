@@ -8,13 +8,15 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"lidoo/internal/docker"
+	"lidoo/internal/odoo"
+	"lidoo/internal/profile"
 )
 
 func TestProfileFocusShowsLogsWithoutLogTab(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.loading = false
 	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
-	model.profileLogs["testing"] = &profileLogBuffer{output: "profile log output"}
+	model.profileLogs["testing"] = &profileLogBuffer{container: "profile log output"}
 	model.logPhase = phaseReady
 
 	view := ansi.Strip(model.rightView(60))
@@ -32,7 +34,7 @@ func TestProfileFocusShowsLogsWithoutLogTab(t *testing.T) {
 func TestStoppedProfileShowsLogMessage(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "exited"}}
-	model.profileLogs["testing"] = &profileLogBuffer{output: "stale log output"}
+	model.profileLogs["testing"] = &profileLogBuffer{container: "stale log output"}
 	model.logPhase = phaseReady
 
 	const want = "start the container to see logs"
@@ -44,5 +46,334 @@ func TestStoppedProfileShowsLogMessage(t *testing.T) {
 	}
 	if model.logPhase != phaseUnavailable {
 		t.Fatalf("log phase = %v, want unavailable", model.logPhase)
+	}
+}
+
+func TestVersionSelectIncludesCustomOption(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.setVersionSelectItems([]docker.VersionOption{
+		{Version: "18", Image: true},
+		{Version: "17"},
+	})
+
+	if len(model.selectItems) != 3 {
+		t.Fatalf("select items = %d, want 3", len(model.selectItems))
+	}
+	if model.selectItems[2].Value != selectCustomValue {
+		t.Fatalf("last item value = %q, want custom sentinel", model.selectItems[2].Value)
+	}
+	if model.selectItems[0].Label != "18" || model.selectItems[0].Hint != "image built" {
+		t.Fatalf("first item = %+v", model.selectItems[0])
+	}
+	if model.selectPhase != phaseReady {
+		t.Fatalf("select phase = %v, want ready", model.selectPhase)
+	}
+}
+
+func TestCreateProfileVersionChoiceOpensForm(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.selectKind = selectCreateProfileVersion
+	model.selectPhase = phaseReady
+	model.selectItems = []selectItem{{Label: "18", Value: "18"}}
+	model.selectIndex = 0
+
+	if cmd := model.applySelectChoice(); cmd != nil {
+		t.Fatal("choosing a version should not start a command")
+	}
+	if model.modal != modalCreateProfile {
+		t.Fatalf("modal = %v, want create profile", model.modal)
+	}
+	if model.createProfileVersion != "18" {
+		t.Fatalf("create version = %q, want 18", model.createProfileVersion)
+	}
+}
+
+func TestCustomVersionChoiceOpensTextInput(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.selectKind = selectCreateProfileVersion
+	model.selectPhase = phaseReady
+	model.selectItems = []selectItem{{Label: "Custom version…", Value: selectCustomValue}}
+	model.selectIndex = 0
+
+	if cmd := model.applySelectChoice(); cmd != nil {
+		t.Fatal("choosing custom version should not start a command")
+	}
+	if model.modal != modalRunVersion {
+		t.Fatalf("modal = %v, want version input", model.modal)
+	}
+	if model.versionPurpose != versionForCreate {
+		t.Fatalf("version purpose = %v, want create", model.versionPurpose)
+	}
+}
+
+func TestCreateProfileRejectsDuplicateName(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo"}}
+	model.modal = modalCreateProfile
+	model.createProfileVersion = "18"
+	model.createProfileName = "demo"
+
+	if cmd := model.submitCreateProfile(); cmd != nil {
+		t.Fatal("duplicate profile should not queue a task")
+	}
+	if model.createFormErr == nil {
+		t.Fatal("duplicate profile should set a form error")
+	}
+}
+
+func TestCreateProfileQueuesRunWithVersion(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalCreateProfile
+	model.createProfileVersion = "18"
+	model.createProfileName = "fresh"
+
+	cmd := model.submitCreateProfile()
+	if cmd == nil {
+		t.Fatal("valid profile should queue a run task")
+	}
+	if model.pendingTask == nil || model.pendingTask.Kind != taskRun {
+		t.Fatalf("pending task = %+v, want run", model.pendingTask)
+	}
+	if model.pendingTask.ProfileName != "fresh" || model.pendingTask.Version != "18" {
+		t.Fatalf("pending task = %+v", model.pendingTask)
+	}
+}
+
+func TestProfileSettingRowsFollowMode(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalProfileSettings
+
+	model.configDBFilterMode = profile.DBFilterModeProfile
+	if got := len(model.profileSettingRows()); got != 2 {
+		t.Fatalf("profile mode rows = %d, want 2", got)
+	}
+	model.configDBFilterMode = profile.DBFilterModeCustom
+	rows := model.profileSettingRows()
+	if len(rows) != 3 {
+		t.Fatalf("custom mode rows = %d, want 3", len(rows))
+	}
+	if rows[1] != settingDBFilterPattern {
+		t.Fatalf("second row = %v, want pattern", rows[1])
+	}
+}
+
+func TestLoadedProfileConfigOpensSettings(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.applyLoadedProfileConfig(profile.Config{
+		DBFilterMode:    profile.DBFilterModeDisabled,
+		DBFilterPattern: "",
+		AdminPasswd:     "master",
+	})
+
+	if model.modal != modalProfileSettings {
+		t.Fatalf("modal = %v, want settings", model.modal)
+	}
+	if model.configDBFilterMode != profile.DBFilterModeDisabled {
+		t.Fatalf("mode = %q", model.configDBFilterMode)
+	}
+	if model.configAdminPasswd != "master" {
+		t.Fatalf("master password = %q", model.configAdminPasswd)
+	}
+}
+
+func TestEditSettingOpensModeSelect(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalProfileSettings
+	model.configProfileName = "demo"
+	model.configDBFilterMode = profile.DBFilterModeDisabled
+	model.profileSettingsIndex = 0
+
+	if cmd := model.editProfileSetting(); cmd != nil {
+		t.Fatal("editing the mode should not queue a task")
+	}
+	if model.modal != modalSelect {
+		t.Fatalf("modal = %v, want select", model.modal)
+	}
+	if len(model.selectItems) != 3 {
+		t.Fatalf("select items = %d, want 3", len(model.selectItems))
+	}
+	if model.selectItems[model.selectIndex].Value != profile.DBFilterModeDisabled {
+		t.Fatalf("default index points at %q", model.selectItems[model.selectIndex].Value)
+	}
+}
+
+func TestSelectCustomModeWithoutPatternOpensPatternEditor(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.configProfileName = "demo"
+	model.configDBFilterMode = profile.DBFilterModeProfile
+	model.configDBFilterPattern = ""
+
+	if cmd := model.applySelectedConfigMode(profile.DBFilterModeCustom); cmd != nil {
+		t.Fatal("custom without pattern should not queue a task yet")
+	}
+	if model.modal != modalConfigPattern {
+		t.Fatalf("modal = %v, want pattern editor", model.modal)
+	}
+}
+
+func TestSelectDisabledModeChangesOnlyTheMode(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.configProfileName = "demo"
+	model.configDBFilterMode = profile.DBFilterModeProfile
+	model.configAdminPasswd = "master"
+
+	cmd := model.applySelectedConfigMode(profile.DBFilterModeDisabled)
+	if cmd == nil || model.pendingTask == nil {
+		t.Fatal("changing mode should queue a config task")
+	}
+	update := model.pendingTask.ConfigUpdate
+	if update == nil || update.DBFilterMode == nil || *update.DBFilterMode != profile.DBFilterModeDisabled {
+		t.Fatalf("update = %+v", update)
+	}
+	if update.DBFilterPattern != nil || update.AdminPasswd != nil {
+		t.Fatalf("mode change should not touch other fields: %+v", update)
+	}
+}
+
+func TestSubmitConfigPasswordChangesOnlyPassword(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalConfigPassword
+	model.configProfileName = "demo"
+	model.configPasswordDraft = "s3cret"
+
+	cmd := model.submitConfigPassword()
+	if cmd == nil || model.pendingTask == nil {
+		t.Fatal("password change should queue a config task")
+	}
+	update := model.pendingTask.ConfigUpdate
+	if update == nil || update.AdminPasswd == nil || *update.AdminPasswd != "s3cret" {
+		t.Fatalf("update = %+v", update)
+	}
+	if update.DBFilterMode != nil || update.DBFilterPattern != nil {
+		t.Fatalf("password change should not touch other fields: %+v", update)
+	}
+	if model.modal != modalProfileSettings {
+		t.Fatalf("modal = %v, want back to settings", model.modal)
+	}
+}
+
+func TestToggleProfileQueuesStopWhenRunning(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
+
+	if cmd := model.toggleSelectedProfile(); cmd == nil {
+		t.Fatal("toggle should queue a task")
+	}
+	if model.pendingTask == nil || model.pendingTask.Kind != taskStop {
+		t.Fatalf("pending task = %+v, want stop", model.pendingTask)
+	}
+}
+
+func TestToggleProfileQueuesRunWhenStopped(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "exited"}}
+
+	if cmd := model.toggleSelectedProfile(); cmd == nil {
+		t.Fatal("toggle should queue a task")
+	}
+	if model.pendingTask == nil || model.pendingTask.Kind != taskRun {
+		t.Fatalf("pending task = %+v, want run", model.pendingTask)
+	}
+}
+
+func TestAdminPasswordFormRejectsMismatch(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalAdminPassword
+	model.taskProfileName = "demo"
+	model.taskDatabaseName = "demo_db"
+	model.adminPassword = "secret"
+	model.adminPasswordConfirm = "other"
+
+	if cmd := model.submitAdminPasswordForm(); cmd != nil {
+		t.Fatal("mismatched passwords should not queue a task")
+	}
+	if model.adminPasswordErr == nil {
+		t.Fatal("mismatched passwords should set an error")
+	}
+}
+
+func TestAdminPasswordFormQueuesTask(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalAdminPassword
+	model.taskProfileName = "demo"
+	model.taskDatabaseName = "demo_db"
+	model.taskDatabasePhysical = "demo__demo_db"
+	model.adminPassword = "secret"
+	model.adminPasswordConfirm = "secret"
+
+	if cmd := model.submitAdminPasswordForm(); cmd == nil {
+		t.Fatal("valid passwords should queue a task")
+	}
+	if model.pendingTask == nil || model.pendingTask.Kind != taskSetAdminPassword {
+		t.Fatalf("pending task = %+v", model.pendingTask)
+	}
+	if model.pendingTask.Password != "secret" || model.pendingTask.DatabaseName != "demo_db" {
+		t.Fatalf("pending task = %+v", model.pendingTask)
+	}
+}
+
+func TestLogBufferSeparatesContainerAndTasks(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.appendContainerLog("demo", "container line\n")
+	model.appendTaskLog("demo", "task line\n")
+
+	entries := model.logEntries("demo")
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	if entries[0].Source != logSourceContainer || entries[1].Source != logSourceTask {
+		t.Fatalf("sources = %v, %v", entries[0].Source, entries[1].Source)
+	}
+}
+
+func TestViewsRenderWithoutPanic(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width = 120
+	model.height = 40
+	model.loading = false
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running", URL: "http://demo.lidoo.localhost"}}
+	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
+	model.databasePhase = phaseReady
+	model.databaseInfo = odoo.DatabaseInfo{Logical: "demo_db", Physical: "demo__demo_db", Size: "1 MB", Available: true}
+	model.databaseInfoPhase = phaseReady
+	model.appendContainerLog("demo", "2026-01-02 03:04:05,678 9 INFO demo__demo_db odoo.modules.loading: ready 1 0.100 0.200\n")
+	model.appendTaskLog("demo", "done\n")
+	model.logPhase = phaseReady
+	model.configProfileName = "demo"
+	model.configDBFilterMode = profile.DBFilterModeCustom
+	model.configDBFilterPattern = "^demo__.*$"
+	model.configAdminPasswd = "master"
+
+	_ = model.View()
+	_ = model.leftView(40)
+	_ = model.rightView(80)
+	_ = model.smallView()
+	_ = model.databaseTabView()
+
+	for _, modal := range []modalMode{modalProfileSettings, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile} {
+		model.modal = modal
+		_ = model.modalView()
+	}
+
+	model.openLogViewer()
+	_ = model.logViewerView()
+}
+
+func TestLogViewerDatabaseFilter(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.appendContainerLog("demo", "2026-01-02 03:04:05,678 9 INFO demo__a odoo.modules.loading: first 1 0.1 0.1\n2026-01-02 03:04:06,678 9 INFO demo__b odoo.modules.loading: second 1 0.1 0.1\n")
+	model.logViewerProfile = "demo"
+	model.logViewerSource = logSourceAll
+	model.logViewerLevel = logLevelFilterAll
+
+	model.logViewerDatabase = "demo__a"
+	filtered := model.filteredLogEntries("demo")
+	if len(filtered) != 1 || filtered[0].Database != "demo__a" {
+		t.Fatalf("filtered = %+v", filtered)
+	}
+
+	model.logViewerDatabase = ""
+	if got := len(model.filteredLogEntries("demo")); got != 2 {
+		t.Fatalf("unfiltered = %d, want 2", got)
 	}
 }

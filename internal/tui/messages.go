@@ -7,6 +7,7 @@ import (
 	"lidoo/internal/app"
 	"lidoo/internal/docker"
 	"lidoo/internal/odoo"
+	"lidoo/internal/profile"
 )
 
 type ProfileURLOpenFailedMsg struct {
@@ -178,4 +179,49 @@ type InteractiveCommandFinishedMsg struct {
 	ProfileName  string
 	DatabaseName string
 	Err          error
+}
+
+type VersionsLoadedMsg struct {
+	RequestID uint64
+	Options   []docker.VersionOption
+}
+
+type VersionsFailedMsg struct {
+	RequestID uint64
+	Err       error
+}
+
+type ProfileConfigLoadedMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Config      profile.Config
+	Found       bool
+}
+
+type ProfileConfigFailedMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Err         error
+}
+
+type AllAddonsLoadedMsg struct {
+	RequestID uint64
+	Addons    []addons.AddonStatus
+}
+
+type AllAddonsFailedMsg struct {
+	RequestID uint64
+	Err       error
+}
+
+type AddonBranchesLoadedMsg struct {
+	RequestID uint64
+	Source    string
+	Branches  []string
+}
+
+type AddonBranchesFailedMsg struct {
+	RequestID uint64
+	Source    string
+	Err       error
 }

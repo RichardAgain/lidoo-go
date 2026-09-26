@@ -245,3 +245,55 @@ func PrepareDatabaseShellCmd(ctx context.Context, service *app.Service, profileN
 		return InteractiveCommandReadyMsg{Kind: interactiveDatabaseShell, ProfileName: profileName, DatabaseName: databaseName, Command: command}
 	}
 }
+
+func LoadVersionsCmd(ctx context.Context, service *app.Service, requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return VersionsFailedMsg{RequestID: requestID, Err: errors.New("workspace service is unavailable")}
+		}
+		options, err := service.Versions(ctx)
+		if err != nil {
+			return VersionsFailedMsg{RequestID: requestID, Err: err}
+		}
+		return VersionsLoadedMsg{RequestID: requestID, Options: options}
+	}
+}
+
+func LoadProfileConfigCmd(ctx context.Context, service *app.Service, profileName string, requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return ProfileConfigFailedMsg{RequestID: requestID, ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
+		}
+		config, found, err := service.ProfileConfig(ctx, profileName)
+		if err != nil {
+			return ProfileConfigFailedMsg{RequestID: requestID, ProfileName: profileName, Err: err}
+		}
+		return ProfileConfigLoadedMsg{RequestID: requestID, ProfileName: profileName, Config: config, Found: found}
+	}
+}
+
+func LoadAllAddonsCmd(ctx context.Context, service *app.Service, requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return AllAddonsFailedMsg{RequestID: requestID, Err: errors.New("workspace service is unavailable")}
+		}
+		statuses, err := service.AllAddons(ctx)
+		if err != nil {
+			return AllAddonsFailedMsg{RequestID: requestID, Err: err}
+		}
+		return AllAddonsLoadedMsg{RequestID: requestID, Addons: statuses}
+	}
+}
+
+func LoadAddonBranchesCmd(ctx context.Context, service *app.Service, source string, requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return AddonBranchesFailedMsg{RequestID: requestID, Source: source, Err: errors.New("workspace service is unavailable")}
+		}
+		branches, err := service.AddonBranches(ctx, source)
+		if err != nil {
+			return AddonBranchesFailedMsg{RequestID: requestID, Source: source, Err: err}
+		}
+		return AddonBranchesLoadedMsg{RequestID: requestID, Source: source, Branches: branches}
+	}
+}

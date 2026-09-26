@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -17,6 +19,7 @@ import (
 	"lidoo/internal/app"
 	"lidoo/internal/docker"
 	"lidoo/internal/odoo"
+	"lidoo/internal/profile"
 )
 
 type focusArea uint8
@@ -46,6 +49,41 @@ const (
 	modalConfirmWorktreeAddon
 	modalRemoveAddon
 	modalConfirmAddonRemove
+	modalSelect
+	modalCreateProfile
+	modalProfileSettings
+	modalConfigPattern
+	modalConfigPassword
+	modalAdminPassword
+)
+
+type selectKind uint8
+
+const (
+	selectNone selectKind = iota
+	selectRunProfileVersion
+	selectCreateProfileVersion
+	selectConfigDBFilterMode
+	selectAddonWorktreeSource
+	selectAddonWorktreeBranch
+	selectRemoveAddon
+)
+
+// selectCustomValue is the sentinel value for "type a value instead of
+// choosing one" entries in a select modal.
+const selectCustomValue = "\x00custom"
+
+type selectItem struct {
+	Label string
+	Value string
+	Hint  string
+}
+
+type versionPurpose uint8
+
+const (
+	versionForRun versionPurpose = iota
+	versionForCreate
 )
 
 type resourcePhase uint8
@@ -62,9 +100,12 @@ const (
 const maxLogBufferSize = 64 * 1024
 
 type profileLogBuffer struct {
-	output            string
+	container         string
 	containerSnapshot string
 	containerLoaded   bool
+	task              string
+	entries           []logEntry
+	dirty             bool
 }
 
 type Model struct {
@@ -84,6 +125,17 @@ type Model struct {
 	logPendingOutput       string
 	logViewport            viewport.Model
 	logViewportReady       bool
+	logViewerOpen          bool
+	logViewerProfile       string
+	logViewerSource        logSourceFilter
+	logViewerLevel         logLevelFilter
+	logViewerSearch        string
+	logViewerDatabase      string
+	logViewerTyping        bool
+	logViewerFollow        bool
+	logViewerViewport      viewport.Model
+	logViewerReady         bool
+	notice                 string
 	databases              []odoo.Database
 	databaseIndex          int
 	addons                 []addons.AddonStatus
@@ -164,6 +216,29 @@ type Model struct {
 	restoreForce           bool
 	restoreNeutralize      bool
 	restoreJobs            string
+	selectKind             selectKind
+	selectTitle            string
+	selectItems            []selectItem
+	selectIndex            int
+	selectPhase            resourcePhase
+	selectErr              error
+	selectRequest          uint64
+	selectSource           string
+	versionPurpose         versionPurpose
+	createProfileVersion   string
+	createProfileName      string
+	createFormErr          error
+	configProfileName      string
+	configDBFilterMode     string
+	configDBFilterPattern  string
+	configAdminPasswd      string
+	configFormErr          error
+	profileSettingsIndex   int
+	configPatternDraft     string
+	configPasswordDraft    string
+	adminPassword          string
+	adminPasswordConfirm   string
+	adminPasswordErr       error
 }
 
 var (
@@ -183,18 +258,19 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 		ctx = context.Background()
 	}
 	return &Model{
-		ctx:             ctx,
-		service:         service,
-		loading:         true,
-		width:           80,
-		height:          24,
-		profilePhase:    phaseLoading,
-		logPhase:        phaseIdle,
-		profileLogs:     make(map[string]*profileLogBuffer),
-		logViewport:     viewport.New(1, 1),
-		databasePhase:   phaseIdle,
-		addonPhase:      phaseIdle,
-		activitySpinner: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(activeStyle)),
+		ctx:               ctx,
+		service:           service,
+		loading:           true,
+		width:             80,
+		height:            24,
+		profilePhase:      phaseLoading,
+		logPhase:          phaseIdle,
+		profileLogs:       make(map[string]*profileLogBuffer),
+		logViewport:       viewport.New(1, 1),
+		logViewerViewport: viewport.New(1, 1),
+		databasePhase:     phaseIdle,
+		addonPhase:        phaseIdle,
+		activitySpinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(activeStyle)),
 	}
 }
 
@@ -206,6 +282,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
 	case spinner.TickMsg:
 		if !m.taskActive() {
 			return m, nil
@@ -377,6 +455,81 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addonChoicePhase = phaseError
 		m.addonChoiceErr = msg.Err
 		return m, nil
+	case VersionsLoadedMsg:
+		if !m.currentSelectRequest(msg.RequestID) {
+			return m, nil
+		}
+		switch m.selectKind {
+		case selectRunProfileVersion, selectCreateProfileVersion:
+			m.setVersionSelectItems(msg.Options)
+			return m, nil
+		default:
+			return m, nil
+		}
+	case VersionsFailedMsg:
+		if !m.currentSelectRequest(msg.RequestID) {
+			return m, nil
+		}
+		if m.selectKind == selectRunProfileVersion || m.selectKind == selectCreateProfileVersion {
+			// Even when discovery fails, let the operator type a version by hand.
+			m.selectErr = msg.Err
+			m.selectItems = []selectItem{{Label: "Custom version…", Value: selectCustomValue}}
+			m.selectIndex = 0
+			m.selectPhase = phaseReady
+			return m, nil
+		}
+		m.selectPhase = phaseError
+		m.selectErr = msg.Err
+		return m, nil
+	case ProfileConfigLoadedMsg:
+		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectConfigDBFilterMode {
+			return m, nil
+		}
+		m.configProfileName = msg.ProfileName
+		m.applyLoadedProfileConfig(msg.Config)
+		return m, nil
+	case ProfileConfigFailedMsg:
+		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectConfigDBFilterMode {
+			return m, nil
+		}
+		m.selectPhase = phaseError
+		m.selectErr = msg.Err
+		return m, nil
+	case AllAddonsLoadedMsg:
+		if !m.currentSelectRequest(msg.RequestID) {
+			return m, nil
+		}
+		switch m.selectKind {
+		case selectAddonWorktreeSource:
+			m.setAddonSelectItems(msg.Addons, true)
+			return m, nil
+		case selectRemoveAddon:
+			m.setAddonSelectItems(msg.Addons, false)
+			return m, nil
+		default:
+			return m, nil
+		}
+	case AllAddonsFailedMsg:
+		if !m.currentSelectRequest(msg.RequestID) {
+			return m, nil
+		}
+		m.selectPhase = phaseError
+		m.selectErr = msg.Err
+		return m, nil
+	case AddonBranchesLoadedMsg:
+		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectAddonWorktreeBranch {
+			return m, nil
+		}
+		m.selectSource = msg.Source
+		m.setBranchSelectItems(msg.Branches)
+		return m, nil
+	case AddonBranchesFailedMsg:
+		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectAddonWorktreeBranch {
+			return m, nil
+		}
+		m.selectPhase = phaseError
+		m.selectErr = msg.Err
+		return m, nil
 	case TaskStartedMsg:
 		if !m.currentTask(msg.ID) || m.pendingTask == nil {
 			return m, nil
@@ -397,9 +550,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Text != "" {
-			if msg.ProfileName == "" {
-				m.taskOutput = appendBoundedOutput(m.taskOutput, msg.Text)
-			} else {
+			// Always keep the latest task output for the "Latest task" section,
+			// and the per-profile buffer for the viewer's tasks tab.
+			m.taskOutput = appendBoundedOutput(m.taskOutput, msg.Text)
+			if msg.ProfileName != "" {
 				m.appendTaskLog(msg.ProfileName, msg.Text)
 			}
 		}
@@ -426,9 +580,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var required *app.ProfileVersionRequiredError
 		if errors.As(msg.Err, &required) {
 			m.finishTask("version required", nil)
-			m.modal = modalRunVersion
-			m.versionInput = ""
-			return m, nil
+			return m, m.openRunVersionSelect()
 		}
 		m.finishTask("failed", msg.Err)
 		if errors.Is(msg.Err, odoo.ErrDatabaseNotFound) && msg.ProfileName == m.selectedProfileName() {
@@ -521,9 +673,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.logViewerOpen {
+		return m.updateLogViewerKey(msg)
+	}
 	if m.modal != modalNone {
 		return m.updateModalKey(msg)
 	}
+	m.notice = ""
 	if m.interactivePreparing {
 		switch msg.String() {
 		case "c", "ctrl+c":
@@ -540,7 +696,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.focus == focusProfiles {
 		switch msg.String() {
-		case "pgup", "pgdown", "f", "b", "ctrl+u", "ctrl+d", " ":
+		case "pgup", "pgdown", "f", "b", "ctrl+u", "ctrl+d":
 			var cmd tea.Cmd
 			m.logViewport, cmd = m.logViewport.Update(msg)
 			return m, cmd
@@ -567,9 +723,13 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			if m.profileIsRunning() {
+				m.notice = "profile " + m.selectedProfileName() + " is already running"
+				return m, nil
+			}
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName()})
 		} else if m.focus == focusAddons {
-			m.openRemoveAddonForm()
+			return m, m.startRemoveAddon()
 		}
 	case "r":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -585,7 +745,19 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "s":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			if !m.profileIsRunning() {
+				m.notice = "profile " + m.selectedProfileName() + " is not running"
+				return m, nil
+			}
 			return m, m.queueTask(taskRequest{Kind: taskStop, ProfileName: m.selectedProfileName()})
+		}
+	case " ":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			return m, m.toggleSelectedProfile()
+		}
+	case "L":
+		if m.selectedProfileName() != "" {
+			m.openLogViewer()
 		}
 	case "d":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -599,9 +771,12 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.focus == focusAddons {
 			return m, m.openAddonMountChooser(false)
 		}
-	case "a":
+	case "a", "A":
 		if m.focus == focusAddons {
 			return m, m.openAddonMountChooser(true)
+		}
+		if m.focus == focusDatabases {
+			m.openAdminPasswordForm()
 		}
 	case "c":
 		if m.focus == focusAddons {
@@ -609,7 +784,15 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "w":
 		if m.focus == focusAddons {
-			m.openWorktreeAddonForm()
+			return m, m.startWorktreeAddon()
+		}
+	case "n":
+		if m.focus == focusProfiles {
+			return m, m.startCreateProfile()
+		}
+	case "e":
+		if m.focus == focusProfiles {
+			return m, m.openProfileConfig()
 		}
 	case "f":
 		if m.focus == focusAddons {
@@ -655,6 +838,37 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = !m.showHelp
 	}
 	return m, nil
+}
+
+func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.logViewerOpen {
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelUp {
+			m.logViewerFollow = false
+		}
+		var cmd tea.Cmd
+		m.logViewerViewport, cmd = m.logViewerViewport.Update(msg)
+		return m, cmd
+	}
+	if m.modal != modalNone {
+		return m, nil
+	}
+	if m.focus == focusProfiles {
+		var cmd tea.Cmd
+		m.logViewport, cmd = m.logViewport.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m *Model) toggleSelectedProfile() tea.Cmd {
+	name := m.selectedProfileName()
+	if name == "" || m.rejectMutatingAction() {
+		return nil
+	}
+	if m.profileIsRunning() {
+		return m.queueTask(taskRequest{Kind: taskStop, ProfileName: name})
+	}
+	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name})
 }
 
 func (m *Model) prepareDatabaseAction() bool {
@@ -773,29 +987,60 @@ func (m *Model) openCloneAddonForm() {
 	m.modal = modalCloneAddon
 }
 
-func (m *Model) openWorktreeAddonForm() {
+func (m *Model) startWorktreeAddon() tea.Cmd {
 	if m.rejectMutatingAction() {
-		return
+		return nil
 	}
-	m.worktreeAddonSource = ""
-	if addon := m.selectedAddon(); addon != nil {
-		m.worktreeAddonSource = addon.Name
-	}
+	m.selectRequest++
+	m.selectKind = selectAddonWorktreeSource
+	m.selectTitle = "Worktree source add-on"
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadAllAddonsCmd(m.ctx, m.service, m.selectRequest)
+}
+
+func (m *Model) openWorktreeForm(source, branch string) {
+	m.worktreeAddonSource = source
 	m.worktreeAddonName = ""
-	m.worktreeAddonBranch = ""
+	m.worktreeAddonBranch = branch
 	m.addonFormErr = nil
 	m.formField = 0
 	m.modal = modalWorktreeAddon
 }
 
-func (m *Model) openRemoveAddonForm() {
+func (m *Model) openWorktreeBranchSelect(source string) tea.Cmd {
+	m.selectRequest++
+	m.selectSource = source
+	m.selectKind = selectAddonWorktreeBranch
+	m.selectTitle = "Branch · " + source
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadAddonBranchesCmd(m.ctx, m.service, source, m.selectRequest)
+}
+
+func (m *Model) startRemoveAddon() tea.Cmd {
 	if m.rejectMutatingAction() {
-		return
+		return nil
 	}
-	m.removeAddonName = ""
-	if addon := m.selectedAddon(); addon != nil {
-		m.removeAddonName = addon.Name
-	}
+	m.selectRequest++
+	m.selectKind = selectRemoveAddon
+	m.selectTitle = "Remove add-on checkout"
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadAllAddonsCmd(m.ctx, m.service, m.selectRequest)
+}
+
+func (m *Model) openRemoveAddonForm(name string) {
+	m.removeAddonName = name
 	m.removeAddonForce = false
 	m.addonFormErr = nil
 	m.formField = 0
@@ -844,6 +1089,375 @@ func (m *Model) submitAddonMount() tea.Cmd {
 	}
 	m.closeAddonMountChooser()
 	return m.queueTask(request)
+}
+
+func (m *Model) currentSelectRequest(requestID uint64) bool {
+	return requestID == m.selectRequest && m.modal == modalSelect
+}
+
+func (m *Model) closeSelect() {
+	m.selectRequest++
+	m.selectKind = selectNone
+	m.selectItems = nil
+	m.modal = modalNone
+}
+
+func (m *Model) setVersionSelectItems(options []docker.VersionOption) {
+	items := make([]selectItem, 0, len(options)+1)
+	for _, option := range options {
+		hint := ""
+		if option.Image {
+			hint = "image built"
+		}
+		items = append(items, selectItem{Label: option.Version, Value: option.Version, Hint: hint})
+	}
+	items = append(items, selectItem{Label: "Custom version…", Value: selectCustomValue})
+	m.selectItems = items
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseReady
+}
+
+func (m *Model) setAddonSelectItems(statuses []addons.AddonStatus, sourcesOnly bool) {
+	items := make([]selectItem, 0, len(statuses))
+	for _, status := range statuses {
+		if sourcesOnly && status.Kind == "worktree" {
+			continue
+		}
+		hint := status.Kind
+		if status.Entry.Branch != "" {
+			hint = status.Kind + " · " + status.Entry.Branch
+		}
+		if !status.PathAvailable {
+			hint = strings.TrimSpace(hint + " · path unavailable")
+		}
+		items = append(items, selectItem{Label: status.Name, Value: status.Name, Hint: hint})
+	}
+	m.selectItems = items
+	m.selectIndex = 0
+	m.selectErr = nil
+	if len(items) == 0 {
+		m.selectPhase = phaseEmpty
+	} else {
+		m.selectPhase = phaseReady
+	}
+}
+
+func (m *Model) setBranchSelectItems(branches []string) {
+	items := make([]selectItem, 0, len(branches)+1)
+	for _, branch := range branches {
+		items = append(items, selectItem{Label: branch, Value: branch})
+	}
+	items = append(items, selectItem{Label: "New branch…", Value: selectCustomValue})
+	m.selectItems = items
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseReady
+}
+
+func (m *Model) applySelectChoice() tea.Cmd {
+	if m.selectPhase != phaseReady || m.selectIndex < 0 || m.selectIndex >= len(m.selectItems) {
+		return nil
+	}
+	choice := m.selectItems[m.selectIndex]
+	kind := m.selectKind
+	m.selectRequest++
+	m.selectKind = selectNone
+	m.selectItems = nil
+	switch kind {
+	case selectRunProfileVersion:
+		if choice.Value == selectCustomValue {
+			m.modal = modalRunVersion
+			m.versionPurpose = versionForRun
+			m.versionInput = ""
+			return nil
+		}
+		m.modal = modalNone
+		return m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: choice.Value})
+	case selectCreateProfileVersion:
+		if choice.Value == selectCustomValue {
+			m.modal = modalRunVersion
+			m.versionPurpose = versionForCreate
+			m.versionInput = ""
+			return nil
+		}
+		m.openCreateProfileForm(choice.Value)
+		return nil
+	case selectConfigDBFilterMode:
+		return m.applySelectedConfigMode(choice.Value)
+	case selectAddonWorktreeSource:
+		m.modal = modalNone
+		return m.openWorktreeBranchSelect(choice.Value)
+	case selectAddonWorktreeBranch:
+		m.modal = modalNone
+		branch := choice.Value
+		if branch == selectCustomValue {
+			branch = ""
+		}
+		m.openWorktreeForm(m.selectSource, branch)
+		return nil
+	case selectRemoveAddon:
+		m.modal = modalNone
+		m.openRemoveAddonForm(choice.Value)
+		return nil
+	default:
+		m.modal = modalNone
+		return nil
+	}
+}
+
+func (m *Model) startCreateProfile() tea.Cmd {
+	if m.rejectMutatingAction() {
+		return nil
+	}
+	m.selectRequest++
+	m.selectKind = selectCreateProfileVersion
+	m.selectTitle = "New profile · Odoo version"
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
+}
+
+func (m *Model) openRunVersionSelect() tea.Cmd {
+	m.selectRequest++
+	m.selectKind = selectRunProfileVersion
+	m.selectTitle = "Odoo version · " + m.taskProfileName
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
+}
+
+func (m *Model) openCreateProfileForm(version string) {
+	m.createProfileVersion = version
+	m.createProfileName = ""
+	m.createFormErr = nil
+	m.formField = 0
+	m.modal = modalCreateProfile
+}
+
+func (m *Model) submitCreateProfile() tea.Cmd {
+	name := strings.TrimSpace(m.createProfileName)
+	if err := profile.ValidateName(name); err != nil {
+		m.createFormErr = err
+		return nil
+	}
+	for _, existing := range m.profiles {
+		if existing.Name == name {
+			m.createFormErr = fmt.Errorf("profile %q already exists", name)
+			return nil
+		}
+	}
+	m.modal = modalNone
+	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Version: m.createProfileVersion})
+}
+
+func (m *Model) openProfileConfig() tea.Cmd {
+	profileName := m.selectedProfileName()
+	if profileName == "" || m.rejectMutatingAction() {
+		return nil
+	}
+	m.configProfileName = profileName
+	m.selectRequest++
+	m.selectKind = selectConfigDBFilterMode
+	m.selectTitle = "Database filter mode · " + profileName
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadProfileConfigCmd(m.ctx, m.service, profileName, m.selectRequest)
+}
+
+func (m *Model) applyLoadedProfileConfig(config profile.Config) {
+	m.configDBFilterMode = config.EffectiveDBFilterMode()
+	m.configDBFilterPattern = config.DBFilterPattern
+	m.configAdminPasswd = config.AdminPasswd
+	m.configFormErr = nil
+	m.profileSettingsIndex = 0
+	m.modal = modalProfileSettings
+}
+
+type profileSettingRow uint8
+
+const (
+	settingDBFilterMode profileSettingRow = iota
+	settingDBFilterPattern
+	settingAdminPasswd
+)
+
+// profileSettingRows lists the settings that apply to the current mode. The
+// pattern row only exists in custom mode, so the operator never edits a field
+// that would be rejected.
+func (m *Model) profileSettingRows() []profileSettingRow {
+	rows := []profileSettingRow{settingDBFilterMode}
+	if m.configDBFilterMode == profile.DBFilterModeCustom {
+		rows = append(rows, settingDBFilterPattern)
+	}
+	rows = append(rows, settingAdminPasswd)
+	return rows
+}
+
+func (m *Model) moveProfileSetting(delta int) {
+	rows := m.profileSettingRows()
+	if len(rows) == 0 {
+		return
+	}
+	m.profileSettingsIndex = (m.profileSettingsIndex + delta + len(rows)) % len(rows)
+}
+
+func (m *Model) editProfileSetting() tea.Cmd {
+	rows := m.profileSettingRows()
+	if m.profileSettingsIndex < 0 || m.profileSettingsIndex >= len(rows) {
+		return nil
+	}
+	m.configFormErr = nil
+	switch rows[m.profileSettingsIndex] {
+	case settingDBFilterMode:
+		m.selectRequest++
+		m.selectKind = selectConfigDBFilterMode
+		m.selectTitle = "Database filter mode · " + m.configProfileName
+		m.selectItems = m.configModeSelectItems()
+		m.selectIndex = m.currentConfigModeIndex()
+		m.selectErr = nil
+		m.selectPhase = phaseReady
+		m.modal = modalSelect
+		return nil
+	case settingDBFilterPattern:
+		m.configPatternDraft = m.configDBFilterPattern
+		m.formField = 0
+		m.modal = modalConfigPattern
+		return nil
+	case settingAdminPasswd:
+		m.configPasswordDraft = m.configAdminPasswd
+		m.formField = 0
+		m.modal = modalConfigPassword
+		return nil
+	}
+	return nil
+}
+
+func (m *Model) configModeSelectItems() []selectItem {
+	modes := []struct{ label, value string }{
+		{"profile (only this profile's databases)", profile.DBFilterModeProfile},
+		{"disabled (all databases visible)", profile.DBFilterModeDisabled},
+		{"custom (regular expression)", profile.DBFilterModeCustom},
+	}
+	items := make([]selectItem, 0, len(modes))
+	for _, mode := range modes {
+		item := selectItem{Label: mode.label, Value: mode.value}
+		if mode.value == m.configDBFilterMode {
+			item.Hint = "current"
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (m *Model) currentConfigModeIndex() int {
+	for index, item := range m.configModeSelectItems() {
+		if item.Value == m.configDBFilterMode {
+			return index
+		}
+	}
+	return 0
+}
+
+// applySelectedConfigMode persists only the filter mode, except when custom is
+// chosen without a pattern: then the pattern editor opens first so the change
+// stays valid.
+func (m *Model) applySelectedConfigMode(mode string) tea.Cmd {
+	if mode == profile.DBFilterModeCustom && strings.TrimSpace(m.configDBFilterPattern) == "" {
+		m.configDBFilterMode = mode
+		m.configPatternDraft = ""
+		m.formField = 0
+		m.modal = modalConfigPattern
+		return nil
+	}
+	selected := mode
+	m.configDBFilterMode = mode
+	m.modal = modalProfileSettings
+	return m.queueTask(taskRequest{
+		Kind:         taskUpdateConfig,
+		ProfileName:  m.configProfileName,
+		ConfigUpdate: &profile.ConfigUpdate{DBFilterMode: &selected},
+	})
+}
+
+func (m *Model) submitConfigPattern() tea.Cmd {
+	pattern := strings.TrimSpace(m.configPatternDraft)
+	if pattern == "" {
+		m.configFormErr = errors.New("custom filter mode requires a pattern")
+		return nil
+	}
+	mode := profile.DBFilterModeCustom
+	m.configDBFilterPattern = pattern
+	m.configDBFilterMode = mode
+	m.modal = modalProfileSettings
+	return m.queueTask(taskRequest{
+		Kind:        taskUpdateConfig,
+		ProfileName: m.configProfileName,
+		ConfigUpdate: &profile.ConfigUpdate{
+			DBFilterMode:    &mode,
+			DBFilterPattern: &pattern,
+		},
+	})
+}
+
+func (m *Model) submitConfigPassword() tea.Cmd {
+	password := m.configPasswordDraft
+	m.configAdminPasswd = password
+	m.modal = modalProfileSettings
+	return m.queueTask(taskRequest{
+		Kind:         taskUpdateConfig,
+		ProfileName:  m.configProfileName,
+		ConfigUpdate: &profile.ConfigUpdate{AdminPasswd: &password},
+	})
+}
+
+func (m *Model) openAdminPasswordForm() {
+	if m.rejectMutatingAction() {
+		return
+	}
+	if !m.prepareDatabaseAction() {
+		m.notice = "select a database first"
+		return
+	}
+	if !m.profileIsRunning() {
+		m.notice = "the profile must be running to change its admin password"
+		return
+	}
+	m.adminPassword = ""
+	m.adminPasswordConfirm = ""
+	m.adminPasswordErr = nil
+	m.formField = 0
+	m.modal = modalAdminPassword
+}
+
+func (m *Model) submitAdminPasswordForm() tea.Cmd {
+	password := m.adminPassword
+	if strings.TrimSpace(password) == "" {
+		m.adminPasswordErr = errors.New("password cannot be empty")
+		return nil
+	}
+	if password != m.adminPasswordConfirm {
+		m.adminPasswordErr = errors.New("passwords do not match")
+		return nil
+	}
+	m.adminPasswordErr = nil
+	m.modal = modalNone
+	return m.queueTask(taskRequest{
+		Kind:             taskSetAdminPassword,
+		ProfileName:      m.taskProfileName,
+		DatabaseName:     m.taskDatabaseName,
+		DatabasePhysical: m.taskDatabasePhysical,
+		Password:         password,
+	})
 }
 
 func (m *Model) refreshProfiles() tea.Cmd {
@@ -943,6 +1557,10 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if version == "" {
 				return m, nil
 			}
+			if m.versionPurpose == versionForCreate {
+				m.openCreateProfileForm(version)
+				return m, nil
+			}
 			m.modal = modalNone
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version})
 		case "backspace", "ctrl+h":
@@ -955,6 +1573,17 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
 				m.versionInput += value
 			}
+		}
+	case modalSelect:
+		switch msg.String() {
+		case "esc":
+			m.closeSelect()
+		case "up", "k":
+			m.moveIndex(&m.selectIndex, len(m.selectItems), -1)
+		case "down", "j":
+			m.moveIndex(&m.selectIndex, len(m.selectItems), 1)
+		case "enter":
+			return m, m.applySelectChoice()
 		}
 	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
 		switch msg.String() {
@@ -1010,6 +1639,75 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.addonFormErr = nil
 			}
 		}
+	case modalProfileSettings:
+		switch msg.String() {
+		case "esc", "q":
+			m.modal = modalNone
+		case "up", "k":
+			m.moveProfileSetting(-1)
+		case "down", "j":
+			m.moveProfileSetting(1)
+		case "enter":
+			return m, m.editProfileSetting()
+		}
+	case modalConfigPattern, modalConfigPassword:
+		switch msg.String() {
+		case "esc":
+			m.modal = modalProfileSettings
+		case "enter":
+			return m, m.submitProfileForm()
+		case "tab":
+			m.moveFormField(1)
+		case "shift+tab":
+			m.moveFormField(-1)
+		case "backspace", "ctrl+h":
+			m.removeFormText()
+			m.configFormErr = nil
+		case "ctrl+u":
+			m.clearFormText()
+			m.configFormErr = nil
+		case " ":
+			if !m.toggleFormField() {
+				m.appendFormText(" ")
+			}
+			m.configFormErr = nil
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.appendFormText(value)
+				m.configFormErr = nil
+			}
+		}
+	case modalCreateProfile, modalAdminPassword:
+		switch msg.String() {
+		case "esc":
+			m.modal = modalNone
+		case "enter":
+			return m, m.submitProfileForm()
+		case "tab":
+			m.moveFormField(1)
+		case "shift+tab":
+			m.moveFormField(-1)
+		case "backspace", "ctrl+h":
+			m.removeFormText()
+			m.clearProfileFormErr()
+		case "ctrl+u":
+			m.clearFormText()
+			m.clearProfileFormErr()
+		case " ":
+			if !m.toggleFormField() {
+				m.appendFormText(" ")
+			}
+			m.clearProfileFormErr()
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.appendFormText(value)
+				m.clearProfileFormErr()
+			}
+		}
 	}
 	return m, nil
 }
@@ -1062,6 +1760,31 @@ func (m *Model) submitAddonForm() tea.Cmd {
 		m.modal = modalConfirmAddonRemove
 	}
 	return nil
+}
+
+func (m *Model) submitProfileForm() tea.Cmd {
+	switch m.modal {
+	case modalCreateProfile:
+		return m.submitCreateProfile()
+	case modalConfigPattern:
+		return m.submitConfigPattern()
+	case modalConfigPassword:
+		return m.submitConfigPassword()
+	case modalAdminPassword:
+		return m.submitAdminPasswordForm()
+	}
+	return nil
+}
+
+func (m *Model) clearProfileFormErr() {
+	switch m.modal {
+	case modalCreateProfile:
+		m.createFormErr = nil
+	case modalConfigPattern, modalConfigPassword:
+		m.configFormErr = nil
+	case modalAdminPassword:
+		m.adminPasswordErr = nil
+	}
 }
 
 func (m *Model) submitDatabaseForm() tea.Cmd {
@@ -1135,6 +1858,12 @@ func (m *Model) formFieldCount() int {
 		return 4
 	case modalRestoreDatabase:
 		return 5
+	case modalCreateProfile:
+		return 1
+	case modalConfigPattern, modalConfigPassword:
+		return 1
+	case modalAdminPassword:
+		return 2
 	default:
 		return 0
 	}
@@ -1235,6 +1964,25 @@ func (m *Model) formText() *string {
 		case 4:
 			return &m.restoreJobs
 		}
+	case modalCreateProfile:
+		if m.formField == 0 {
+			return &m.createProfileName
+		}
+	case modalConfigPattern:
+		if m.formField == 0 {
+			return &m.configPatternDraft
+		}
+	case modalConfigPassword:
+		if m.formField == 0 {
+			return &m.configPasswordDraft
+		}
+	case modalAdminPassword:
+		switch m.formField {
+		case 0:
+			return &m.adminPassword
+		case 1:
+			return &m.adminPasswordConfirm
+		}
 	}
 	return nil
 }
@@ -1272,6 +2020,7 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	if m.rejectMutatingAction() {
 		return nil
 	}
+	m.notice = ""
 	m.taskID++
 	m.pendingTask = &request
 	m.activeTaskKind = request.Kind
@@ -1436,7 +2185,26 @@ func (m *Model) profileLogOutput(profileName string) string {
 	if profileName == "" {
 		return ""
 	}
-	return m.profileLogBuffer(profileName).output
+	return m.profileLogBuffer(profileName).container
+}
+
+func (m *Model) profileTaskOutput(profileName string) string {
+	if profileName == "" {
+		return ""
+	}
+	return m.profileLogBuffer(profileName).task
+}
+
+func (m *Model) logEntries(profileName string) []logEntry {
+	if profileName == "" {
+		return nil
+	}
+	buffer := m.profileLogBuffer(profileName)
+	if buffer.entries == nil || buffer.dirty {
+		buffer.entries = buildLogEntries(buffer.container, buffer.task)
+		buffer.dirty = false
+	}
+	return buffer.entries
 }
 
 func (m *Model) appendTaskLog(profileName, output string) {
@@ -1444,7 +2212,8 @@ func (m *Model) appendTaskLog(profileName, output string) {
 		return
 	}
 	buffer := m.profileLogBuffer(profileName)
-	buffer.output = appendBoundedOutput(buffer.output, output)
+	buffer.task = appendBoundedOutput(buffer.task, output)
+	buffer.dirty = true
 }
 
 func (m *Model) appendContainerLog(profileName, output string) {
@@ -1452,9 +2221,10 @@ func (m *Model) appendContainerLog(profileName, output string) {
 		return
 	}
 	buffer := m.profileLogBuffer(profileName)
-	buffer.output = appendBoundedOutput(buffer.output, output)
+	buffer.container = appendBoundedOutput(buffer.container, output)
 	buffer.containerSnapshot = appendBoundedOutput(buffer.containerSnapshot, output)
 	buffer.containerLoaded = true
+	buffer.dirty = true
 }
 
 func (m *Model) flushPendingContainerLogs(profileName string) {
@@ -1463,9 +2233,10 @@ func (m *Model) flushPendingContainerLogs(profileName string) {
 	}
 	buffer := m.profileLogBuffer(profileName)
 	output := outputSuffix(buffer.containerSnapshot, m.logPendingOutput)
-	buffer.output = appendBoundedOutput(buffer.output, output)
+	buffer.container = appendBoundedOutput(buffer.container, output)
 	buffer.containerSnapshot = appendBoundedOutput(buffer.containerSnapshot, output)
 	buffer.containerLoaded = true
+	buffer.dirty = true
 	m.logPendingOutput = ""
 }
 
@@ -1473,12 +2244,13 @@ func (m *Model) mergeContainerLogs(profileName, output string) {
 	buffer := m.profileLogBuffer(profileName)
 	snapshot := appendBoundedOutput("", output)
 	if !buffer.containerLoaded {
-		buffer.output = appendBoundedOutput(snapshot, buffer.output)
+		buffer.container = appendBoundedOutput(snapshot, buffer.container)
 		buffer.containerLoaded = true
 	} else {
-		buffer.output = appendBoundedOutput(buffer.output, outputSuffix(buffer.containerSnapshot, snapshot))
+		buffer.container = appendBoundedOutput(buffer.container, outputSuffix(buffer.containerSnapshot, snapshot))
 	}
 	buffer.containerSnapshot = snapshot
+	buffer.dirty = true
 }
 
 func outputSuffix(previous, next string) string {
@@ -1817,6 +2589,9 @@ func (m *Model) profileIsRunning() bool {
 }
 
 func (m *Model) View() string {
+	if m.logViewerOpen {
+		return m.logViewerView()
+	}
 	if m.width < 72 || m.height < 14 {
 		view := m.smallView()
 		if m.modal != modalNone {
@@ -2019,12 +2794,15 @@ func (m *Model) rightView(width int) string {
 		content = m.profileDetailView()
 	}
 	content = m.tabBar() + "\n\n" + content
-	warnings := make([]string, 0, 3)
+	warnings := make([]string, 0, 4)
 	if m.loading {
 		warnings = append(warnings, mutedStyle.Render("Loading profiles..."))
 	}
 	if m.err != nil {
 		warnings = append(warnings, errorStyle.Render(m.err.Error()))
+	}
+	if m.notice != "" {
+		warnings = append(warnings, warningStyle.Render(m.notice))
 	}
 	if m.watcherDisconnected {
 		warnings = append(warnings, warningStyle.Render("Docker event watcher disconnected"))
@@ -2067,10 +2845,7 @@ func (m *Model) logContent() string {
 		return mutedStyle.Render("start the container to see logs")
 	}
 
-	output := m.profileLogOutput(m.selectedProfileName())
-	if m.logSnapshotPending && m.selectedProfileName() == m.logResourceName {
-		output = appendBoundedOutput(output, m.logPendingOutput)
-	}
+	output := renderLogEntries(containerLogEntries(m.displayLogEntries(m.selectedProfileName())), false)
 	status := ""
 	switch m.logPhase {
 	case phaseLoading:
@@ -2093,6 +2868,214 @@ func (m *Model) logContent() string {
 		return status
 	}
 	return status + "\n\n" + output
+}
+
+// displayLogEntries returns formatted entries for one profile, including the
+// pending container bytes that arrived before the initial snapshot completed.
+func (m *Model) displayLogEntries(profileName string) []logEntry {
+	if m.logSnapshotPending && profileName == m.logResourceName {
+		container := appendBoundedOutput(m.profileLogOutput(profileName), m.logPendingOutput)
+		return buildLogEntries(container, m.profileTaskOutput(profileName))
+	}
+	return m.logEntries(profileName)
+}
+
+func (m *Model) filteredLogEntries(profileName string) []logEntry {
+	entries := m.displayLogEntries(profileName)
+	if len(entries) == 0 {
+		return nil
+	}
+	query := strings.ToLower(strings.TrimSpace(m.logViewerSearch))
+	filtered := make([]logEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !m.logViewerSource.allows(entry.Source) {
+			continue
+		}
+		if !m.logViewerLevel.allows(entry.Level) {
+			continue
+		}
+		if m.logViewerDatabase != "" && entry.Database != m.logViewerDatabase {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(entry.Text), query) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+// cycleLogDatabase restricts the viewer to one database present in the logs,
+// cycling through all of them and back to "all".
+func (m *Model) cycleLogDatabase() {
+	seen := make(map[string]bool)
+	databases := make([]string, 0)
+	for _, entry := range m.displayLogEntries(m.logViewerProfile) {
+		if entry.Database == "" || seen[entry.Database] {
+			continue
+		}
+		seen[entry.Database] = true
+		databases = append(databases, entry.Database)
+	}
+	sort.Strings(databases)
+	if len(databases) == 0 {
+		m.logViewerDatabase = ""
+		return
+	}
+	if m.logViewerDatabase == "" {
+		m.logViewerDatabase = databases[0]
+		return
+	}
+	for index, database := range databases {
+		if database != m.logViewerDatabase {
+			continue
+		}
+		if index+1 < len(databases) {
+			m.logViewerDatabase = databases[index+1]
+		} else {
+			m.logViewerDatabase = ""
+		}
+		return
+	}
+	m.logViewerDatabase = ""
+}
+
+func (m *Model) openLogViewer() {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
+		return
+	}
+	m.logViewerOpen = true
+	m.logViewerProfile = profileName
+	m.logViewerSource = logSourceOnlyContainer
+	m.logViewerLevel = logLevelFilterAll
+	m.logViewerSearch = ""
+	m.logViewerDatabase = ""
+	m.logViewerTyping = false
+	m.logViewerFollow = true
+	m.logViewerReady = false
+}
+
+func (m *Model) closeLogViewer() {
+	m.logViewerOpen = false
+	m.logViewerTyping = false
+	m.logViewerSearch = ""
+}
+
+func (m *Model) updateLogViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.logViewerTyping {
+		switch msg.String() {
+		case "esc":
+			m.logViewerTyping = false
+			m.logViewerSearch = ""
+		case "enter":
+			m.logViewerTyping = false
+		case "backspace", "ctrl+h":
+			m.logViewerSearch = removeLastRune(m.logViewerSearch)
+		case "ctrl+u":
+			m.logViewerSearch = ""
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.logViewerSearch += value
+			}
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q", "L":
+		m.closeLogViewer()
+	case "/":
+		m.logViewerTyping = true
+	case "tab":
+		m.logViewerSource = (m.logViewerSource + 1) % 3
+	case "1":
+		m.logViewerLevel = logLevelFilterAll
+	case "2":
+		m.logViewerLevel = logLevelFilterInfo
+	case "3":
+		m.logViewerLevel = logLevelFilterWarning
+	case "4":
+		m.logViewerLevel = logLevelFilterError
+	case "f":
+		m.logViewerFollow = !m.logViewerFollow
+	case "d":
+		m.cycleLogDatabase()
+	case "g":
+		m.logViewerViewport.GotoTop()
+		m.logViewerFollow = false
+	case "G":
+		m.logViewerViewport.GotoBottom()
+		m.logViewerFollow = true
+	case "up", "k":
+		m.logViewerViewport.LineUp(1)
+		m.logViewerFollow = false
+	case "down", "j":
+		m.logViewerViewport.LineDown(1)
+	case "pgup", "ctrl+u":
+		m.logViewerViewport.HalfViewUp()
+		m.logViewerFollow = false
+	case "pgdown", "ctrl+d":
+		m.logViewerViewport.HalfViewDown()
+	}
+	return m, nil
+}
+
+func (m *Model) logViewerView() string {
+	width := m.width
+	if width < 40 {
+		width = 40
+	}
+	height := m.height
+	if height < 12 {
+		height = 12
+	}
+
+	sourceLabel := []string{"all", "container", "tasks"}[m.logViewerSource]
+	levelLabel := []string{"all", "info+", "warn+", "error"}[m.logViewerLevel]
+	database := "all"
+	if m.logViewerDatabase != "" {
+		database = m.logViewerDatabase
+	}
+	search := "—"
+	if m.logViewerTyping {
+		search = m.logViewerSearch + "▏"
+	} else if m.logViewerSearch != "" {
+		search = m.logViewerSearch
+	}
+	header := titleStyle.Render("Logs · "+m.logViewerProfile) +
+		"   " + mutedStyle.Render("source") + " " + activeStyle.Render(sourceLabel) +
+		"   " + mutedStyle.Render("level") + " " + activeStyle.Render(levelLabel) +
+		"   " + mutedStyle.Render("db") + " " + activeStyle.Render(database) +
+		"   " + mutedStyle.Render("search") + " " + activeStyle.Render(search)
+
+	entries := m.filteredLogEntries(m.logViewerProfile)
+	content := renderLogEntries(entries, m.logViewerSource == logSourceAll)
+	if content == "" {
+		content = mutedStyle.Render("no log lines match the current filters")
+	}
+
+	bodyHeight := height - 6
+	if bodyHeight < 3 {
+		bodyHeight = 3
+	}
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderStyle).
+		Padding(0, 1)
+	wasBottom := !m.logViewerReady || m.logViewerViewport.AtBottom()
+	m.logViewerViewport.Width = width - 4
+	m.logViewerViewport.Height = bodyHeight
+	m.logViewerViewport.Style = style
+	m.logViewerViewport.SetContent(content)
+	if m.logViewerFollow || wasBottom {
+		m.logViewerViewport.GotoBottom()
+	}
+	m.logViewerReady = true
+
+	footer := mutedStyle.Render("esc close  tab source  d database  / search  1 all  2 info+  3 warn+  4 error  f follow  g/G top/bottom  ↑/↓/wheel scroll")
+	return header + "\n" + m.logViewerViewport.View() + "\n" + footer
 }
 
 func (m *Model) logContainer(width int, content string) string {
@@ -2121,7 +3104,12 @@ func (m *Model) databaseTabView() string {
 	if profileName == "" {
 		profileName = "none"
 	}
+	title := "Databases: " + profileName
+	if m.databasePhase == phaseReady && len(m.databases) > 0 {
+		title += fmt.Sprintf("  (%d)", len(m.databases))
+	}
 	return strings.Join([]string{
+		titleStyle.Render(title),
 		m.databaseRows(),
 		m.databaseDetailView(),
 	}, "\n\n")
@@ -2150,7 +3138,7 @@ func (m *Model) taskView() string {
 	if m.taskErr != nil {
 		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
 	}
-	if m.taskProfileName == "" && m.taskOutput != "" {
+	if m.taskOutput != "" {
 		lines = append(lines, mutedStyle.Render(taskOutputTail(m.taskOutput, 6)))
 	}
 	return strings.Join(lines, "\n")
@@ -2292,22 +3280,22 @@ func (m *Model) row(value string, selected bool) string {
 }
 
 func (m *Model) footerView() string {
-	keys := "tab/←/→ focus  ctrl+r refresh  ? help  q quit"
+	keys := "tab/←/→ focus  L logs  ctrl+r refresh  ? help  q quit"
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q quit"
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ databases  i init"
 		if m.selectedDatabase() != nil {
 			keys += "  " + databaseActionHints()
 		}
-		keys += "  ctrl+r refresh  ? help  q quit"
+		keys += "  L logs  ctrl+r refresh  ? help  q quit"
 	}
 	if m.focus == focusAddons {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  ctrl+r refresh  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q quit"
 	}
 	if m.showHelp {
-		keys = "tab/←/→ focus  ↑/↓/j/k move  ctrl+r refresh  q quit  ? hide help"
+		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
 		}
@@ -2316,10 +3304,10 @@ func (m *Model) footerView() string {
 			if m.selectedDatabase() != nil {
 				keys += "  " + databaseActionHints()
 			}
-			keys += "  ctrl+r refresh  ? hide help"
+			keys += "  L logs  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusAddons {
-			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  ctrl+r refresh  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -2332,11 +3320,11 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "enter open  x start  r restart  R recreate  s stop  d remove"
+	return "enter open  space run/stop  n new  e settings  L logs  x start  r restart  R recreate  s stop  d remove"
 }
 
 func databaseActionHints() string {
-	return "u update  U update-all  d drop  b backup  R restore  p psql"
+	return "u update  U update-all  d drop  b backup  R restore  p psql  a admin user password"
 }
 
 func addonActionHints(hasSelection, hasProfile bool) string {
@@ -2484,6 +3472,66 @@ func (m *Model) modalView() string {
 			lines = append(lines, warningStyle.Render("Force may discard uncommitted changes."))
 		}
 		lines = append(lines, "", mutedStyle.Render("enter/y confirm  n/esc back"))
+	case modalSelect:
+		lines = m.selectModalLines()
+	case modalCreateProfile:
+		lines = []string{
+			titleStyle.Render("New profile"),
+			"Odoo version: " + activeStyle.Render(m.createProfileVersion),
+			m.formLine("profile name", m.createProfileName, 0, true),
+		}
+		if m.createFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.createFormErr.Error()))
+		}
+		lines = append(lines,
+			"",
+			mutedStyle.Render("type a lowercase name  enter create and run  esc cancel"),
+		)
+	case modalProfileSettings:
+		lines = m.profileSettingsModalLines()
+	case modalConfigPattern:
+		lines = []string{
+			titleStyle.Render("Database filter pattern · " + m.configProfileName),
+			m.formLine("regular expression", m.configPatternDraft, 0, true),
+		}
+		if m.configFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.configFormErr.Error()))
+		}
+		lines = append(lines,
+			"",
+			mutedStyle.Render("matched against physical database names, e.g. ^smoke__(dev|staging)$"),
+			mutedStyle.Render("tab field  type  enter apply  esc back"),
+		)
+	case modalConfigPassword:
+		lines = []string{
+			titleStyle.Render("Odoo master password · " + m.configProfileName),
+			m.formLine("master password", maskSecret(m.configPasswordDraft), 0, true),
+		}
+		if m.configFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.configFormErr.Error()))
+		}
+		lines = append(lines,
+			"",
+			mutedStyle.Render("this is admin_passwd (/web/database), not the admin user login password"),
+			mutedStyle.Render("tab field  type  enter apply  esc back"),
+		)
+	case modalAdminPassword:
+		lines = []string{
+			titleStyle.Render("Change Odoo admin user password"),
+			"Profile: " + m.taskProfileName,
+			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
+			"User: " + activeStyle.Render("admin") + mutedStyle.Render("  (base.user_admin login)"),
+			m.formLine("new password", maskSecret(m.adminPassword), 0, true),
+			m.formLine("confirm", maskSecret(m.adminPasswordConfirm), 1, true),
+		}
+		if m.adminPasswordErr != nil {
+			lines = append(lines, errorStyle.Render(m.adminPasswordErr.Error()))
+		}
+		lines = append(lines,
+			"",
+			mutedStyle.Render("NOT admin_passwd; changes the login password of the admin user via Odoo"),
+			mutedStyle.Render("tab field  type  enter apply  esc cancel"),
+		)
 	case modalAddonMount:
 		lines = m.addonMountModalLines()
 	}
@@ -2550,6 +3598,78 @@ func (m *Model) addonMountModalLines() []string {
 	return lines
 }
 
+func (m *Model) profileSettingsModalLines() []string {
+	lines := []string{titleStyle.Render("Profile settings · " + m.configProfileName)}
+	rows := m.profileSettingRows()
+	for index, row := range rows {
+		label, value := m.profileSettingValue(row)
+		line := label + ": " + value
+		if index == m.profileSettingsIndex {
+			lines = append(lines, activeStyle.Render("> "+line))
+		} else {
+			lines = append(lines, "  "+line)
+		}
+	}
+	if m.configFormErr != nil {
+		lines = append(lines, errorStyle.Render(m.configFormErr.Error()))
+	}
+	lines = append(lines,
+		"",
+		mutedStyle.Render("saved to .lidoo.json; recreate (R) applies it to a container"),
+		mutedStyle.Render("↑/↓ move  enter edit  esc close"),
+	)
+	return lines
+}
+
+func (m *Model) profileSettingValue(row profileSettingRow) (string, string) {
+	switch row {
+	case settingDBFilterMode:
+		return "database filter mode", m.configDBFilterMode
+	case settingDBFilterPattern:
+		if strings.TrimSpace(m.configDBFilterPattern) == "" {
+			return "filter pattern", warningStyle.Render("(required)")
+		}
+		return "filter pattern", m.configDBFilterPattern
+	case settingAdminPasswd:
+		if m.configAdminPasswd == "" {
+			return "Odoo master password", mutedStyle.Render("(not set)")
+		}
+		return "Odoo master password", runningStyle.Render("set")
+	}
+	return "", ""
+}
+
+func (m *Model) selectModalLines() []string {
+	lines := []string{titleStyle.Render(m.selectTitle)}
+	switch m.selectPhase {
+	case phaseLoading:
+		lines = append(lines, mutedStyle.Render("Loading options..."))
+	case phaseEmpty:
+		lines = append(lines, mutedStyle.Render("Nothing to choose"))
+	case phaseError:
+		lines = append(lines, errorStyle.Render(errorText(m.selectErr)))
+	case phaseReady:
+		for index, item := range m.selectItems {
+			label := item.Label
+			if item.Hint != "" {
+				label += "  " + mutedStyle.Render(item.Hint)
+			}
+			if index == m.selectIndex {
+				lines = append(lines, activeStyle.Render("> "+label))
+			} else {
+				lines = append(lines, "  "+label)
+			}
+		}
+	default:
+		lines = append(lines, mutedStyle.Render("Options are not available"))
+	}
+	if m.selectErr != nil && m.selectPhase == phaseReady {
+		lines = append(lines, errorStyle.Render(m.selectErr.Error()))
+	}
+	lines = append(lines, "", mutedStyle.Render("↑/↓ move  enter select  esc cancel"))
+	return lines
+}
+
 func (m *Model) formLine(label, value string, field int, textField bool) string {
 	if textField && m.formField == field {
 		value += "▏"
@@ -2566,6 +3686,13 @@ func yesNo(value bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+func maskSecret(value string) string {
+	if value == "" {
+		return ""
+	}
+	return strings.Repeat("•", len([]rune(value)))
 }
 
 func restoreMode(copyDatabase bool) string {

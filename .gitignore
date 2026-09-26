@@ -5,3 +5,5 @@
 .atl/
 # Generated per-profile Odoo runtime configuration
 .lidoo/
+# tgrep source index
+.tgrep/

@@ -43,14 +43,11 @@ type DatabaseInfo struct {
 // InfoDatabase returns inspection data for a profile database without writing
 // to the terminal.
 func InfoDatabase(name, database string, state files.State) (DatabaseInfo, error) {
-	physical, err := resolveDatabaseName(state, name, database)
+	found, err := findDatabase(state, name, database)
 	if err != nil {
 		return DatabaseInfo{}, err
 	}
-	prefix, err := profilePrefix(state, name)
-	if err != nil {
-		return DatabaseInfo{}, err
-	}
+	physical := found.Physical
 	container, err := docker.RequireRunningProfile(name)
 	if err != nil {
 		return DatabaseInfo{}, err
@@ -64,13 +61,14 @@ func InfoDatabase(name, database string, state files.State) (DatabaseInfo, error
 	if err != nil {
 		return DatabaseInfo{}, fmt.Errorf("inspect database %q: %w", physical, err)
 	}
-	info, found, err := parseDatabaseInfo(string(output), prefix, physical)
+	info, ok, err := parseDatabaseInfo(string(output), physical)
 	if err != nil {
 		return DatabaseInfo{}, err
 	}
-	if !found {
+	if !ok {
 		return DatabaseInfo{}, &DatabaseNotFoundError{Profile: name, Database: database}
 	}
+	info.Logical = found.Logical
 
 	_, connectionErr := runCapture(container,
 		"psql", "--no-psqlrc", "--command", "SELECT 1", physical,
@@ -79,7 +77,7 @@ func InfoDatabase(name, database string, state files.State) (DatabaseInfo, error
 	return info, nil
 }
 
-func parseDatabaseInfo(output, prefix, physical string) (DatabaseInfo, bool, error) {
+func parseDatabaseInfo(output, physical string) (DatabaseInfo, bool, error) {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -92,12 +90,8 @@ func parseDatabaseInfo(output, prefix, physical string) (DatabaseInfo, bool, err
 		if strings.TrimSpace(fields[0]) != physical {
 			continue
 		}
-		logical := physical
-		if prefix != "" {
-			logical = strings.TrimPrefix(physical, prefix)
-		}
 		return DatabaseInfo{
-			Logical:  logical,
+			Logical:  physical,
 			Physical: physical,
 			Size:     strings.TrimSpace(fields[1]),
 			Owner:    strings.TrimSpace(fields[2]),

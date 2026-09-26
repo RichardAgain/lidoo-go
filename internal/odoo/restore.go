@@ -17,9 +17,13 @@ func Restore(name, database, source string, copyDatabase, force, neutralize bool
 	}()
 
 	logicalDatabase := database
-	database, err = resolveDatabaseName(state, name, database)
-	if err != nil {
-		return result, err
+	if found, resolveErr := findDatabase(state, name, database); resolveErr == nil {
+		database = found.Physical
+	} else {
+		database, err = resolveDatabaseName(state, name, database)
+		if err != nil {
+			return result, err
+		}
 	}
 	result.LogicalDatabase = logicalDatabase
 	result.PhysicalDatabase = database

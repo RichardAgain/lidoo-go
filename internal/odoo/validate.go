@@ -37,19 +37,26 @@ func validateDropDatabase(name string) error {
 	}
 }
 
-func resolveExistingDatabaseName(state files.State, profileName, databaseName string) (string, error) {
-	physical, err := resolveDatabaseName(state, profileName, databaseName)
-	if err != nil {
-		return "", err
+func findDatabase(state files.State, profileName, databaseName string) (Database, error) {
+	if err := validateDatabaseOperationInputs(profileName, databaseName); err != nil {
+		return Database{}, err
 	}
 	databases, err := ListDatabases(profileName, state)
 	if err != nil {
-		return "", err
+		return Database{}, err
 	}
 	for _, database := range databases {
-		if database.Physical == physical {
-			return physical, nil
+		if database.Logical == databaseName || database.Physical == databaseName {
+			return database, nil
 		}
 	}
-	return "", &DatabaseNotFoundError{Profile: profileName, Database: databaseName}
+	return Database{}, &DatabaseNotFoundError{Profile: profileName, Database: databaseName}
+}
+
+func resolveExistingDatabaseName(state files.State, profileName, databaseName string) (string, error) {
+	database, err := findDatabase(state, profileName, databaseName)
+	if err != nil {
+		return "", err
+	}
+	return database.Physical, nil
 }

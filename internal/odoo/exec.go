@@ -67,6 +67,35 @@ func runWithCommandOptions(container string, options docker.CommandOptions, comm
 	return err
 }
 
+func runWithInputAndOptions(container, input string, options docker.CommandOptions, command ...string) error {
+	if len(command) == 0 {
+		return errors.New("cannot execute an empty command")
+	}
+
+	args := make([]string, 0, len(command)+4)
+	args = append(args, "sh", "-c", execScript, "lidoo")
+	args = append(args, command...)
+
+	if options.Stdout == nil {
+		options.Stdout = os.Stdout
+	}
+	if options.Stderr == nil {
+		options.Stderr = os.Stderr
+	}
+	stdoutWriter := newCleanOutputWriter(options.Stdout)
+	stderrWriter := newCleanOutputWriter(options.Stderr)
+	options.Stdout = stdoutWriter
+	options.Stderr = stderrWriter
+	err := docker.ExecWithInputOptions(container, input, options, args...)
+	if flushErr := stdoutWriter.Flush(); err == nil {
+		err = flushErr
+	}
+	if flushErr := stderrWriter.Flush(); err == nil {
+		err = flushErr
+	}
+	return err
+}
+
 func runCapture(container string, command ...string) ([]byte, error) {
 	var output, diagnostic bytes.Buffer
 	if err := runWithOutput(container, &output, &diagnostic, command...); err != nil {

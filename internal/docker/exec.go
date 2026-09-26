@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 func ExitCode(err error) int {
@@ -68,6 +69,21 @@ func ExecWithOutputOptions(container string, options CommandOptions, command ...
 	args = append(args, command...)
 
 	cmd := exec.CommandContext(options.Context, "docker", args...)
+	cmd.Stdout = options.Stdout
+	cmd.Stderr = options.Stderr
+	return commandError(options.Context, cmd.Run())
+}
+
+// ExecWithInputOptions runs a command inside a container with input piped to
+// its standard input. The input never appears in the process arguments.
+func ExecWithInputOptions(container, input string, options CommandOptions, command ...string) error {
+	options = normalizeCommandOptions(options)
+	args := make([]string, 0, len(command)+3)
+	args = append(args, "exec", "--interactive", container)
+	args = append(args, command...)
+
+	cmd := exec.CommandContext(options.Context, "docker", args...)
+	cmd.Stdin = strings.NewReader(input)
 	cmd.Stdout = options.Stdout
 	cmd.Stderr = options.Stderr
 	return commandError(options.Context, cmd.Run())

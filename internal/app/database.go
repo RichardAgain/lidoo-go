@@ -69,6 +69,19 @@ func (s *Service) BackupDatabase(ctx context.Context, name, database, destinatio
 	})
 }
 
+// SetAdminPassword changes the password of the built-in admin user of one
+// database through Odoo's ORM. The profile must be running.
+func (s *Service) SetAdminPassword(ctx context.Context, name, database, password string, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
+	operationOptions := normalizeDatabaseOperationOptions(options)
+	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {
+		return odoo.SetAdminPassword(name, database, password, state, odoo.OperationOptions{
+			Context:     ctx,
+			Output:      operationOptions.Output,
+			ErrorOutput: operationOptions.ErrorOutput,
+		})
+	})
+}
+
 func (s *Service) RestoreDatabase(ctx context.Context, name, database, source string, copyDatabase, force, neutralize bool, jobs int, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
 	operationOptions := normalizeDatabaseOperationOptions(options)
 	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {

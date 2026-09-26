@@ -96,3 +96,33 @@ func TestUpdateConfigRejectsInvalidProfileName(t *testing.T) {
 		t.Fatal("UpdateConfig() accepted invalid profile name")
 	}
 }
+
+func TestConfigUpdateValidation(t *testing.T) {
+	mode := func(value string) *string { return &value }
+	pattern := func(value string) *string { return &value }
+	password := func(value string) *string { return &value }
+
+	tests := []struct {
+		name    string
+		update  ConfigUpdate
+		wantErr bool
+	}{
+		{name: "empty update", update: ConfigUpdate{}, wantErr: true},
+		{name: "profile mode", update: ConfigUpdate{DBFilterMode: mode(DBFilterModeProfile)}},
+		{name: "disabled mode", update: ConfigUpdate{DBFilterMode: mode(DBFilterModeDisabled)}},
+		{name: "password only", update: ConfigUpdate{AdminPasswd: password("secret")}},
+		{name: "custom with pattern", update: ConfigUpdate{DBFilterMode: mode(DBFilterModeCustom), DBFilterPattern: pattern("^demo_.*$")}},
+		{name: "custom without pattern", update: ConfigUpdate{DBFilterMode: mode(DBFilterModeCustom)}, wantErr: true},
+		{name: "pattern without mode", update: ConfigUpdate{DBFilterPattern: pattern("^demo_.*$")}, wantErr: true},
+		{name: "disabled with pattern", update: ConfigUpdate{DBFilterMode: mode(DBFilterModeDisabled), DBFilterPattern: pattern("^demo_.*$")}, wantErr: true},
+		{name: "unknown mode", update: ConfigUpdate{DBFilterMode: mode("other")}, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.update.Validate(); (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, test.wantErr)
+			}
+		})
+	}
+}

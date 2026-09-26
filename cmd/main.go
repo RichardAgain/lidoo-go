@@ -905,26 +905,6 @@ func configureProfile(state files.State, name, mode, pattern, adminPasswd string
 	if err := profile.ValidateName(name); err != nil {
 		return err
 	}
-	if !modeSet && !patternSet && !passwordSet {
-		return errors.New("config requires at least one of --db-filter-mode, --db-filter-pattern, or --admin-passwd")
-	}
-	if patternSet && !modeSet {
-		return errors.New("--db-filter-pattern requires --db-filter-mode custom")
-	}
-	if modeSet {
-		switch mode {
-		case profile.DBFilterModeCustom:
-			if !patternSet {
-				return errors.New("--db-filter-mode custom requires --db-filter-pattern")
-			}
-		case profile.DBFilterModeProfile, profile.DBFilterModeDisabled:
-			if patternSet {
-				return errors.New("--db-filter-pattern is only valid with --db-filter-mode custom")
-			}
-		default:
-			return fmt.Errorf("invalid database filter mode %q: use profile, disabled, or custom", mode)
-		}
-	}
 
 	update := profile.ConfigUpdate{}
 	if modeSet {
@@ -935,6 +915,9 @@ func configureProfile(state files.State, name, mode, pattern, adminPasswd string
 	}
 	if passwordSet {
 		update.AdminPasswd = &adminPasswd
+	}
+	if err := update.Validate(); err != nil {
+		return err
 	}
 	if err := profile.UpdateConfig(state, name, update); err != nil {
 		return fmt.Errorf("update profile configuration: %w", err)

@@ -35,6 +35,36 @@ type ConfigUpdate struct {
 	AdminPasswd     *string
 }
 
+// Validate checks a configuration update before it reaches workspace state.
+// It enforces the relationship between the database filter mode and the custom
+// pattern so presentation layers can surface the same errors as the CLI.
+func (update ConfigUpdate) Validate() error {
+	modeSet := update.DBFilterMode != nil
+	patternSet := update.DBFilterPattern != nil
+	passwordSet := update.AdminPasswd != nil
+	if !modeSet && !patternSet && !passwordSet {
+		return errors.New("config requires a database filter mode, a filter pattern, or an admin password")
+	}
+	if patternSet && !modeSet {
+		return errors.New("a database filter pattern requires custom mode")
+	}
+	if modeSet {
+		switch *update.DBFilterMode {
+		case DBFilterModeCustom:
+			if !patternSet {
+				return errors.New("custom database filter mode requires a pattern")
+			}
+		case DBFilterModeProfile, DBFilterModeDisabled:
+			if patternSet {
+				return errors.New("a database filter pattern is only valid with custom mode")
+			}
+		default:
+			return fmt.Errorf("invalid database filter mode %q: use profile, disabled, or custom", *update.DBFilterMode)
+		}
+	}
+	return nil
+}
+
 func (config Config) EffectiveDBFilterMode() string {
 	if config.DBFilterMode == "" {
 		return DBFilterModeProfile

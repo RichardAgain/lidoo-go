@@ -728,6 +728,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Ctrl+C always quits, even while a task is running or a modal/viewer is
+	// open. Cancelling a running task is a deliberate action on "c".
+	if msg.String() == "ctrl+c" {
+		m.cancelTask()
+		return m, tea.Quit
+	}
 	if m.modal != modalNone {
 		return m.updateModalKey(msg)
 	}
@@ -736,15 +742,13 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.notice = ""
 	if m.interactivePreparing {
-		switch msg.String() {
-		case "c", "ctrl+c":
+		if msg.String() == "c" {
 			m.cancelTask()
 		}
 		return m, nil
 	}
 	if m.taskActive() {
-		switch msg.String() {
-		case "c", "ctrl+c":
+		if msg.String() == "c" {
 			m.cancelTask()
 			return m, nil
 		}
@@ -759,7 +763,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q":
 		return m, tea.Quit
 	case "tab", "right", "l":
 		return m, m.moveFocus(1)
@@ -3614,22 +3618,22 @@ func (m *Model) row(value string, selected bool) string {
 }
 
 func (m *Model) footerView() string {
-	keys := "tab/←/→ focus  L logs  ctrl+r refresh  ? help  q quit"
+	keys := "tab/←/→ focus  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ databases  i init"
 		if m.selectedDatabase() != nil {
 			keys += "  " + databaseActionHints()
 		}
-		keys += "  L logs  ctrl+r refresh  ? help  q quit"
+		keys += "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.focus == focusAddons {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q quit"
+		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.showHelp {
-		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q quit  ? hide help"
+		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
 		}
@@ -4097,7 +4101,7 @@ func (m *Model) smallView() string {
 	if m.focus == focusAddons {
 		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
 	}
-	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q quit"))
+	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
 	if task := m.taskView(); task != "" {
 		lines = append(lines, "", task)
 	}

@@ -514,3 +514,42 @@ func TestRestoreCopyRejectsExistingDestination(t *testing.T) {
 		t.Fatal("existing destination in copy mode should set an error")
 	}
 }
+
+func TestCtrlCQuitsDuringTask(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.taskRunning = true
+
+	_, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c should quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("ctrl+c command = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestCtrlCQuitsWithModalOpen(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalTypedConfirm
+
+	_, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c should quit even with a modal open")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("ctrl+c command = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestCKeyCancelsTaskWithoutQuitting(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.taskRunning = true
+
+	_, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if cmd != nil {
+		t.Fatal("c should not quit")
+	}
+	if !model.taskCancelRequested {
+		t.Fatal("c should request task cancellation")
+	}
+}

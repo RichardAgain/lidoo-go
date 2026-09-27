@@ -134,8 +134,8 @@ LIDOO_ADMIN_PASSWORD='new-admin-password' \
 ```
 
 `db list` shows the databases allowed by the profile's filter mode (all of them
-when the mode is `disabled`, the matching pattern when it is `custom`). `db
-shell` is an interactive `psql` session; its terminal and exit status are passed
+when the mode is `disabled`, the matching pattern when it is `custom`);
+click-odoo's internal `cache-*` template databases are hidden. `db shell` is an interactive `psql` session; its terminal and exit status are passed
 through. `db set-password` changes the built-in `admin` user's login password
 through Odoo; it takes the password from `LIDOO_ADMIN_PASSWORD` or prompts on a
 terminal without echoing, so the secret is never an argument.
@@ -283,10 +283,14 @@ Databases (the list follows the profile's database filter mode):
   `admin_passwd`. The same operation is available as
   `lidoo db set-password --name <profile> --database <db>`, taking the password
   from `LIDOO_ADMIN_PASSWORD` or an interactive prompt.
-- `R` restores into the selected database. It opens a file picker that starts in
-  the working directory: `↑`/`↓` move, `enter` enters a folder or picks a
+- `R` restores into a database. It opens a file picker that starts in the
+  working directory: `↑`/`↓` move, `enter` enters a folder or picks a
   `.zip`/`.dump`, and `h`/`backspace` goes up. Any dump on your machine is
-  reachable this way, and the restore form still accepts a typed path.
+  reachable this way, and the restore form still accepts a typed path. The
+  destination defaults to the dump's file name (made unique against existing
+  databases), so a restore creates a new database instead of replacing the one
+  you had selected; edit `destination` and switch `mode` to `move` to replace an
+  existing database.
 
 Add-ons:
 

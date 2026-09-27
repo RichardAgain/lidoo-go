@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"lidoo/internal/docker"
@@ -44,5 +45,42 @@ func TestStoppedProfileShowsLogMessage(t *testing.T) {
 	}
 	if model.logPhase != phaseUnavailable {
 		t.Fatalf("log phase = %v, want unavailable", model.logPhase)
+	}
+}
+
+func TestCreateProfileVersionSelection(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalCreateProfile
+	model.formField = 1
+	model.createProfileVersion = selectableOdooVersions[0]
+
+	model.updateModalKey(tea.KeyMsg{Type: tea.KeyDown})
+	if model.createProfileVersion != "18" {
+		t.Fatalf("version after down = %q, want 18", model.createProfileVersion)
+	}
+	model.updateModalKey(tea.KeyMsg{Type: tea.KeyUp})
+	if model.createProfileVersion != "17" {
+		t.Fatalf("version after up = %q, want 17", model.createProfileVersion)
+	}
+	model.updateModalKey(tea.KeyMsg{Type: tea.KeyUp})
+	if model.createProfileVersion != "19" {
+		t.Fatalf("version should wrap to 19, got %q", model.createProfileVersion)
+	}
+}
+
+func TestVersionSelectorRendersStaticChoices(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalCreateProfile
+	model.formField = 1
+	model.createProfileVersion = "18"
+
+	view := ansi.Strip(model.modalView())
+	for _, version := range []string{"17", "18", "19"} {
+		if !strings.Contains(view, version) {
+			t.Fatalf("version %s missing from selector: %q", version, view)
+		}
+	}
+	if !strings.Contains(view, "> 18") {
+		t.Fatalf("selected version missing from selector: %q", view)
 	}
 }

@@ -62,6 +62,8 @@ const (
 
 const maxLogBufferSize = 64 * 1024
 
+var selectableOdooVersions = []string{"17", "18", "19"}
+
 type profileLogBuffer struct {
 	output            string
 	containerSnapshot string
@@ -431,7 +433,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if errors.As(msg.Err, &required) {
 			m.finishTask("version required", nil)
 			m.modal = modalRunVersion
-			m.versionInput = ""
+			m.versionInput = selectableOdooVersions[0]
 			return m, nil
 		}
 		m.finishTask("failed", msg.Err)
@@ -692,7 +694,7 @@ func (m *Model) openCreateProfileForm() {
 		return
 	}
 	m.createProfileName = ""
-	m.createProfileVersion = ""
+	m.createProfileVersion = selectableOdooVersions[0]
 	m.createProfileErr = nil
 	m.formField = 0
 	m.modal = modalCreateProfile
@@ -882,13 +884,36 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveFormField(1)
 		case "shift+tab":
 			m.moveFormField(-1)
+		case "up", "k":
+			if m.formField == 1 {
+				m.createProfileVersion = cycleOdooVersion(m.createProfileVersion, -1)
+				m.createProfileErr = nil
+			} else if msg.String() == "k" {
+				m.appendFormText("k")
+				m.createProfileErr = nil
+			}
+		case "down", "j":
+			if m.formField == 1 {
+				m.createProfileVersion = cycleOdooVersion(m.createProfileVersion, 1)
+				m.createProfileErr = nil
+			} else if msg.String() == "j" {
+				m.appendFormText("j")
+				m.createProfileErr = nil
+			}
 		case "backspace", "ctrl+h":
-			m.removeFormText()
-			m.createProfileErr = nil
+			if m.formField == 0 {
+				m.removeFormText()
+				m.createProfileErr = nil
+			}
 		case "ctrl+u":
-			m.clearFormText()
-			m.createProfileErr = nil
+			if m.formField == 0 {
+				m.clearFormText()
+				m.createProfileErr = nil
+			}
 		default:
+			if m.formField != 0 {
+				break
+			}
 			value := msg.String()
 			runes := []rune(value)
 			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
@@ -986,16 +1011,10 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.modal = modalNone
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version})
-		case "backspace", "ctrl+h":
-			m.versionInput = removeLastRune(m.versionInput)
-		case "ctrl+u":
-			m.versionInput = ""
-		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
-				m.versionInput += value
-			}
+		case "up", "k":
+			m.versionInput = cycleOdooVersion(m.versionInput, -1)
+		case "down", "j":
+			m.versionInput = cycleOdooVersion(m.versionInput, 1)
 		}
 	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
 		switch msg.String() {
@@ -1257,9 +1276,6 @@ func (m *Model) formText() *string {
 	case modalCreateProfile:
 		if m.formField == 0 {
 			return &m.createProfileName
-		}
-		if m.formField == 1 {
-			return &m.createProfileVersion
 		}
 		return nil
 	case modalCloneAddon:
@@ -2459,23 +2475,20 @@ func (m *Model) modalView() string {
 		lines = []string{
 			titleStyle.Render("Create container"),
 			m.formLine("name", m.createProfileName, 0, true),
-			m.formLine("version", m.createProfileVersion, 1, true),
-			"Adds the container to workspace state without starting it.",
-			"Odoo version is required, e.g. 17 or 18.",
 		}
+		lines = append(lines, m.versionSelectLines("version", m.createProfileVersion, m.formField == 1)...)
 		if m.createProfileErr != nil {
 			lines = append(lines, errorStyle.Render(m.createProfileErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("tab field  type  enter create  esc cancel"))
+		lines = append(lines, "", mutedStyle.Render("tab field  ↑/↓ select  enter create  esc cancel"))
 	case modalRunVersion:
 		lines = []string{
 			titleStyle.Render("Odoo version required"),
 			"Profile: " + m.taskProfileName,
 			"No stored Odoo version exists for this profile.",
-			"version: " + activeStyle.Render(m.versionInput+"▏"),
-			"",
-			mutedStyle.Render("type a version  enter run  esc cancel"),
 		}
+		lines = append(lines, m.versionSelectLines("version", m.versionInput, true)...)
+		lines = append(lines, "", mutedStyle.Render("↑/↓ select  enter run  esc cancel"))
 	case modalConfirmDrop:
 		lines = []string{
 			titleStyle.Render("Drop database " + m.taskDatabaseName + "?"),
@@ -2665,6 +2678,38 @@ func (m *Model) formLine(label, value string, field int, textField bool) string 
 		return activeStyle.Render("  " + line)
 	}
 	return "  " + line
+}
+
+func (m *Model) versionSelectLines(label, selected string, active bool) []string {
+	heading := "  " + label + ":"
+	if active {
+		heading = activeStyle.Render(heading)
+	}
+	lines := []string{heading}
+	for _, version := range selectableOdooVersions {
+		prefix := "    "
+		if version == selected {
+			prefix = "  > "
+		}
+		row := prefix + version
+		if version == selected {
+			row = activeStyle.Render(row)
+		}
+		lines = append(lines, row)
+	}
+	return lines
+}
+
+func cycleOdooVersion(current string, delta int) string {
+	index := 0
+	for candidateIndex, version := range selectableOdooVersions {
+		if version == current {
+			index = candidateIndex
+			break
+		}
+	}
+	index = (index + delta + len(selectableOdooVersions)) % len(selectableOdooVersions)
+	return selectableOdooVersions[index]
 }
 
 func yesNo(value bool) string {

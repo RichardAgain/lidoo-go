@@ -254,3 +254,19 @@ func containerLogEntries(entries []logEntry) []logEntry {
 	}
 	return container
 }
+
+// filterLogEntriesByDatabase keeps only lines bound to one database. An empty
+// database means "all", and lines without a bound database are dropped when a
+// filter is active.
+func filterLogEntriesByDatabase(entries []logEntry, database string) []logEntry {
+	if database == "" {
+		return entries
+	}
+	filtered := make([]logEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Database == database {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}

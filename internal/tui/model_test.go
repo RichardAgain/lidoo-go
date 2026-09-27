@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"lidoo/internal/docker"
@@ -375,5 +376,78 @@ func TestLogViewerDatabaseFilter(t *testing.T) {
 	model.logViewerDatabase = ""
 	if got := len(model.filteredLogEntries("demo")); got != 2 {
 		t.Fatalf("unfiltered = %d, want 2", got)
+	}
+}
+
+func TestTypedConfirmRequiresExactName(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	queued := false
+	model.openTypedConfirm("irreversible", "demo", func() tea.Cmd {
+		queued = true
+		return nil
+	})
+
+	model.confirmInput = "dem"
+	if cmd := model.submitTypedConfirm(); cmd != nil {
+		t.Fatal("a wrong name should not proceed")
+	}
+	if model.confirmErr == nil || queued {
+		t.Fatal("wrong name should error and not run the action")
+	}
+
+	model.confirmInput = "demo"
+	model.submitTypedConfirm()
+	if !queued {
+		t.Fatal("exact name should run the action")
+	}
+	if model.modal != modalNone {
+		t.Fatalf("modal = %v, want none", model.modal)
+	}
+}
+
+func TestRunToggleWaitsForReadiness(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "exited"}}
+
+	model.toggleSelectedProfile()
+	if model.pendingTask == nil || model.pendingTask.Kind != taskRun || !model.pendingTask.Wait {
+		t.Fatalf("pending task = %+v, want run with wait", model.pendingTask)
+	}
+}
+
+func TestRestoreSourceChoiceOpensForm(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusDatabases
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
+	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
+	model.databaseIndex = 0
+	model.selectKind = selectRestoreSource
+	model.selectPhase = phaseReady
+	model.selectItems = []selectItem{{Label: "a.zip", Value: "backups/a.zip"}}
+	model.selectIndex = 0
+
+	if cmd := model.applySelectChoice(); cmd != nil {
+		t.Fatal("choosing a source should not queue a task")
+	}
+	if model.modal != modalRestoreDatabase {
+		t.Fatalf("modal = %v, want restore form", model.modal)
+	}
+	if model.restoreSource != "backups/a.zip" {
+		t.Fatalf("source = %q", model.restoreSource)
+	}
+}
+
+func TestProfileIndexAtRow(t *testing.T) {
+	if got := profileIndexAtRow(2, 3); got != 0 {
+		t.Fatalf("row 2 = %d, want 0", got)
+	}
+	if got := profileIndexAtRow(8, 3); got != 1 {
+		t.Fatalf("row 8 = %d, want 1", got)
+	}
+	if got := profileIndexAtRow(100, 3); got != 2 {
+		t.Fatalf("row 100 = %d, want 2 (clamped)", got)
+	}
+	if got := profileIndexAtRow(0, 0); got != -1 {
+		t.Fatalf("no profiles = %d, want -1", got)
 	}
 }

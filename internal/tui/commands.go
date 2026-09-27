@@ -297,3 +297,16 @@ func LoadAddonBranchesCmd(ctx context.Context, service *app.Service, source stri
 		return AddonBranchesLoadedMsg{RequestID: requestID, Source: source, Branches: branches}
 	}
 }
+
+func LoadRestoreSourcesCmd(ctx context.Context, service *app.Service, requestID uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service == nil {
+			return RestoreSourcesFailedMsg{RequestID: requestID, Err: errors.New("workspace service is unavailable")}
+		}
+		sources, err := service.RestoreSources(ctx)
+		if err != nil {
+			return RestoreSourcesFailedMsg{RequestID: requestID, Err: err}
+		}
+		return RestoreSourcesLoadedMsg{RequestID: requestID, Sources: sources}
+	}
+}

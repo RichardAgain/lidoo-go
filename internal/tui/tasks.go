@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -63,7 +64,11 @@ type taskRequest struct {
 	Recreate         bool
 	ConfigUpdate     *profile.ConfigUpdate
 	Password         string
+	Wait             bool
 }
+
+// runReadyTimeout bounds the readiness wait that follows a run task.
+const runReadyTimeout = 2 * time.Minute
 
 func taskActionLabel(kind taskKind) string {
 	switch kind {
@@ -180,6 +185,9 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 			switch request.Kind {
 			case taskRun:
 				err = service.RunProfile(ctx, app.RunProfileInput{Name: request.ProfileName, Version: request.Version}, profileOptions)
+				if err == nil && request.Wait {
+					err = service.WaitProfile(ctx, request.ProfileName, runReadyTimeout, profileOptions)
+				}
 			case taskStop:
 				err = service.StopProfile(ctx, request.ProfileName, profileOptions)
 			case taskRestart:

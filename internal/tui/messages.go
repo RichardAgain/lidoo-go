@@ -225,3 +225,13 @@ type AddonBranchesFailedMsg struct {
 	Source    string
 	Err       error
 }
+
+type RestoreSourcesLoadedMsg struct {
+	RequestID uint64
+	Sources   []string
+}
+
+type RestoreSourcesFailedMsg struct {
+	RequestID uint64
+	Err       error
+}

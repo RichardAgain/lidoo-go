@@ -95,3 +95,14 @@ func TestContainerLogEntriesDropsTasks(t *testing.T) {
 		t.Fatalf("container view leaked task output")
 	}
 }
+
+func TestFilterLogEntriesByDatabase(t *testing.T) {
+	entries := buildLogEntries("2026-01-02 03:04:05,678 9 INFO db_a odoo.x: one 1 0.1 0.1\n2026-01-02 03:04:06,678 9 INFO db_b odoo.x: two 1 0.1 0.1\n", "")
+	filtered := filterLogEntriesByDatabase(entries, "db_a")
+	if len(filtered) != 1 || filtered[0].Database != "db_a" {
+		t.Fatalf("filtered = %+v", filtered)
+	}
+	if got := len(filterLogEntriesByDatabase(entries, "")); got != 2 {
+		t.Fatalf("unfiltered = %d, want 2", got)
+	}
+}

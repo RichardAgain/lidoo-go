@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,13 +37,11 @@ type modalMode uint8
 
 const (
 	modalNone modalMode = iota
-	modalConfirmRemove
+	modalTypedConfirm
 	modalRunVersion
-	modalConfirmDrop
 	modalInitDatabase
 	modalBackupDatabase
 	modalRestoreDatabase
-	modalConfirmRestore
 	modalAddonMount
 	modalCloneAddon
 	modalWorktreeAddon
@@ -67,6 +66,7 @@ const (
 	selectAddonWorktreeSource
 	selectAddonWorktreeBranch
 	selectRemoveAddon
+	selectRestoreSource
 )
 
 // selectCustomValue is the sentinel value for "type a value instead of
@@ -131,6 +131,7 @@ type Model struct {
 	logViewerLevel         logLevelFilter
 	logViewerSearch        string
 	logViewerDatabase      string
+	logDatabase            string
 	logViewerTyping        bool
 	logViewerFollow        bool
 	logViewerViewport      viewport.Model
@@ -239,6 +240,11 @@ type Model struct {
 	adminPassword          string
 	adminPasswordConfirm   string
 	adminPasswordErr       error
+	confirmAction          func() tea.Cmd
+	confirmPrompt          string
+	confirmExpected        string
+	confirmInput           string
+	confirmErr             error
 }
 
 var (
@@ -354,6 +360,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selected := m.selectedDatabasePhysical()
 		previousIndex := m.databaseIndex
 		m.databases = append([]odoo.Database(nil), msg.Databases...)
+		if m.logDatabase != "" {
+			stillPresent := false
+			for _, database := range m.databases {
+				if database.Physical == m.logDatabase {
+					stillPresent = true
+					break
+				}
+			}
+			if !stillPresent {
+				m.logDatabase = ""
+			}
+		}
 		m.databaseIndex = previousIndex
 		if len(m.databases) == 0 {
 			m.databaseIndex = 0
@@ -525,6 +543,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case AddonBranchesFailedMsg:
 		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectAddonWorktreeBranch {
+			return m, nil
+		}
+		m.selectPhase = phaseError
+		m.selectErr = msg.Err
+		return m, nil
+	case RestoreSourcesLoadedMsg:
+		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectRestoreSource {
+			return m, nil
+		}
+		m.setRestoreSourceItems(msg.Sources)
+		return m, nil
+	case RestoreSourcesFailedMsg:
+		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectRestoreSource {
 			return m, nil
 		}
 		m.selectPhase = phaseError
@@ -727,7 +758,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.notice = "profile " + m.selectedProfileName() + " is already running"
 				return m, nil
 			}
-			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName()})
+			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName(), Wait: true})
 		} else if m.focus == focusAddons {
 			return m, m.startRemoveAddon()
 		}
@@ -741,7 +772,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.queueTask(taskRequest{Kind: taskRecreate, ProfileName: m.selectedProfileName()})
 		}
 		if m.focus == focusDatabases {
-			m.openRestoreForm()
+			return m, m.startRestore()
 		}
 	case "s":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -757,6 +788,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "L":
 		if m.selectedProfileName() != "" {
+			if m.focus == focusDatabases {
+				if database := m.selectedDatabase(); database != nil {
+					m.logDatabase = database.Physical
+				}
+			}
 			m.openLogViewer()
 		}
 	case "d":
@@ -764,8 +800,15 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.rejectMutatingAction() {
 				return m, nil
 			}
-			m.taskProfileName = m.selectedProfileName()
-			m.modal = modalConfirmRemove
+			name := m.selectedProfileName()
+			m.taskProfileName = name
+			m.openTypedConfirm(
+				"This removes the Docker container and profile workspace entry. PostgreSQL data, the filestore volume, and add-on checkouts are kept.",
+				name,
+				func() tea.Cmd {
+					return m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})
+				},
+			)
 		} else if m.focus == focusDatabases {
 			m.openDropConfirmation()
 		} else if m.focus == focusAddons {
@@ -852,12 +895,119 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.modal != modalNone {
 		return m, nil
 	}
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		return m, m.handleLeftClick(msg.X, msg.Y)
+	}
 	if m.focus == focusProfiles {
 		var cmd tea.Cmd
 		m.logViewport, cmd = m.logViewport.Update(msg)
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m *Model) handleLeftClick(x, y int) tea.Cmd {
+	leftWidth := m.width / 3
+	if leftWidth < 24 {
+		leftWidth = 24
+	}
+	if leftWidth > 40 {
+		leftWidth = 40
+	}
+
+	if x < leftWidth {
+		index := profileIndexAtRow(y, len(m.profiles))
+		if index < 0 {
+			return nil
+		}
+		if index != m.profileIndex {
+			m.focus = focusProfiles
+			m.profileIndex = index
+			m.profileListOnlyRefresh = false
+			return m.beginProfileResources()
+		}
+		return m.setFocus(focusProfiles)
+	}
+
+	reached := x - (leftWidth + 2)
+	header := m.rightViewHeaderLines()
+	if y == header {
+		if reached < 14 {
+			return m.setFocus(focusDatabases)
+		}
+		if reached < 26 {
+			return m.setFocus(focusAddons)
+		}
+		return m.setFocus(focusInfo)
+	}
+
+	row := y - (header + 4)
+	switch m.focus {
+	case focusDatabases:
+		if row >= 0 && row < len(m.databases) && row != m.databaseIndex {
+			m.databaseIndex = row
+			return m.beginDatabaseInfoLoad()
+		}
+	case focusAddons:
+		if row >= 0 && row < len(m.addons) {
+			m.addonIndex = row
+		}
+	}
+	return nil
+}
+
+// rightViewHeaderLines counts the warning lines rightView prepends before the
+// tab bar (plus the blank separator when any warning is present).
+func (m *Model) rightViewHeaderLines() int {
+	count := 0
+	if m.loading {
+		count++
+	}
+	if m.err != nil {
+		count++
+	}
+	if m.notice != "" {
+		count++
+	}
+	if m.watcherDisconnected {
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return count + 1
+}
+
+// profileIndexAtRow maps a click row in the left panel to a profile index. Each
+// card is five lines tall plus one blank separator, under a title and blank.
+func profileIndexAtRow(y, count int) int {
+	if count == 0 {
+		return -1
+	}
+	if y < 2 {
+		return 0
+	}
+	index := (y - 2) / 6
+	if index >= count {
+		index = count - 1
+	}
+	return index
+}
+
+func (m *Model) setFocus(area focusArea) tea.Cmd {
+	if m.focus == area {
+		return nil
+	}
+	previous := m.focus
+	m.focus = area
+	if area == focusProfiles {
+		return m.beginLogLoad()
+	}
+	if previous == focusProfiles {
+		m.stopLogStream()
+		m.logRequest++
+	}
+	return nil
 }
 
 func (m *Model) toggleSelectedProfile() tea.Cmd {
@@ -868,7 +1018,33 @@ func (m *Model) toggleSelectedProfile() tea.Cmd {
 	if m.profileIsRunning() {
 		return m.queueTask(taskRequest{Kind: taskStop, ProfileName: name})
 	}
-	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name})
+	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Wait: true})
+}
+
+func (m *Model) openTypedConfirm(description, expected string, action func() tea.Cmd) {
+	m.confirmPrompt = description
+	m.confirmExpected = expected
+	m.confirmInput = ""
+	m.confirmErr = nil
+	m.confirmAction = action
+	m.formField = 0
+	m.modal = modalTypedConfirm
+}
+
+func (m *Model) submitTypedConfirm() tea.Cmd {
+	if m.confirmInput != m.confirmExpected {
+		m.confirmErr = errors.New("type the name exactly to confirm")
+		return nil
+	}
+	action := m.confirmAction
+	m.modal = modalNone
+	m.confirmAction = nil
+	m.confirmInput = ""
+	m.confirmErr = nil
+	if action == nil {
+		return nil
+	}
+	return action()
 }
 
 func (m *Model) prepareDatabaseAction() bool {
@@ -899,7 +1075,20 @@ func (m *Model) openDropConfirmation() {
 	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
-	m.modal = modalConfirmDrop
+	name := m.taskDatabaseName
+	m.openTypedConfirm(
+		"This permanently deletes the database "+databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical})+" and its filestore.",
+		name,
+		func() tea.Cmd {
+			return m.queueTask(taskRequest{
+				Kind:             taskDrop,
+				ProfileName:      m.taskProfileName,
+				DatabaseName:     m.taskDatabaseName,
+				DatabasePhysical: m.taskDatabasePhysical,
+				Yes:              true,
+			})
+		},
+	)
 }
 
 func (m *Model) openInitForm() {
@@ -930,17 +1119,44 @@ func (m *Model) openBackupForm() {
 	m.modal = modalBackupDatabase
 }
 
-func (m *Model) openRestoreForm() {
+func (m *Model) openRestoreForm(source string) {
 	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
-	m.restoreSource = ""
+	m.restoreSource = source
 	m.restoreCopy = true
 	m.restoreForce = false
 	m.restoreNeutralize = false
 	m.restoreJobs = "1"
 	m.formField = 0
 	m.modal = modalRestoreDatabase
+}
+
+func (m *Model) startRestore() tea.Cmd {
+	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
+		return nil
+	}
+	m.selectRequest++
+	m.selectKind = selectRestoreSource
+	m.selectTitle = "Restore source · " + m.taskDatabaseName
+	m.selectItems = nil
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseLoading
+	m.modal = modalSelect
+	return LoadRestoreSourcesCmd(m.ctx, m.service, m.selectRequest)
+}
+
+func (m *Model) setRestoreSourceItems(sources []string) {
+	items := make([]selectItem, 0, len(sources)+1)
+	for _, source := range sources {
+		items = append(items, selectItem{Label: filepath.Base(source), Value: source, Hint: filepath.Dir(source)})
+	}
+	items = append(items, selectItem{Label: "Enter a path…", Value: selectCustomValue})
+	m.selectItems = items
+	m.selectIndex = 0
+	m.selectErr = nil
+	m.selectPhase = phaseReady
 }
 
 func (m *Model) openAddonMountChooser(attach bool) tea.Cmd {
@@ -1173,7 +1389,7 @@ func (m *Model) applySelectChoice() tea.Cmd {
 			return nil
 		}
 		m.modal = modalNone
-		return m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: choice.Value})
+		return m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: choice.Value, Wait: true})
 	case selectCreateProfileVersion:
 		if choice.Value == selectCustomValue {
 			m.modal = modalRunVersion
@@ -1199,6 +1415,14 @@ func (m *Model) applySelectChoice() tea.Cmd {
 	case selectRemoveAddon:
 		m.modal = modalNone
 		m.openRemoveAddonForm(choice.Value)
+		return nil
+	case selectRestoreSource:
+		m.modal = modalNone
+		source := choice.Value
+		if source == selectCustomValue {
+			source = ""
+		}
+		m.openRestoreForm(source)
 		return nil
 	default:
 		m.modal = modalNone
@@ -1254,7 +1478,7 @@ func (m *Model) submitCreateProfile() tea.Cmd {
 		}
 	}
 	m.modal = modalNone
-	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Version: m.createProfileVersion})
+	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Version: m.createProfileVersion, Wait: true})
 }
 
 func (m *Model) openProfileConfig() tea.Cmd {
@@ -1469,36 +1693,28 @@ func (m *Model) refreshProfiles() tea.Cmd {
 
 func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
-	case modalConfirmRemove:
+	case modalTypedConfirm:
 		switch msg.String() {
-		case "esc", "n", "N":
+		case "esc":
 			m.modal = modalNone
-		case "enter", "y", "Y":
-			name := m.taskProfileName
-			m.modal = modalNone
-			return m, m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})
-		}
-	case modalConfirmDrop:
-		switch msg.String() {
-		case "esc", "n", "N":
-			m.modal = modalNone
-		case "enter", "y", "Y":
-			m.modal = modalNone
-			return m, m.queueTask(taskRequest{
-				Kind:             taskDrop,
-				ProfileName:      m.taskProfileName,
-				DatabaseName:     m.taskDatabaseName,
-				DatabasePhysical: m.taskDatabasePhysical,
-				Yes:              true,
-			})
-		}
-	case modalConfirmRestore:
-		switch msg.String() {
-		case "esc", "n", "N":
-			m.modal = modalRestoreDatabase
-		case "enter", "y", "Y":
-			m.modal = modalNone
-			return m, m.queueRestoreTask()
+			m.confirmAction = nil
+			m.confirmInput = ""
+			m.confirmErr = nil
+		case "enter":
+			return m, m.submitTypedConfirm()
+		case "backspace", "ctrl+h":
+			m.confirmInput = removeLastRune(m.confirmInput)
+			m.confirmErr = nil
+		case "ctrl+u":
+			m.confirmInput = ""
+			m.confirmErr = nil
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.confirmInput += value
+				m.confirmErr = nil
+			}
 		}
 	case modalConfirmWorktreeAddon:
 		switch msg.String() {
@@ -1562,7 +1778,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.modal = modalNone
-			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version})
+			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version, Wait: true})
 		case "backspace", "ctrl+h":
 			m.versionInput = removeLastRune(m.versionInput)
 		case "ctrl+u":
@@ -1821,7 +2037,11 @@ func (m *Model) submitDatabaseForm() tea.Cmd {
 			return nil
 		}
 		if m.restoreForce || !m.restoreCopy {
-			m.modal = modalConfirmRestore
+			m.openTypedConfirm(
+				"Move or overwrite can replace existing database data.",
+				m.taskDatabaseName,
+				func() tea.Cmd { return m.queueRestoreTask() },
+			)
 			return nil
 		}
 		m.modal = modalNone
@@ -2466,16 +2686,7 @@ func (m *Model) stopLogStream() {
 }
 
 func (m *Model) moveFocus(delta int) tea.Cmd {
-	previousFocus := m.focus
-	m.focus = focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount))
-	if m.focus == focusProfiles {
-		return m.beginLogLoad()
-	}
-	if previousFocus == focusProfiles {
-		m.stopLogStream()
-		m.logRequest++
-	}
-	return nil
+	return m.setFocus(focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount)))
 }
 
 func (m *Model) beginDatabaseInfoLoad() tea.Cmd {
@@ -2845,7 +3056,16 @@ func (m *Model) logContent() string {
 		return mutedStyle.Render("start the container to see logs")
 	}
 
-	output := renderLogEntries(containerLogEntries(m.displayLogEntries(m.selectedProfileName())), false)
+	entries := filterLogEntriesByDatabase(containerLogEntries(m.displayLogEntries(m.selectedProfileName())), m.logDatabase)
+	output := renderLogEntries(entries, false)
+	if m.logDatabase != "" {
+		note := mutedStyle.Render("db filter: " + m.logDatabase + "  ·  open logs (L) and press d to change")
+		if output != "" {
+			output = note + "\n" + output
+		} else {
+			output = note
+		}
+	}
 	status := ""
 	switch m.logPhase {
 	case phaseLoading:
@@ -2950,7 +3170,7 @@ func (m *Model) openLogViewer() {
 	m.logViewerSource = logSourceOnlyContainer
 	m.logViewerLevel = logLevelFilterAll
 	m.logViewerSearch = ""
-	m.logViewerDatabase = ""
+	m.logViewerDatabase = m.logDatabase
 	m.logViewerTyping = false
 	m.logViewerFollow = true
 	m.logViewerReady = false
@@ -3002,6 +3222,7 @@ func (m *Model) updateLogViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.logViewerFollow = !m.logViewerFollow
 	case "d":
 		m.cycleLogDatabase()
+		m.logDatabase = m.logViewerDatabase
 	case "g":
 		m.logViewerViewport.GotoTop()
 		m.logViewerFollow = false
@@ -3341,14 +3562,18 @@ func addonActionHints(hasSelection, hasProfile bool) string {
 func (m *Model) modalView() string {
 	var lines []string
 	switch m.modal {
-	case modalConfirmRemove:
+	case modalTypedConfirm:
 		lines = []string{
-			titleStyle.Render("Remove profile " + m.taskProfileName + "?"),
-			"This removes the Docker container and profile workspace entry.",
-			warningStyle.Render("It does not delete PostgreSQL data, databases, the filestore volume, or add-on checkouts."),
+			titleStyle.Render("Confirm: " + m.confirmExpected),
+			m.confirmPrompt,
 			"",
-			mutedStyle.Render("enter/y confirm  n/esc cancel"),
+			"Type " + activeStyle.Render(m.confirmExpected) + " to confirm:",
+			"  " + m.confirmInput + "▏",
 		}
+		if m.confirmErr != nil {
+			lines = append(lines, errorStyle.Render(m.confirmErr.Error()))
+		}
+		lines = append(lines, "", mutedStyle.Render("enter confirm  esc cancel"))
 	case modalRunVersion:
 		lines = []string{
 			titleStyle.Render("Odoo version required"),
@@ -3357,15 +3582,6 @@ func (m *Model) modalView() string {
 			"version: " + activeStyle.Render(m.versionInput+"▏"),
 			"",
 			mutedStyle.Render("type a version  enter run  esc cancel"),
-		}
-	case modalConfirmDrop:
-		lines = []string{
-			titleStyle.Render("Drop database " + m.taskDatabaseName + "?"),
-			"Profile: " + m.taskProfileName,
-			"Physical database: " + m.taskDatabasePhysical,
-			warningStyle.Render("This permanently deletes the database and its filestore."),
-			"",
-			mutedStyle.Render("enter/y confirm  n/esc cancel"),
 		}
 	case modalInitDatabase:
 		lines = []string{
@@ -3408,15 +3624,6 @@ func (m *Model) modalView() string {
 			m.formLine("jobs", m.restoreJobs, 4, m.formField == 4),
 			"",
 			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
-		}
-	case modalConfirmRestore:
-		lines = []string{
-			titleStyle.Render("Confirm destructive restore"),
-			"Database: " + m.taskDatabaseName,
-			"Source: " + m.restoreSource,
-			warningStyle.Render("Move or overwrite can replace existing database data."),
-			"",
-			mutedStyle.Render("enter/y confirm  n/esc back"),
 		}
 	case modalCloneAddon:
 		lines = []string{

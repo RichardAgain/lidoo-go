@@ -135,10 +135,11 @@ LIDOO_ADMIN_PASSWORD='new-admin-password' \
 
 `db list` shows the databases allowed by the profile's filter mode (all of them
 when the mode is `disabled`, the matching pattern when it is `custom`);
-click-odoo's internal `cache-*` template databases are hidden. `db shell` is an interactive `psql` session; its terminal and exit status are passed
-through. `db set-password` changes the built-in `admin` user's login password
-through Odoo; it takes the password from `LIDOO_ADMIN_PASSWORD` or prompts on a
-terminal without echoing, so the secret is never an argument.
+click-odoo's internal `cache-*` template databases are hidden. `db shell` is an
+interactive `psql` session; its terminal and exit status are passed through.
+`db set-password` changes the built-in `admin` user's login password through
+Odoo; it takes the password from `LIDOO_ADMIN_PASSWORD` or prompts on a terminal
+without echoing, so the secret is never an argument.
 
 Initialize a database with the requested comma-separated modules:
 
@@ -277,7 +278,8 @@ Profiles:
 - Destructive actions (remove profile, drop database, move/overwrite restore)
   ask you to type the resource name before they run.
 
-Databases (the list follows the profile's database filter mode):
+Databases (the list follows the profile's database filter mode; click-odoo's
+internal `cache-*` template databases are hidden):
 
 - `a`/`A` changes the built-in `admin` user's password for the selected
   database. It runs `odoo shell` inside the profile (the profile must be
@@ -391,9 +393,11 @@ These checks are for local development only. Use a disposable profile and
 database; `recreate` replaces the profile container, and the cleanup
 commands below are destructive.
 
-Run the focused CLI tests and whitespace check:
+Run the focused checks:
 
 ```sh
+gofmt -l .        # must print nothing
+go vet ./...
 go test ./...
 git diff --check
 ```

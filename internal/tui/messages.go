@@ -6,6 +6,7 @@ import (
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
 	"lidoo/internal/docker"
+	"lidoo/internal/files"
 	"lidoo/internal/odoo"
 	"lidoo/internal/profile"
 )
@@ -233,5 +234,17 @@ type RestoreSourcesLoadedMsg struct {
 
 type RestoreSourcesFailedMsg struct {
 	RequestID uint64
+	Err       error
+}
+
+type DirectoryLoadedMsg struct {
+	RequestID uint64
+	Path      string
+	Entries   []files.DirEntry
+}
+
+type DirectoryFailedMsg struct {
+	RequestID uint64
+	Path      string
 	Err       error
 }

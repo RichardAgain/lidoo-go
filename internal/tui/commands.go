@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"lidoo/internal/app"
+	"lidoo/internal/files"
 	"lidoo/internal/odoo"
 )
 
@@ -298,15 +299,12 @@ func LoadAddonBranchesCmd(ctx context.Context, service *app.Service, source stri
 	}
 }
 
-func LoadRestoreSourcesCmd(ctx context.Context, service *app.Service, requestID uint64) tea.Cmd {
+func LoadDirectoryCmd(path string, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
-		if service == nil {
-			return RestoreSourcesFailedMsg{RequestID: requestID, Err: errors.New("workspace service is unavailable")}
-		}
-		sources, err := service.RestoreSources(ctx)
+		entries, err := files.ListDirectory(path)
 		if err != nil {
-			return RestoreSourcesFailedMsg{RequestID: requestID, Err: err}
+			return DirectoryFailedMsg{RequestID: requestID, Path: path, Err: err}
 		}
-		return RestoreSourcesLoadedMsg{RequestID: requestID, Sources: sources}
+		return DirectoryLoadedMsg{RequestID: requestID, Path: path, Entries: entries}
 	}
 }

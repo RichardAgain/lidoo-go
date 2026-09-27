@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"lidoo/internal/docker"
+	"lidoo/internal/files"
 	"lidoo/internal/odoo"
 	"lidoo/internal/profile"
 )
@@ -351,7 +352,7 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	_ = model.smallView()
 	_ = model.databaseTabView()
 
-	for _, modal := range []modalMode{modalProfileSettings, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile} {
+	for _, modal := range []modalMode{modalProfileSettings, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
 		model.modal = modal
 		_ = model.modalView()
 	}
@@ -415,25 +416,43 @@ func TestRunToggleWaitsForReadiness(t *testing.T) {
 	}
 }
 
-func TestRestoreSourceChoiceOpensForm(t *testing.T) {
+func TestFilePickerSelectsDump(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.focus = focusDatabases
 	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
 	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
 	model.databaseIndex = 0
-	model.selectKind = selectRestoreSource
-	model.selectPhase = phaseReady
-	model.selectItems = []selectItem{{Label: "a.zip", Value: "backups/a.zip"}}
-	model.selectIndex = 0
+	model.modal = modalFilePicker
+	model.filePickerPhase = phaseReady
+	model.filePickerItems = []files.DirEntry{{Name: "a.zip", Path: "/tmp/a.zip"}}
+	model.filePickerIndex = 0
 
-	if cmd := model.applySelectChoice(); cmd != nil {
-		t.Fatal("choosing a source should not queue a task")
+	if cmd := model.chooseFilePickerEntry(); cmd != nil {
+		t.Fatal("choosing a file should not queue a task")
 	}
 	if model.modal != modalRestoreDatabase {
 		t.Fatalf("modal = %v, want restore form", model.modal)
 	}
-	if model.restoreSource != "backups/a.zip" {
+	if model.restoreSource != "/tmp/a.zip" {
 		t.Fatalf("source = %q", model.restoreSource)
+	}
+}
+
+func TestLogDatabaseSelectItemsIncludeAll(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
+	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
+	model.appendContainerLog("demo", "2026-01-02 03:04:05,678 9 INFO other odoo.x: hi 1 0.1 0.1\n")
+
+	items := model.logDatabaseSelectItems()
+	if len(items) != 3 {
+		t.Fatalf("items = %+v", items)
+	}
+	if items[0].Value != "" {
+		t.Fatalf("first item = %+v, want all", items[0])
+	}
+	if items[1].Value != "demo__demo_db" || items[2].Value != "other" {
+		t.Fatalf("items = %+v", items)
 	}
 }
 

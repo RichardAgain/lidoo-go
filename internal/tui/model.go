@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
 	"lidoo/internal/docker"
+	"lidoo/internal/files"
 	"lidoo/internal/odoo"
 	"lidoo/internal/profile"
 )
@@ -54,6 +56,7 @@ const (
 	modalConfigPattern
 	modalConfigPassword
 	modalAdminPassword
+	modalFilePicker
 )
 
 type selectKind uint8
@@ -66,7 +69,7 @@ const (
 	selectAddonWorktreeSource
 	selectAddonWorktreeBranch
 	selectRemoveAddon
-	selectRestoreSource
+	selectLogDatabase
 )
 
 // selectCustomValue is the sentinel value for "type a value instead of
@@ -226,6 +229,12 @@ type Model struct {
 	selectRequest          uint64
 	selectSource           string
 	versionPurpose         versionPurpose
+	filePickerPath         string
+	filePickerItems        []files.DirEntry
+	filePickerIndex        int
+	filePickerErr          error
+	filePickerPhase        resourcePhase
+	filePickerRequest      uint64
 	createProfileVersion   string
 	createProfileName      string
 	createFormErr          error
@@ -548,18 +557,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectPhase = phaseError
 		m.selectErr = msg.Err
 		return m, nil
-	case RestoreSourcesLoadedMsg:
-		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectRestoreSource {
+	case DirectoryLoadedMsg:
+		if msg.RequestID != m.filePickerRequest || m.modal != modalFilePicker {
 			return m, nil
 		}
-		m.setRestoreSourceItems(msg.Sources)
+		m.filePickerPath = msg.Path
+		items := make([]files.DirEntry, 0, len(msg.Entries)+1)
+		if parent := filepath.Dir(msg.Path); parent != msg.Path {
+			items = append(items, files.DirEntry{Name: "..", Path: parent, Dir: true})
+		}
+		items = append(items, msg.Entries...)
+		m.filePickerItems = items
+		m.filePickerIndex = 0
+		m.filePickerErr = nil
+		if len(items) == 0 {
+			m.filePickerPhase = phaseEmpty
+		} else {
+			m.filePickerPhase = phaseReady
+		}
 		return m, nil
-	case RestoreSourcesFailedMsg:
-		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectRestoreSource {
+	case DirectoryFailedMsg:
+		if msg.RequestID != m.filePickerRequest || m.modal != modalFilePicker {
 			return m, nil
 		}
-		m.selectPhase = phaseError
-		m.selectErr = msg.Err
+		m.filePickerPhase = phaseError
+		m.filePickerErr = msg.Err
 		return m, nil
 	case TaskStartedMsg:
 		if !m.currentTask(msg.ID) || m.pendingTask == nil {
@@ -704,11 +726,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.logViewerOpen {
-		return m.updateLogViewerKey(msg)
-	}
 	if m.modal != modalNone {
 		return m.updateModalKey(msg)
+	}
+	if m.logViewerOpen {
+		return m.updateLogViewerKey(msg)
 	}
 	m.notice = ""
 	if m.interactivePreparing {
@@ -772,7 +794,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.queueTask(taskRequest{Kind: taskRecreate, ProfileName: m.selectedProfileName()})
 		}
 		if m.focus == focusDatabases {
-			return m, m.startRestore()
+			return m, m.startRestorePicker()
 		}
 	case "s":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -794,6 +816,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.openLogViewer()
+		}
+	case "D":
+		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+			return m, m.openLogDatabaseSelect()
 		}
 	case "d":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -884,6 +910,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.modal != modalNone {
+		return m, nil
+	}
 	if m.logViewerOpen {
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelUp {
 			m.logViewerFollow = false
@@ -891,9 +920,6 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.logViewerViewport, cmd = m.logViewerViewport.Update(msg)
 		return m, cmd
-	}
-	if m.modal != modalNone {
-		return m, nil
 	}
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		return m, m.handleLeftClick(msg.X, msg.Y)
@@ -1132,31 +1158,48 @@ func (m *Model) openRestoreForm(source string) {
 	m.modal = modalRestoreDatabase
 }
 
-func (m *Model) startRestore() tea.Cmd {
+func (m *Model) startRestorePicker() tea.Cmd {
 	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return nil
 	}
-	m.selectRequest++
-	m.selectKind = selectRestoreSource
-	m.selectTitle = "Restore source · " + m.taskDatabaseName
-	m.selectItems = nil
-	m.selectIndex = 0
-	m.selectErr = nil
-	m.selectPhase = phaseLoading
-	m.modal = modalSelect
-	return LoadRestoreSourcesCmd(m.ctx, m.service, m.selectRequest)
+	dir, err := os.Getwd()
+	if err != nil || dir == "" {
+		dir = "."
+	}
+	return m.openFilePicker(dir)
 }
 
-func (m *Model) setRestoreSourceItems(sources []string) {
-	items := make([]selectItem, 0, len(sources)+1)
-	for _, source := range sources {
-		items = append(items, selectItem{Label: filepath.Base(source), Value: source, Hint: filepath.Dir(source)})
+func (m *Model) openFilePicker(path string) tea.Cmd {
+	m.filePickerRequest++
+	m.filePickerPath = path
+	m.filePickerItems = nil
+	m.filePickerIndex = 0
+	m.filePickerErr = nil
+	m.filePickerPhase = phaseLoading
+	m.modal = modalFilePicker
+	return LoadDirectoryCmd(path, m.filePickerRequest)
+}
+
+func (m *Model) chooseFilePickerEntry() tea.Cmd {
+	if m.filePickerPhase != phaseReady || m.filePickerIndex < 0 || m.filePickerIndex >= len(m.filePickerItems) {
+		return nil
 	}
-	items = append(items, selectItem{Label: "Enter a path…", Value: selectCustomValue})
-	m.selectItems = items
-	m.selectIndex = 0
-	m.selectErr = nil
-	m.selectPhase = phaseReady
+	entry := m.filePickerItems[m.filePickerIndex]
+	if entry.Dir {
+		return m.openFilePicker(entry.Path)
+	}
+	source := entry.Path
+	m.modal = modalNone
+	m.openRestoreForm(source)
+	return nil
+}
+
+func (m *Model) filePickerParent() tea.Cmd {
+	parent := filepath.Dir(m.filePickerPath)
+	if parent == m.filePickerPath {
+		return nil
+	}
+	return m.openFilePicker(parent)
 }
 
 func (m *Model) openAddonMountChooser(attach bool) tea.Cmd {
@@ -1416,13 +1459,10 @@ func (m *Model) applySelectChoice() tea.Cmd {
 		m.modal = modalNone
 		m.openRemoveAddonForm(choice.Value)
 		return nil
-	case selectRestoreSource:
+	case selectLogDatabase:
+		m.logDatabase = choice.Value
+		m.logViewerDatabase = choice.Value
 		m.modal = modalNone
-		source := choice.Value
-		if source == selectCustomValue {
-			source = ""
-		}
-		m.openRestoreForm(source)
 		return nil
 	default:
 		m.modal = modalNone
@@ -1789,6 +1829,19 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
 				m.versionInput += value
 			}
+		}
+	case modalFilePicker:
+		switch msg.String() {
+		case "esc":
+			m.modal = modalNone
+		case "up", "k":
+			m.moveIndex(&m.filePickerIndex, len(m.filePickerItems), -1)
+		case "down", "j":
+			m.moveIndex(&m.filePickerIndex, len(m.filePickerItems), 1)
+		case "backspace", "left", "h":
+			return m, m.filePickerParent()
+		case "enter":
+			return m, m.chooseFilePickerEntry()
 		}
 	case modalSelect:
 		switch msg.String() {
@@ -2801,7 +2854,11 @@ func (m *Model) profileIsRunning() bool {
 
 func (m *Model) View() string {
 	if m.logViewerOpen {
-		return m.logViewerView()
+		view := m.logViewerView()
+		if m.modal != modalNone {
+			return m.modalOverlay(view)
+		}
+		return view
 	}
 	if m.width < 72 || m.height < 14 {
 		view := m.smallView()
@@ -3125,39 +3182,59 @@ func (m *Model) filteredLogEntries(profileName string) []logEntry {
 	return filtered
 }
 
-// cycleLogDatabase restricts the viewer to one database present in the logs,
-// cycling through all of them and back to "all".
-func (m *Model) cycleLogDatabase() {
+// openLogDatabaseSelect lets the operator pick "all" or one database for the
+// log panel, instead of cycling blindly.
+func (m *Model) openLogDatabaseSelect() tea.Cmd {
+	m.selectRequest++
+	m.selectKind = selectLogDatabase
+	m.selectTitle = "Log database · " + m.currentLogProfile()
+	m.selectItems = m.logDatabaseSelectItems()
+	m.selectIndex = m.currentLogDatabaseIndex()
+	m.selectErr = nil
+	m.selectPhase = phaseReady
+	m.modal = modalSelect
+	return nil
+}
+
+func (m *Model) currentLogProfile() string {
+	if m.logViewerOpen && m.logViewerProfile != "" {
+		return m.logViewerProfile
+	}
+	return m.selectedProfileName()
+}
+
+func (m *Model) logDatabaseSelectItems() []selectItem {
 	seen := make(map[string]bool)
 	databases := make([]string, 0)
-	for _, entry := range m.displayLogEntries(m.logViewerProfile) {
-		if entry.Database == "" || seen[entry.Database] {
-			continue
+	for _, database := range m.databases {
+		if database.Physical != "" && !seen[database.Physical] {
+			seen[database.Physical] = true
+			databases = append(databases, database.Physical)
 		}
-		seen[entry.Database] = true
-		databases = append(databases, entry.Database)
+	}
+	for _, entry := range m.displayLogEntries(m.currentLogProfile()) {
+		if entry.Database != "" && !seen[entry.Database] {
+			seen[entry.Database] = true
+			databases = append(databases, entry.Database)
+		}
 	}
 	sort.Strings(databases)
-	if len(databases) == 0 {
-		m.logViewerDatabase = ""
-		return
+
+	items := make([]selectItem, 0, len(databases)+1)
+	items = append(items, selectItem{Label: "all databases", Value: ""})
+	for _, database := range databases {
+		items = append(items, selectItem{Label: database, Value: database})
 	}
-	if m.logViewerDatabase == "" {
-		m.logViewerDatabase = databases[0]
-		return
-	}
-	for index, database := range databases {
-		if database != m.logViewerDatabase {
-			continue
+	return items
+}
+
+func (m *Model) currentLogDatabaseIndex() int {
+	for index, item := range m.logDatabaseSelectItems() {
+		if item.Value == m.logDatabase {
+			return index
 		}
-		if index+1 < len(databases) {
-			m.logViewerDatabase = databases[index+1]
-		} else {
-			m.logViewerDatabase = ""
-		}
-		return
 	}
-	m.logViewerDatabase = ""
+	return 0
 }
 
 func (m *Model) openLogViewer() {
@@ -3221,8 +3298,7 @@ func (m *Model) updateLogViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		m.logViewerFollow = !m.logViewerFollow
 	case "d":
-		m.cycleLogDatabase()
-		m.logDatabase = m.logViewerDatabase
+		return m, m.openLogDatabaseSelect()
 	case "g":
 		m.logViewerViewport.GotoTop()
 		m.logViewerFollow = false
@@ -3295,7 +3371,7 @@ func (m *Model) logViewerView() string {
 	}
 	m.logViewerReady = true
 
-	footer := mutedStyle.Render("esc close  tab source  d database  / search  1 all  2 info+  3 warn+  4 error  f follow  g/G top/bottom  ↑/↓/wheel scroll")
+	footer := mutedStyle.Render("esc close  tab source  d db  / search  1 all  2 info+  3 warn+  4 error  f follow  g/G top/bottom  ↑/↓/wheel scroll")
 	return header + "\n" + m.logViewerViewport.View() + "\n" + footer
 }
 
@@ -3541,7 +3617,7 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "enter open  space run/stop  n new  e settings  L logs  x start  r restart  R recreate  s stop  d remove"
+	return "enter open  space run/stop  n new  e settings  L logs  D logs db  x start  r restart  R recreate  s stop  d remove"
 }
 
 func databaseActionHints() string {
@@ -3681,6 +3757,8 @@ func (m *Model) modalView() string {
 		lines = append(lines, "", mutedStyle.Render("enter/y confirm  n/esc back"))
 	case modalSelect:
 		lines = m.selectModalLines()
+	case modalFilePicker:
+		lines = m.filePickerModalLines()
 	case modalCreateProfile:
 		lines = []string{
 			titleStyle.Render("New profile"),
@@ -3844,6 +3922,38 @@ func (m *Model) profileSettingValue(row profileSettingRow) (string, string) {
 		return "Odoo master password", runningStyle.Render("set")
 	}
 	return "", ""
+}
+
+func (m *Model) filePickerModalLines() []string {
+	lines := []string{
+		titleStyle.Render("Restore source · " + m.taskDatabaseName),
+		mutedStyle.Render(m.filePickerPath),
+		"",
+	}
+	switch m.filePickerPhase {
+	case phaseLoading:
+		lines = append(lines, mutedStyle.Render("Loading…"))
+	case phaseError:
+		lines = append(lines, errorStyle.Render(errorText(m.filePickerErr)))
+	case phaseEmpty:
+		lines = append(lines, mutedStyle.Render("No folders or .zip/.dump files here"))
+	case phaseReady:
+		for index, entry := range m.filePickerItems {
+			label := entry.Name
+			if entry.Dir {
+				label += "/"
+			}
+			if index == m.filePickerIndex {
+				lines = append(lines, activeStyle.Render("> "+label))
+			} else {
+				lines = append(lines, "  "+label)
+			}
+		}
+	default:
+		lines = append(lines, mutedStyle.Render("not loaded"))
+	}
+	lines = append(lines, "", mutedStyle.Render("↑/↓ move  enter open/select  h/backspace up  esc cancel"))
+	return lines
 }
 
 func (m *Model) selectModalLines() []string {

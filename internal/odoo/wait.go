@@ -11,6 +11,14 @@ import (
 )
 
 func Wait(name string, timeout time.Duration, state files.State) error {
+	return WaitWithOptions(name, timeout, state)
+}
+
+// WaitWithOptions waits until the profile answers, writing progress to the
+// operation output and stopping early when the context is cancelled.
+func WaitWithOptions(name string, timeout time.Duration, state files.State, options ...OperationOptions) error {
+	stdout, _, operationOptions := newOperationStreams(options)
+	ctx := operationOptions.Context
 	if name == "" {
 		return fmt.Errorf("wait requires name")
 	}
@@ -25,6 +33,9 @@ func Wait(name string, timeout time.Duration, state files.State) error {
 	lastReason := "profile checks have not run"
 	client := &http.Client{Timeout: 2 * time.Second}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		containerState, exists, err := docker.ProfileState(name)
 		if err != nil {
 			lastReason = err.Error()
@@ -39,7 +50,7 @@ func Wait(name string, timeout time.Duration, state files.State) error {
 		} else if err := odooHTTPReady(client, name); err != nil {
 			lastReason = "Odoo HTTP is not ready: " + err.Error()
 		} else {
-			fmt.Printf("profile %q is ready at http://%s\n", name, profiles.Hostname(name))
+			fmt.Fprintf(stdout, "profile %q is ready at http://%s\n", name, profiles.Hostname(name))
 			return nil
 		}
 
@@ -51,7 +62,11 @@ func Wait(name string, timeout time.Duration, state files.State) error {
 		if remaining < interval {
 			interval = remaining
 		}
-		time.Sleep(interval)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
 	}
 }
 

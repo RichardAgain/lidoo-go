@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
+	"lidoo/internal/odoo"
 	"lidoo/internal/profile"
 )
 
@@ -105,6 +107,19 @@ func (s *Service) StopProfile(ctx context.Context, name string, options ...Profi
 			Context: ctx,
 			Stdout:  operationOptions.Output,
 			Stderr:  operationOptions.ErrorOutput,
+		})
+	})
+}
+
+// WaitProfile blocks until the profile answers on HTTP, streaming progress to
+// the operation output. It is read-only: no workspace state is saved.
+func (s *Service) WaitProfile(ctx context.Context, name string, timeout time.Duration, options ...ProfileOperationOptions) error {
+	operationOptions := normalizeProfileOperationOptions(options)
+	return s.mutateProfile(ctx, false, func(state files.State) error {
+		return odoo.WaitWithOptions(name, timeout, state, odoo.OperationOptions{
+			Context:     ctx,
+			Output:      operationOptions.Output,
+			ErrorOutput: operationOptions.ErrorOutput,
 		})
 	})
 }

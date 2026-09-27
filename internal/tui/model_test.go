@@ -54,7 +54,7 @@ func TestStoppedProfileShowsLogMessage(t *testing.T) {
 func TestVersionSelectIncludesCustomOption(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.setVersionSelectItems([]docker.VersionOption{
-		{Version: "18", Image: true},
+		{Version: "18", Dockerfile: true, Image: true},
 		{Version: "17"},
 	})
 
@@ -64,8 +64,11 @@ func TestVersionSelectIncludesCustomOption(t *testing.T) {
 	if model.selectItems[2].Value != selectCustomValue {
 		t.Fatalf("last item value = %q, want custom sentinel", model.selectItems[2].Value)
 	}
-	if model.selectItems[0].Label != "18" || model.selectItems[0].Hint != "image built" {
+	if model.selectItems[0].Label != "18" || model.selectItems[0].Hint != "dockerfile · image built" {
 		t.Fatalf("first item = %+v", model.selectItems[0])
+	}
+	if model.selectItems[1].Hint != "no dockerfile" {
+		t.Fatalf("second item = %+v", model.selectItems[1])
 	}
 	if model.selectPhase != phaseReady {
 		t.Fatalf("select phase = %v, want ready", model.selectPhase)
@@ -603,5 +606,37 @@ func TestFitViewClampsWidthAndHeight(t *testing.T) {
 		if ansi.StringWidth(line) > 20 {
 			t.Fatalf("line %q is wider than 20", line)
 		}
+	}
+}
+
+func TestWindowStartKeepsIndexVisible(t *testing.T) {
+	if got := windowStart(5, 2, 10); got != 0 {
+		t.Fatalf("small list start = %d, want 0", got)
+	}
+	if got := windowStart(100, 0, 10); got != 0 {
+		t.Fatalf("top start = %d, want 0", got)
+	}
+	if got := windowStart(100, 50, 10); got != 45 {
+		t.Fatalf("middle start = %d, want 45", got)
+	}
+	if got := windowStart(100, 99, 10); got != 90 {
+		t.Fatalf("bottom start = %d, want 90", got)
+	}
+}
+
+func TestSelectModalWindowsLongLists(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width = 80
+	model.height = 20
+	model.selectTitle = "many"
+	model.selectPhase = phaseReady
+	for index := 0; index < 60; index++ {
+		model.selectItems = append(model.selectItems, selectItem{Label: "item", Value: "item"})
+	}
+	model.selectIndex = 30
+
+	rendered := ansi.Strip(strings.Join(model.selectModalLines(), "\n"))
+	if !strings.Contains(rendered, "more") {
+		t.Fatalf("long list should show more indicators:\n%s", rendered)
 	}
 }

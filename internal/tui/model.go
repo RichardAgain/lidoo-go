@@ -1390,11 +1390,16 @@ func (m *Model) closeSelect() {
 func (m *Model) setVersionSelectItems(options []docker.VersionOption) {
 	items := make([]selectItem, 0, len(options)+1)
 	for _, option := range options {
-		hint := ""
-		if option.Image {
-			hint = "image built"
+		hints := make([]string, 0, 2)
+		if option.Dockerfile {
+			hints = append(hints, "dockerfile")
+		} else {
+			hints = append(hints, "no dockerfile")
 		}
-		items = append(items, selectItem{Label: option.Version, Value: option.Version, Hint: hint})
+		if option.Image {
+			hints = append(hints, "image built")
+		}
+		items = append(items, selectItem{Label: option.Version, Value: option.Version, Hint: strings.Join(hints, " · ")})
 	}
 	items = append(items, selectItem{Label: "Custom version…", Value: selectCustomValue})
 	m.selectItems = items
@@ -2928,8 +2933,8 @@ func (m *Model) View() string {
 	}
 
 	mainHeight := m.height - 2 // separator and footer
-	left := lipgloss.NewStyle().Width(leftWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.leftView(leftWidth))
-	right := lipgloss.NewStyle().Width(rightWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.rightView(rightWidth))
+	left := lipgloss.NewStyle().Width(leftWidth).MaxWidth(leftWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.leftView(leftWidth))
+	right := lipgloss.NewStyle().Width(rightWidth).MaxWidth(rightWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.rightView(rightWidth))
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 	footer := m.footerView()
 	view := main + "\n" + mutedStyle.Render(strings.Repeat("─", m.width)) + "\n" + footer
@@ -3922,7 +3927,35 @@ func (m *Model) modalView() string {
 		modalWidth = 72
 	}
 	lines = modalTitleSeparator(lines, modalWidth)
+	if maxLines := m.height - 5; maxLines >= 3 && len(lines) > maxLines {
+		lines = append(lines[:maxLines-1], mutedStyle.Render("…"))
+	}
 	return lipgloss.NewStyle().Width(modalWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(activeBorderStyle).Render(strings.Join(lines, "\n"))
+}
+
+// modalListBudget is how many list rows fit in a modal at the current height.
+func (m *Model) modalListBudget() int {
+	budget := m.height - 9
+	if budget < 3 {
+		budget = 3
+	}
+	return budget
+}
+
+// windowStart returns the first visible index so that index stays in view
+// inside a list of count entries showing budget rows at once.
+func windowStart(count, index, budget int) int {
+	if count <= budget {
+		return 0
+	}
+	start := index - budget/2
+	if start < 0 {
+		start = 0
+	}
+	if start+budget > count {
+		start = count - budget
+	}
+	return start
 }
 
 // modalTitleSeparator draws a rule under the modal title so the title reads as
@@ -3959,7 +3992,17 @@ func (m *Model) addonMountModalLines() []string {
 	case phaseError:
 		lines = append(lines, errorStyle.Render(errorText(m.addonChoiceErr)))
 	case phaseReady:
-		for index, addon := range m.addonChoices {
+		budget := m.modalListBudget() - 2 // recreate line and hint below
+		start := windowStart(len(m.addonChoices), m.addonChoiceIndex, budget)
+		end := start + budget
+		if end > len(m.addonChoices) {
+			end = len(m.addonChoices)
+		}
+		if start > 0 {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+		}
+		for index := start; index < end; index++ {
+			addon := m.addonChoices[index]
 			checked := "[ ] "
 			if m.addonChoiceSelected[addon.Name] {
 				checked = "[x] "
@@ -3973,6 +4016,9 @@ func (m *Model) addonMountModalLines() []string {
 			} else {
 				lines = append(lines, "  "+row)
 			}
+		}
+		if end < len(m.addonChoices) {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.addonChoices)-end)))
 		}
 	default:
 		lines = append(lines, mutedStyle.Render("Add-on list is not available"))
@@ -4044,7 +4090,17 @@ func (m *Model) filePickerModalLines() []string {
 	case phaseEmpty:
 		lines = append(lines, mutedStyle.Render("No folders or .zip/.dump files here"))
 	case phaseReady:
-		for index, entry := range m.filePickerItems {
+		budget := m.modalListBudget()
+		start := windowStart(len(m.filePickerItems), m.filePickerIndex, budget)
+		end := start + budget
+		if end > len(m.filePickerItems) {
+			end = len(m.filePickerItems)
+		}
+		if start > 0 {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+		}
+		for index := start; index < end; index++ {
+			entry := m.filePickerItems[index]
 			label := entry.Name
 			if entry.Dir {
 				label += "/"
@@ -4054,6 +4110,9 @@ func (m *Model) filePickerModalLines() []string {
 			} else {
 				lines = append(lines, "  "+label)
 			}
+		}
+		if end < len(m.filePickerItems) {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.filePickerItems)-end)))
 		}
 	default:
 		lines = append(lines, mutedStyle.Render("not loaded"))
@@ -4072,7 +4131,17 @@ func (m *Model) selectModalLines() []string {
 	case phaseError:
 		lines = append(lines, errorStyle.Render(errorText(m.selectErr)))
 	case phaseReady:
-		for index, item := range m.selectItems {
+		budget := m.modalListBudget()
+		start := windowStart(len(m.selectItems), m.selectIndex, budget)
+		end := start + budget
+		if end > len(m.selectItems) {
+			end = len(m.selectItems)
+		}
+		if start > 0 {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+		}
+		for index := start; index < end; index++ {
+			item := m.selectItems[index]
 			label := item.Label
 			if item.Hint != "" {
 				label += "  " + mutedStyle.Render(item.Hint)
@@ -4082,6 +4151,9 @@ func (m *Model) selectModalLines() []string {
 			} else {
 				lines = append(lines, "  "+label)
 			}
+		}
+		if end < len(m.selectItems) {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.selectItems)-end)))
 		}
 	default:
 		lines = append(lines, mutedStyle.Render("Options are not available"))

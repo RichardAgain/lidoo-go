@@ -123,7 +123,7 @@ func TestCreateProfileRejectsDuplicateName(t *testing.T) {
 	}
 }
 
-func TestCreateProfileQueuesRunWithVersion(t *testing.T) {
+func TestCreateProfileQueuesCreateWithoutRun(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.modal = modalCreateProfile
 	model.createProfileVersion = "18"
@@ -131,13 +131,16 @@ func TestCreateProfileQueuesRunWithVersion(t *testing.T) {
 
 	cmd := model.submitCreateProfile()
 	if cmd == nil {
-		t.Fatal("valid profile should queue a run task")
+		t.Fatal("valid profile should queue a create task")
 	}
-	if model.pendingTask == nil || model.pendingTask.Kind != taskRun {
-		t.Fatalf("pending task = %+v, want run", model.pendingTask)
+	if model.pendingTask == nil || model.pendingTask.Kind != taskCreate {
+		t.Fatalf("pending task = %+v, want create", model.pendingTask)
 	}
 	if model.pendingTask.ProfileName != "fresh" || model.pendingTask.Version != "18" {
 		t.Fatalf("pending task = %+v", model.pendingTask)
+	}
+	if model.pendingTask.Wait {
+		t.Fatal("create should not wait for readiness")
 	}
 }
 
@@ -551,5 +554,54 @@ func TestCKeyCancelsTaskWithoutQuitting(t *testing.T) {
 	}
 	if !model.taskCancelRequested {
 		t.Fatal("c should request task cancellation")
+	}
+}
+
+func TestEmptyStateWhenNoProfiles(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.loading = false
+	view := ansi.Strip(model.rightView(60))
+	if !strings.Contains(view, "create your first container") {
+		t.Fatalf("empty state = %q", view)
+	}
+}
+
+func TestMoveFocusStaysOnProfilesWhenEmpty(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusDatabases
+
+	model.moveFocus(1)
+	if model.focus != focusProfiles {
+		t.Fatalf("focus = %v, want profiles", model.focus)
+	}
+}
+
+func TestModalTitleSeparatorAddsRule(t *testing.T) {
+	lines := modalTitleSeparator([]string{"Title", "body"}, 40)
+	if len(lines) != 3 {
+		t.Fatalf("lines = %d, want 3", len(lines))
+	}
+	if !strings.Contains(lines[1], "─") {
+		t.Fatalf("separator = %q", lines[1])
+	}
+	if len(modalTitleSeparator([]string{"only"}, 40)) != 1 {
+		t.Fatal("a single line should be unchanged")
+	}
+}
+
+func TestFitViewClampsWidthAndHeight(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width = 20
+	model.height = 3
+
+	view := model.fitView("a very long line that overflows\nline2\nline3\nline4\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) > 3 {
+		t.Fatalf("lines = %d, want at most 3", len(lines))
+	}
+	for _, line := range lines {
+		if ansi.StringWidth(line) > 20 {
+			t.Fatalf("line %q is wider than 20", line)
+		}
 	}
 }

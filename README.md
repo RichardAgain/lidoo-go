@@ -257,9 +257,10 @@ If startup exits or times out, inspect `lidoo logs --name testing`.
 
 Profiles:
 
-- `n` creates a profile: choose an Odoo version from a select (discovered from
-  `docker/Dockerfile.*`, with already-built images tagged) or type a custom
-  one, then name the profile. It is created and started immediately.
+- `n` (or `c`) creates a profile: choose an Odoo version from a select
+  (discovered from `docker/Dockerfile.*`, with already-built images tagged) or
+  type a custom one, then name it. The profile is added to workspace state with
+  that version and is **not** started; start it later with `space`.
 - `e` opens a settings panel. It lists one row per setting and only the field
   you edit is persisted, so changing the database filter mode does not touch the
   master password and vice versa:

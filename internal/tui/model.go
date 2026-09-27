@@ -854,6 +854,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openAdminPasswordForm()
 		}
 	case "c":
+		if m.focus == focusProfiles {
+			return m, m.startCreateProfile()
+		}
 		if m.focus == focusAddons {
 			m.openCloneAddonForm()
 		}
@@ -1541,7 +1544,7 @@ func (m *Model) submitCreateProfile() tea.Cmd {
 		}
 	}
 	m.modal = modalNone
-	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Version: m.createProfileVersion, Wait: true})
+	return m.queueTask(taskRequest{Kind: taskCreate, ProfileName: name, Version: m.createProfileVersion})
 }
 
 func (m *Model) openProfileConfig() tea.Cmd {
@@ -2780,6 +2783,9 @@ func (m *Model) stopLogStream() {
 }
 
 func (m *Model) moveFocus(delta int) tea.Cmd {
+	if m.selectedProfileName() == "" {
+		return m.setFocus(focusProfiles)
+	}
 	return m.setFocus(focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount)))
 }
 
@@ -2897,16 +2903,16 @@ func (m *Model) View() string {
 	if m.logViewerOpen {
 		view := m.logViewerView()
 		if m.modal != modalNone {
-			return m.modalOverlay(view)
+			return m.modalOverlay(m.fitView(view))
 		}
-		return view
+		return m.fitView(view)
 	}
 	if m.width < 72 || m.height < 14 {
 		view := m.smallView()
 		if m.modal != modalNone {
-			return m.modalOverlay(view)
+			return m.modalOverlay(m.fitView(view))
 		}
-		return view
+		return m.fitView(view)
 	}
 
 	leftWidth := m.width / 3
@@ -2918,19 +2924,37 @@ func (m *Model) View() string {
 	}
 	rightWidth := m.width - leftWidth - 3
 	if rightWidth < 24 {
-		return m.smallView()
+		return m.fitView(m.smallView())
 	}
 
 	mainHeight := m.height - 2 // separator and footer
-	left := lipgloss.NewStyle().Width(leftWidth).Height(mainHeight).Render(m.leftView(leftWidth))
-	right := lipgloss.NewStyle().Width(rightWidth).Height(mainHeight).Render(m.rightView(rightWidth))
+	left := lipgloss.NewStyle().Width(leftWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.leftView(leftWidth))
+	right := lipgloss.NewStyle().Width(rightWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.rightView(rightWidth))
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 	footer := m.footerView()
 	view := main + "\n" + mutedStyle.Render(strings.Repeat("─", m.width)) + "\n" + footer
 	if m.modal != modalNone {
-		return m.modalOverlay(view)
+		return m.modalOverlay(m.fitView(view))
 	}
-	return view
+	return m.fitView(view)
+}
+
+// fitView keeps the frame inside the terminal: no line wider than the window
+// (which would wrap and desynchronize Bubble Tea's renderer) and no more lines
+// than the window height. Long task output and log lines are the usual cause of
+// the corruption seen when switching panels.
+func (m *Model) fitView(view string) string {
+	if m.width <= 0 || m.height <= 0 {
+		return view
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+	for index, line := range lines {
+		lines[index] = ansi.Truncate(line, m.width, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) modalOverlay(background string) string {
@@ -2953,7 +2977,7 @@ func (m *Model) modalOverlay(background string) string {
 		modalLine := modalLines[row-top]
 		base[row] = ansi.Cut(base[row], 0, left) + modalLine + ansi.Cut(base[row], left+modalWidth, m.width)
 	}
-	return strings.Join(base, "\n")
+	return m.fitView(strings.Join(base, "\n"))
 }
 
 func (m *Model) leftView(width int) string {
@@ -3091,6 +3115,18 @@ func (m *Model) addonRows() string {
 }
 
 func (m *Model) rightView(width int) string {
+	if m.selectedProfileName() == "" && !m.loading {
+		height := m.height - 2
+		if height < 1 {
+			height = 1
+		}
+		return lipgloss.NewStyle().
+			Width(width).
+			Height(height).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render("create your first container  ·  press c or n")
+	}
+
 	var content string
 	switch m.focus {
 	case focusProfiles:
@@ -3619,6 +3655,9 @@ func (m *Model) row(value string, selected bool) string {
 
 func (m *Model) footerView() string {
 	keys := "tab/←/→ focus  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+	if m.focus == focusProfiles && m.selectedProfileName() == "" {
+		keys = "c create  ctrl+r refresh  ? help  q/ctrl+c quit"
+	}
 	if m.focus == focusProfiles && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
@@ -3821,7 +3860,8 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("type a lowercase name  enter create and run  esc cancel"),
+			mutedStyle.Render("adds the profile to state with this version; start it later with space"),
+			mutedStyle.Render("type a lowercase name  enter create  esc cancel"),
 		)
 	case modalProfileSettings:
 		lines = m.profileSettingsModalLines()
@@ -3881,7 +3921,22 @@ func (m *Model) modalView() string {
 	if modalWidth > 72 {
 		modalWidth = 72
 	}
+	lines = modalTitleSeparator(lines, modalWidth)
 	return lipgloss.NewStyle().Width(modalWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(activeBorderStyle).Render(strings.Join(lines, "\n"))
+}
+
+// modalTitleSeparator draws a rule under the modal title so the title reads as
+// a header instead of blending into the body.
+func modalTitleSeparator(lines []string, width int) []string {
+	if len(lines) < 2 || width < 1 {
+		return lines
+	}
+	separatorWidth := width - 4 // modal horizontal padding
+	if separatorWidth < 1 {
+		separatorWidth = 1
+	}
+	separator := lipgloss.NewStyle().Foreground(activeBorderStyle).Render(strings.Repeat("─", separatorWidth))
+	return append([]string{lines[0], separator}, lines[1:]...)
 }
 
 func (m *Model) addonMountModalLines() []string {

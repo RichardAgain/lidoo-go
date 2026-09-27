@@ -35,6 +35,7 @@ func main() {
 	flags.SetOutput(os.Stderr)
 
 	var name, version, database, modules, format string
+	var destination string
 	var updateAll, yes, force, ifExists, filestore, noFilestore bool
 	var copyDatabase, move, neutralize, follow, waitForReady bool
 	var jobs, tail int
@@ -44,6 +45,7 @@ func main() {
 	flags.StringVar(&name, "name", "", "container name")
 	flags.StringVar(&version, "version", "", "Odoo version")
 	flags.StringVar(&database, "database", "", "database name")
+	flags.StringVar(&destination, "destination", "", "restore destination database (defaults to --database or the dump name)")
 	flags.StringVar(&modules, "modules", "base", "comma-separated modules to install")
 	flags.StringVar(&dbFilterMode, "db-filter-mode", "", "database filter mode: profile, disabled, or custom")
 	flags.StringVar(&dbFilterPattern, "db-filter-pattern", "", "custom database filter regular expression")
@@ -181,7 +183,22 @@ func main() {
 		}
 		_, err = service.BackupDatabase(context.Background(), name, database, backupPath, format, force, ifExists, filestore && !noFilestore, databaseOptions)
 	case "restore":
-		_, err = service.RestoreDatabase(context.Background(), name, database, positional[0], copyDatabase && !move, force, neutralize, jobs, databaseOptions)
+		if destination != "" && database != "" && destination != database {
+			err = errors.New("--destination and --database disagree; pass only one")
+			break
+		}
+		target := destination
+		if target == "" {
+			target = database
+		}
+		if target == "" {
+			var existing []odoo.Database
+			if databases, listErr := service.Databases(context.Background(), name); listErr == nil {
+				existing = databases
+			}
+			target = odoo.DeriveRestoreDestination(positional[0], existing)
+		}
+		_, err = service.RestoreDatabase(context.Background(), name, target, positional[0], copyDatabase && !move, force, neutralize, jobs, databaseOptions)
 	case "run":
 		err = service.RunProfile(context.Background(), app.RunProfileInput{Name: name, Version: version}, profileOptions)
 		if err == nil && waitForReady {
@@ -992,7 +1009,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  update --name <profile> --database <database> [--update-all]")
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
 	fmt.Fprintln(os.Stderr, "  backup --name <profile> --database <database> [options] [<destination>]")
-	fmt.Fprintln(os.Stderr, "  restore --name <profile> --database <database> [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
+	fmt.Fprintln(os.Stderr, "  restore --name <profile> [--destination <database>|--database <database>] [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
+	fmt.Fprintln(os.Stderr, "          destination defaults to --database, then to a unique name derived from <source>")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
 	fmt.Fprintln(os.Stderr, "  config --name <profile> [--db-filter-mode profile|disabled|custom] [--db-filter-pattern <regex>] [--admin-passwd <password>]")
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")

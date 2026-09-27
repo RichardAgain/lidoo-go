@@ -184,7 +184,7 @@ go run ./cmd backup \
 
 go run ./cmd restore \
   --name testing \
-  --database testing_db \
+  --destination testing_db \
   --force \
   --neutralize \
   ./backups/testing.zip
@@ -196,7 +196,10 @@ final positional path overrides this default. Non-zip formats require an
 explicit destination path. `backup` supports `--force`, `--if-exists`,
 `--format zip|dump|folder`, and `--filestore`/`--no-filestore`.
 `restore` supports `--copy`/`--move`,
-`--force`, `--neutralize`, and `--jobs N`.
+`--force`, `--neutralize`, and `--jobs N`. The target database comes from
+`--destination` (preferred) or `--database`; when neither is given it is
+derived from the dump file name and made unique against existing databases, so
+a restore never silently replaces an existing database.
 
 The selected profile must be running. These commands execute
 `click-odoo-initdb`, `click-odoo-update`, `click-odoo-dropdb`,

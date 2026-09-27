@@ -1165,38 +1165,7 @@ func (m *Model) openRestoreForm(source string) {
 // defaultRestoreDestination derives a fresh, non-colliding database name from
 // the dump file name so restoring never silently targets an existing database.
 func (m *Model) defaultRestoreDestination(source string) string {
-	base := strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
-	base = sanitizeDatabaseName(base)
-	if base == "" {
-		base = "restored"
-	}
-	return m.uniqueDatabaseName(base)
-}
-
-func sanitizeDatabaseName(value string) string {
-	var builder strings.Builder
-	for _, character := range strings.ToLower(value) {
-		switch {
-		case character >= 'a' && character <= 'z',
-			character >= '0' && character <= '9',
-			character == '_', character == '-', character == '.':
-			builder.WriteRune(character)
-		default:
-			builder.WriteRune('_')
-		}
-	}
-	return strings.Trim(builder.String(), "_.-")
-}
-
-func (m *Model) uniqueDatabaseName(base string) string {
-	if !m.restoreDestinationExists(base) {
-		return base
-	}
-	candidate := base + "_restore"
-	for index := 2; m.restoreDestinationExists(candidate); index++ {
-		candidate = fmt.Sprintf("%s_restore_%d", base, index)
-	}
-	return candidate
+	return odoo.DeriveRestoreDestination(source, m.databases)
 }
 
 func (m *Model) restoreDestinationExists(name string) bool {

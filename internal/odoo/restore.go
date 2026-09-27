@@ -3,10 +3,55 @@ package odoo
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 )
+
+// DeriveRestoreDestination turns a dump path into a fresh, non-colliding
+// database name: the sanitized file base, suffixed with _restore when it
+// already exists. Both the CLI and the TUI use it so a restore never silently
+// targets an existing database.
+func DeriveRestoreDestination(source string, existing []Database) string {
+	base := sanitizeDatabaseName(strings.TrimSuffix(filepath.Base(source), filepath.Ext(source)))
+	if base == "" {
+		base = "restored"
+	}
+	if !databaseNameExists(base, existing) {
+		return base
+	}
+	candidate := base + "_restore"
+	for index := 2; databaseNameExists(candidate, existing); index++ {
+		candidate = fmt.Sprintf("%s_restore_%d", base, index)
+	}
+	return candidate
+}
+
+func databaseNameExists(name string, existing []Database) bool {
+	for _, database := range existing {
+		if database.Logical == name || database.Physical == name {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeDatabaseName(value string) string {
+	var builder strings.Builder
+	for _, character := range strings.ToLower(value) {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= '0' && character <= '9',
+			character == '_', character == '-', character == '.':
+			builder.WriteRune(character)
+		default:
+			builder.WriteRune('_')
+		}
+	}
+	return strings.Trim(builder.String(), "_.-")
+}
 
 func Restore(name, database, source string, copyDatabase, force, neutralize bool, jobs int, state files.State, options ...OperationOptions) (result OperationResult, err error) {
 	stdout, stderr, operationOptions := newOperationStreams(options)

@@ -164,3 +164,14 @@ func TestConfigureProfile(t *testing.T) {
 		})
 	}
 }
+
+func TestReadAdminPasswordFromEnv(t *testing.T) {
+	t.Setenv("LIDOO_ADMIN_PASSWORD", "master-secret")
+	got, err := readAdminPassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "master-secret" {
+		t.Fatalf("password = %q", got)
+	}
+}

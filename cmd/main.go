@@ -12,6 +12,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/x/term"
+
 	"lidoo/internal/addons"
 	"lidoo/internal/app"
 	"lidoo/internal/docker"
@@ -225,7 +227,7 @@ func main() {
 		}
 	case "db":
 		if len(positional) == 0 {
-			err = errors.New("usage: lidoo db list|info|shell --name <profile> [--database <database>]")
+			err = errors.New("usage: lidoo db list|info|shell|set-password --name <profile> [--database <database>]")
 		} else {
 			switch positional[0] {
 			case "list":
@@ -250,8 +252,22 @@ func main() {
 				} else if err == nil {
 					err = odoo.ShellDatabase(profileName, databaseName, state)
 				}
+			case "set-password", "passwd":
+				var profileName, databaseName string
+				profileName, databaseName, err = parseDBArgsWithDatabase(positional[1:], name, "", "set-password")
+				if err == nil {
+					var password string
+					password, err = readAdminPassword()
+					if err == nil {
+						_, err = odoo.SetAdminPassword(profileName, databaseName, password, state, odoo.OperationOptions{
+							Context:     context.Background(),
+							Output:      os.Stdout,
+							ErrorOutput: os.Stderr,
+						})
+					}
+				}
 			default:
-				err = fmt.Errorf("unknown db command %q; use list, info, or shell", positional[0])
+				err = fmt.Errorf("unknown db command %q; use list, info, shell, or set-password", positional[0])
 			}
 		}
 	case "addons":
@@ -641,7 +657,14 @@ func commandNeedsSharedServices(command string, positional []string) bool {
 		"init", "update", "drop", "backup", "restore":
 		return true
 	case "db":
-		return len(positional) > 0 && (positional[0] == "list" || positional[0] == "info" || positional[0] == "shell")
+		if len(positional) == 0 {
+			return false
+		}
+		switch positional[0] {
+		case "list", "info", "shell", "set-password", "passwd":
+			return true
+		}
+		return false
 	case "addons":
 		if len(positional) == 0 || (positional[0] != "attach" && positional[0] != "detach") {
 			return false
@@ -653,6 +676,38 @@ func commandNeedsSharedServices(command string, positional []string) bool {
 		}
 	}
 	return false
+}
+
+// readAdminPassword takes the Odoo admin user password from
+// LIDOO_ADMIN_PASSWORD when set, otherwise prompts on a terminal without
+// echoing. The password never reaches argv.
+func readAdminPassword() (string, error) {
+	if value := os.Getenv("LIDOO_ADMIN_PASSWORD"); value != "" {
+		return value, nil
+	}
+	fd := os.Stdin.Fd()
+	if !term.IsTerminal(fd) {
+		return "", errors.New("set LIDOO_ADMIN_PASSWORD or run from a terminal")
+	}
+	fmt.Fprint(os.Stderr, "new admin password: ")
+	first, err := term.ReadPassword(fd)
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprint(os.Stderr, "confirm admin password: ")
+	second, err := term.ReadPassword(fd)
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	fmt.Fprintln(os.Stderr)
+	if len(first) == 0 {
+		return "", errors.New("password cannot be empty")
+	}
+	if string(first) != string(second) {
+		return "", errors.New("passwords do not match")
+	}
+	return string(first), nil
 }
 
 func confirmProfileRemoval(confirmation app.ProfileConfirmation) (bool, error) {
@@ -943,6 +998,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
 	fmt.Fprintln(os.Stderr, "  db info --name <profile> --database <database>")
 	fmt.Fprintln(os.Stderr, "  db shell --name <profile> --database <database>")
+	fmt.Fprintln(os.Stderr, "  db set-password --name <profile> --database <database>   (password from LIDOO_ADMIN_PASSWORD or prompt)")
 	fmt.Fprintln(os.Stderr, "  profile export --name <profile> <file>")
 	fmt.Fprintln(os.Stderr, "  profile import <file> [--yes]")
 	fmt.Fprintln(os.Stderr, "       lidoo addons list")

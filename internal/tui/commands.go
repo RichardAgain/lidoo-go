@@ -129,7 +129,7 @@ func LoadAddonsCmd(ctx context.Context, service *app.Service, profileName string
 		if service == nil {
 			return AddonsFailedMsg{RequestID: requestID, ProfileName: profileName, Err: errors.New("workspace service is unavailable")}
 		}
-		addons, err := service.Addons(ctx, profileName)
+		addons, err := service.AllAddons(ctx)
 		if err != nil {
 			return AddonsFailedMsg{RequestID: requestID, ProfileName: profileName, Err: err}
 		}

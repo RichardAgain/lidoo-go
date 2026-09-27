@@ -433,7 +433,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.addons = append([]addons.AddonStatus(nil), msg.Addons...)
-		m.addonIndex = 0
+		m.addonIndex = min(m.addonIndex, max(0, len(m.addons)-1))
 		m.addonErr = nil
 		if len(m.addons) == 0 {
 			m.addonPhase = phaseEmpty
@@ -441,11 +441,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addonPhase = phaseReady
 		}
 		if m.modal == modalAddonMount && !m.addonMountAttach && msg.ProfileName == m.addonChoiceProfile {
-			m.addonChoices = append([]addons.AddonStatus(nil), m.addons...)
+			m.addonChoices = attachedAddons(m.addons, msg.ProfileName)
 			m.addonChoiceIndex = 0
 			m.addonChoiceSelected = make(map[string]bool, len(m.addonChoices))
 			m.addonChoiceErr = nil
 			m.addonChoicePhase = m.addonPhase
+			if len(m.addonChoices) == 0 {
+				m.addonChoicePhase = phaseEmpty
+			}
 		}
 		return m, nil
 	case AddonsFailedMsg:
@@ -775,6 +778,19 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if profile != nil {
 				return m, OpenProfileURLCmd(profile.URL)
 			}
+		} else if m.focus == focusAddons {
+			addon := m.selectedAddon()
+			profileName := m.selectedProfileName()
+			if addon == nil || profileName == "" || m.rejectMutatingAction() {
+				return m, nil
+			}
+			kind := taskAttachAddons
+			if addonAttached(*addon, profileName) {
+				kind = taskDetachAddons
+			}
+			return m, m.queueTask(taskRequest{
+				Kind: kind, ProfileName: profileName, AddonNames: []string{addon.Name},
+			})
 		}
 	case "x":
 		if m.focus == focusProfiles && m.selectedProfileName() != "" {
@@ -1246,8 +1262,11 @@ func (m *Model) openAddonMountChooser(attach bool) tea.Cmd {
 		return LoadAvailableAddonsCmd(m.ctx, m.service, profileName, m.addonChoiceRequest)
 	}
 
-	m.addonChoices = append([]addons.AddonStatus(nil), m.addons...)
+	m.addonChoices = attachedAddons(m.addons, profileName)
 	m.addonChoicePhase = m.addonPhase
+	if len(m.addonChoices) == 0 && m.addonChoicePhase == phaseReady {
+		m.addonChoicePhase = phaseEmpty
+	}
 	if m.addonChoicePhase == phaseIdle {
 		m.addonChoicePhase = phaseLoading
 		return LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest)
@@ -2886,6 +2905,25 @@ func (m *Model) selectedAddon() *addons.AddonStatus {
 	return &m.addons[m.addonIndex]
 }
 
+func addonAttached(addon addons.AddonStatus, profileName string) bool {
+	for _, attachedProfile := range addon.AttachedProfiles {
+		if attachedProfile == profileName {
+			return true
+		}
+	}
+	return false
+}
+
+func attachedAddons(statuses []addons.AddonStatus, profileName string) []addons.AddonStatus {
+	attached := make([]addons.AddonStatus, 0, len(statuses))
+	for _, addon := range statuses {
+		if addonAttached(addon, profileName) {
+			attached = append(attached, addon)
+		}
+	}
+	return attached
+}
+
 func (m *Model) profileIsRunning() bool {
 	profile := m.selectedProfile()
 	return profile != nil && strings.EqualFold(profile.State, "running")
@@ -3092,20 +3130,46 @@ func (m *Model) databaseTableRows(width int) string {
 	}).View()
 }
 
-func (m *Model) addonRows() string {
+func (m *Model) addonRows(width int) string {
 	switch m.addonPhase {
 	case phaseLoading:
 		return mutedStyle.Render("  loading...")
 	case phaseEmpty:
-		return mutedStyle.Render("  no attached add-ons")
+		return mutedStyle.Render("  no add-ons registered")
 	case phaseError:
 		return errorStyle.Render("  refresh failed")
 	case phaseReady:
-		rows := make([]string, 0, len(m.addons))
-		for index, addon := range m.addons {
-			rows = append(rows, m.row(addon.Name, index == m.addonIndex && m.focus == focusAddons))
+		rows := make([][]string, 0, len(m.addons))
+		profileName := m.selectedProfileName()
+		for _, addon := range m.addons {
+			branch := addon.Entry.Branch
+			source := addon.Entry.Source
+			if addon.Kind == "worktree" {
+				source = addon.Entry.WorktreeOf
+			}
+			if branch == "" {
+				branch = "—"
+			}
+			if source == "" {
+				source = "—"
+			}
+			attached := addonAttached(addon, profileName)
+			check := ""
+			if attached {
+				check = ""
+			}
+			row := []string{addon.Name, branch, source, check}
+			rows = append(rows, row)
 		}
-		return strings.Join(rows, "\n")
+		return (dataTable{
+			Columns: []dataTableColumn{
+				{Title: "NAME", Flex: 2, MinWidth: 12},
+				{Title: "BRANCH", Flex: 1, MinWidth: 8},
+				{Title: "SOURCE", Flex: 2, MinWidth: 10},
+				{Title: "", Width: 2},
+			},
+			Rows: rows, SelectedRow: m.addonIndex, Width: width,
+		}).View()
 	default:
 		return mutedStyle.Render("  not loaded")
 	}
@@ -3131,7 +3195,7 @@ func (m *Model) rightView(width int) string {
 	case focusDatabases:
 		content = m.databaseTabView(width)
 	case focusAddons:
-		content = m.addonTabView()
+		content = m.addonTabView(width)
 	default:
 		content = m.profileDetailView()
 	}
@@ -3501,15 +3565,13 @@ func (m *Model) databaseTabView(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *Model) addonTabView() string {
+func (m *Model) addonTabView(width int) string {
 	profileName := m.selectedProfileName()
 	if profileName == "" {
 		profileName = "none"
 	}
 	return strings.Join([]string{
-		titleStyle.Render("Add-ons: " + profileName),
-		m.addonRows(),
-		m.addonDetailView(),
+		m.addonRows(width),
 	}, "\n\n")
 }
 
@@ -3577,40 +3639,6 @@ func (m *Model) profileDetailView() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *Model) addonDetailView() string {
-	lines := []string{titleStyle.Render("Add-on details")}
-	if m.selectedProfileName() == "" {
-		return strings.Join(append(lines, mutedStyle.Render("Select a profile")), "\n")
-	}
-	switch m.addonPhase {
-	case phaseLoading:
-		return strings.Join(append(lines, mutedStyle.Render("Loading attached add-ons...")), "\n")
-	case phaseEmpty:
-		return strings.Join(append(lines, mutedStyle.Render("No add-ons attached")), "\n")
-	case phaseError:
-		return strings.Join(append(lines, errorStyle.Render(errorText(m.addonErr))), "\n")
-	}
-	addon := m.selectedAddon()
-	if addon == nil {
-		return strings.Join(append(lines, mutedStyle.Render("No add-on selected")), "\n")
-	}
-	lines = append(lines, activeStyle.Render(addon.Name), "type: "+addon.Kind)
-	if addon.Entry.Source != "" {
-		lines = append(lines, "source: "+addon.Entry.Source)
-	}
-	if addon.Entry.WorktreeOf != "" {
-		lines = append(lines, "worktree parent: "+addon.Entry.WorktreeOf)
-	}
-	if addon.Entry.Branch != "" {
-		lines = append(lines, "branch: "+addon.Entry.Branch)
-	}
-	lines = append(lines, "path: "+addon.Path, "repository: "+repositoryState(*addon))
-	if addon.Kind == "worktree" {
-		lines = append(lines, "parent status: "+parentState(*addon))
-	}
-	return strings.Join(lines, "\n")
-}
-
 func (m *Model) row(value string, selected bool) string {
 	if !selected {
 		return "  " + value
@@ -3634,7 +3662,7 @@ func (m *Model) footerView() string {
 		keys += "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.focus == focusAddons {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+		keys = "tab/←/→ focus  ↑/↓ add-ons  enter attach/detach  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
@@ -3649,7 +3677,7 @@ func (m *Model) footerView() string {
 			keys += "  L logs  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusAddons {
-			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter attach/detach  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -4176,7 +4204,7 @@ func (m *Model) smallView() string {
 		lines = append(lines, "", m.databaseTabView(m.width))
 	}
 	if m.focus == focusAddons && m.selectedProfileName() != "" {
-		lines = append(lines, "", m.addonTabView())
+		lines = append(lines, "", m.addonTabView(m.width))
 	}
 	hints := profileActionHints()
 	if m.focus == focusDatabases {
@@ -4221,23 +4249,6 @@ func connectionState(available bool) string {
 		return "available"
 	}
 	return "unavailable"
-}
-
-func repositoryState(addon addons.AddonStatus) string {
-	if !addon.PathAvailable {
-		return warningStyle.Render("unavailable")
-	}
-	if addon.Dirty {
-		return warningStyle.Render("dirty")
-	}
-	return runningStyle.Render("clean")
-}
-
-func parentState(addon addons.AddonStatus) string {
-	if addon.ParentAvailable {
-		return runningStyle.Render("available")
-	}
-	return warningStyle.Render("unavailable")
 }
 
 func errorText(err error) string {

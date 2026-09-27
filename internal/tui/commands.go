@@ -108,31 +108,19 @@ func LoadDatabasesCmd(ctx context.Context, service *app.Service, profileName str
 	}
 }
 
-func LoadDatabaseInfoCmd(ctx context.Context, service *app.Service, profileName string, database odoo.Database, requestID uint64) tea.Cmd {
+func LoadDatabaseInfosCmd(ctx context.Context, service *app.Service, profileName string, databases []odoo.Database, requestID uint64) tea.Cmd {
 	return func() tea.Msg {
-		if service == nil {
-			return DatabaseInfoFailedMsg{
-				RequestID:        requestID,
-				ProfileName:      profileName,
-				DatabasePhysical: database.Physical,
-				Err:              errors.New("workspace service is unavailable"),
+		results := make([]databaseInfoResult, 0, len(databases))
+		for _, database := range databases {
+			result := databaseInfoResult{DatabasePhysical: database.Physical}
+			if service == nil {
+				result.Err = errors.New("workspace service is unavailable")
+			} else {
+				result.Info, result.Err = service.Database(ctx, profileName, database.Logical)
 			}
+			results = append(results, result)
 		}
-		info, err := service.Database(ctx, profileName, database.Logical)
-		if err != nil {
-			return DatabaseInfoFailedMsg{
-				RequestID:        requestID,
-				ProfileName:      profileName,
-				DatabasePhysical: database.Physical,
-				Err:              err,
-			}
-		}
-		return DatabaseInfoLoadedMsg{
-			RequestID:        requestID,
-			ProfileName:      profileName,
-			DatabasePhysical: database.Physical,
-			Info:             info,
-		}
+		return DatabaseInfosLoadedMsg{RequestID: requestID, ProfileName: profileName, Results: results}
 	}
 }
 

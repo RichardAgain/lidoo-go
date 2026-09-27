@@ -159,8 +159,7 @@ type Model struct {
 	databaseErr            error
 	databaseRequest        uint64
 	databaseInfoPhase      resourcePhase
-	databaseInfo           odoo.DatabaseInfo
-	databaseInfoErr        error
+	databaseInfos          map[string]odoo.DatabaseInfo
 	addonPhase             resourcePhase
 	addonErr               error
 	addonChoiceRequest     uint64
@@ -399,17 +398,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.databases) == 0 {
 			m.databasePhase = phaseEmpty
 			m.databaseInfoPhase = phaseEmpty
-			m.databaseInfoErr = nil
+			m.databaseInfos = nil
 			return m, nil
 		}
 		m.databasePhase = phaseReady
-		return m, m.beginDatabaseInfoLoad()
+		return m, m.beginDatabaseInfosLoad()
 	case DatabasesFailedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
 			return m, nil
 		}
 		m.databaseErr = msg.Err
-		m.databaseInfoErr = msg.Err
 		m.databaseInfoPhase = phaseUnavailable
 		if m.profileIsRunning() {
 			m.databasePhase = phaseError
@@ -417,20 +415,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.databasePhase = phaseUnavailable
 		}
 		return m, nil
-	case DatabaseInfoLoadedMsg:
-		if !m.currentDatabaseRequest(msg.RequestID, msg.ProfileName, msg.DatabasePhysical) {
+	case DatabaseInfosLoadedMsg:
+		if msg.RequestID != m.databaseRequest || msg.ProfileName != m.selectedProfileName() {
 			return m, nil
+		}
+		m.databaseInfos = make(map[string]odoo.DatabaseInfo, len(msg.Results))
+		for _, result := range msg.Results {
+			if result.Err != nil {
+				continue
+			}
+			m.databaseInfos[result.DatabasePhysical] = result.Info
 		}
 		m.databaseInfoPhase = phaseReady
-		m.databaseInfo = msg.Info
-		m.databaseInfoErr = nil
-		return m, nil
-	case DatabaseInfoFailedMsg:
-		if !m.currentDatabaseRequest(msg.RequestID, msg.ProfileName, msg.DatabasePhysical) {
-			return m, nil
-		}
-		m.databaseInfoPhase = phaseError
-		m.databaseInfoErr = msg.Err
 		return m, nil
 	case AddonsLoadedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -976,12 +972,15 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 		return m.setFocus(focusInfo)
 	}
 
-	row := y - (header + 4)
+	rowStart := header + 6
+	if m.databasePhase == phaseUnavailable || m.databasePhase == phaseError {
+		rowStart += 2
+	}
+	row := y - rowStart
 	switch m.focus {
 	case focusDatabases:
 		if row >= 0 && row < len(m.databases) && row != m.databaseIndex {
 			m.databaseIndex = row
-			return m.beginDatabaseInfoLoad()
 		}
 	case focusAddons:
 		if row >= 0 && row < len(m.addons) {
@@ -2472,7 +2471,6 @@ func (m *Model) refreshDatabasesAfterMissing() tea.Cmd {
 	m.databasePhase = phaseLoading
 	m.databaseErr = nil
 	m.databaseInfoPhase = phaseIdle
-	m.databaseInfoErr = nil
 	return LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest)
 }
 
@@ -2630,7 +2628,7 @@ func (m *Model) beginProfileResources() tea.Cmd {
 	m.databasePhase = phaseLoading
 	m.databaseErr = nil
 	m.databaseInfoPhase = phaseIdle
-	m.databaseInfoErr = nil
+	m.databaseInfos = nil
 	m.databases = nil
 	m.databaseIndex = 0
 	m.stopLogStream()
@@ -2691,7 +2689,6 @@ func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd
 		m.databasePhase = phaseLoading
 		m.databaseInfoPhase = phaseIdle
 		m.databaseErr = nil
-		m.databaseInfoErr = nil
 	}
 	commands := []tea.Cmd{LoadProfileDetailCmd(m.ctx, m.service, invalidation.ProfileName, m.profileRequest)}
 	if m.focus == focusProfiles {
@@ -2717,7 +2714,6 @@ func (m *Model) afterProfileDetailLoaded() tea.Cmd {
 	m.databasePhase = phaseLoading
 	m.databaseInfoPhase = phaseIdle
 	m.databaseErr = nil
-	m.databaseInfoErr = nil
 	return LoadDatabasesCmd(m.ctx, m.service, m.selectedProfileName(), m.profileRequest)
 }
 
@@ -2794,16 +2790,15 @@ func (m *Model) moveFocus(delta int) tea.Cmd {
 	return m.setFocus(focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount)))
 }
 
-func (m *Model) beginDatabaseInfoLoad() tea.Cmd {
+func (m *Model) beginDatabaseInfosLoad() tea.Cmd {
 	m.databaseRequest++
-	m.databaseInfoErr = nil
 	m.databaseInfoPhase = phaseLoading
-	database := m.selectedDatabase()
-	if database == nil {
+	m.databaseInfos = make(map[string]odoo.DatabaseInfo, len(m.databases))
+	if len(m.databases) == 0 {
 		m.databaseInfoPhase = phaseEmpty
 		return nil
 	}
-	return LoadDatabaseInfoCmd(m.ctx, m.service, m.selectedProfileName(), *database, m.databaseRequest)
+	return LoadDatabaseInfosCmd(m.ctx, m.service, m.selectedProfileName(), append([]odoo.Database(nil), m.databases...), m.databaseRequest)
 }
 
 func (m *Model) moveFocusedSelection(delta int) tea.Cmd {
@@ -2816,10 +2811,7 @@ func (m *Model) moveFocusedSelection(delta int) tea.Cmd {
 			return m.beginProfileResources()
 		}
 	case focusDatabases:
-		changed = m.moveIndex(&m.databaseIndex, len(m.databases), delta)
-		if changed {
-			return m.beginDatabaseInfoLoad()
-		}
+		m.moveIndex(&m.databaseIndex, len(m.databases), delta)
 	case focusAddons:
 		m.moveIndex(&m.addonIndex, len(m.addons), delta)
 	case focusInfo:
@@ -2851,11 +2843,6 @@ func (m *Model) currentAddonChoiceRequest(requestID uint64, profileName string) 
 
 func (m *Model) currentProfileRequest(requestID uint64, profileName string) bool {
 	return requestID == m.profileRequest && profileName != "" && profileName == m.selectedProfileName()
-}
-
-func (m *Model) currentDatabaseRequest(requestID uint64, profileName, databasePhysical string) bool {
-	database := m.selectedDatabase()
-	return requestID == m.databaseRequest && profileName == m.selectedProfileName() && database != nil && database.Physical == databasePhysical
 }
 
 func (m *Model) currentLogRequest(requestID uint64, profileName string) bool {
@@ -3069,35 +3056,40 @@ func (m *Model) profileCardStatus(profile docker.ProfileSummary) string {
 	return mutedStyle.Render(profile.URL)
 }
 
-func (m *Model) databaseRows() string {
-	switch m.databasePhase {
-	case phaseLoading:
-		return mutedStyle.Render("  loading...")
-	case phaseEmpty:
-		return mutedStyle.Render("  no databases found")
-	case phaseUnavailable:
-		if len(m.databases) == 0 {
-			return warningStyle.Render("  unavailable while stopped")
+func (m *Model) databaseTableRows(width int) string {
+	rows := make([][]string, 0, len(m.databases))
+	for _, database := range m.databases {
+		name := database.Logical
+		if name == "" {
+			name = database.Physical
 		}
-		return warningStyle.Render("  unavailable; showing last snapshot") + "\n" + m.databaseSnapshotRows()
-	case phaseError:
-		if len(m.databases) == 0 {
-			return errorStyle.Render("  refresh failed")
+		size := "—"
+		availability := "unknown"
+		if info, ok := m.databaseInfos[database.Physical]; ok {
+			if info.Size != "" {
+				size = info.Size
+			}
+			availability = connectionState(info.Available)
+		} else if m.databaseInfoPhase == phaseLoading {
+			size = "loading…"
+			availability = "checking"
 		}
-		return errorStyle.Render("  refresh failed; showing last snapshot") + "\n" + m.databaseSnapshotRows()
-	case phaseReady:
-		return m.databaseSnapshotRows()
-	default:
-		return mutedStyle.Render("  not loaded")
+		if m.databasePhase == phaseUnavailable {
+			availability = connectionState(false)
+		}
+		rows = append(rows, []string{name, size, availability})
 	}
-}
+	return (dataTable{
+		Columns: []dataTableColumn{
+			{Title: "NAME", Flex: 1, MinWidth: 12},
+			{Title: "SIZE", Width: 8},
+			{Title: "AVAILABILITY", Width: 14},
+		},
 
-func (m *Model) databaseSnapshotRows() string {
-	rows := make([]string, 0, len(m.databases))
-	for index, database := range m.databases {
-		rows = append(rows, m.row(databaseLabel(database), index == m.databaseIndex && m.focus == focusDatabases))
-	}
-	return strings.Join(rows, "\n")
+		Rows:        rows,
+		SelectedRow: m.databaseIndex,
+		Width:       width,
+	}).View()
 }
 
 func (m *Model) addonRows() string {
@@ -3137,7 +3129,7 @@ func (m *Model) rightView(width int) string {
 	case focusProfiles:
 		content = m.logView(width)
 	case focusDatabases:
-		content = m.databaseTabView()
+		content = m.databaseTabView(width)
 	case focusAddons:
 		content = m.addonTabView()
 	default:
@@ -3478,20 +3470,35 @@ func (m *Model) logContainer(width int, content string) string {
 	return m.logViewport.View()
 }
 
-func (m *Model) databaseTabView() string {
+func (m *Model) databaseTabView(width int) string {
 	profileName := m.selectedProfileName()
 	if profileName == "" {
 		profileName = "none"
 	}
-	title := "Databases: " + profileName
-	if m.databasePhase == phaseReady && len(m.databases) > 0 {
-		title += fmt.Sprintf("  (%d)", len(m.databases))
+	lines := []string{}
+	switch m.databasePhase {
+	case phaseLoading:
+		lines = append(lines, mutedStyle.Render("  loading databases..."))
+	case phaseEmpty:
+		lines = append(lines, mutedStyle.Render("  no databases found"))
+	case phaseUnavailable:
+		if len(m.databases) == 0 {
+			lines = append(lines, warningStyle.Render("  databases unavailable while stopped"))
+		} else {
+			lines = append(lines, warningStyle.Render("  unavailable while stopped; showing last snapshot"), "", m.databaseTableRows(width))
+		}
+	case phaseError:
+		if len(m.databases) == 0 {
+			lines = append(lines, errorStyle.Render("  refresh failed: "+errorText(m.databaseErr)))
+		} else {
+			lines = append(lines, errorStyle.Render("  refresh failed; showing last snapshot"), "", m.databaseTableRows(width))
+		}
+	case phaseReady:
+		lines = append(lines, m.databaseTableRows(width))
+	default:
+		lines = append(lines, mutedStyle.Render("  not loaded"))
 	}
-	return strings.Join([]string{
-		titleStyle.Render(title),
-		m.databaseRows(),
-		m.databaseDetailView(),
-	}, "\n\n")
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) addonTabView() string {
@@ -3568,53 +3575,6 @@ func (m *Model) profileDetailView() string {
 		"pending recreation: "+detail.PendingRecreation.String(),
 	)
 	return strings.Join(lines, "\n")
-}
-
-func (m *Model) databaseDetailView() string {
-	lines := []string{titleStyle.Render("Database details")}
-	if m.selectedProfileName() == "" {
-		return strings.Join(append(lines, mutedStyle.Render("Select a profile")), "\n")
-	}
-	switch m.databasePhase {
-	case phaseLoading:
-		return strings.Join(append(lines, mutedStyle.Render("Loading databases...")), "\n")
-	case phaseEmpty:
-		return strings.Join(append(lines, mutedStyle.Render("No databases found")), "\n")
-	case phaseUnavailable:
-		lines = append(lines, warningStyle.Render("Databases are unavailable while the profile is stopped"))
-	case phaseError:
-		lines = append(lines, errorStyle.Render(errorText(m.databaseErr)))
-	}
-	database := m.selectedDatabase()
-	if database == nil {
-		return strings.Join(append(lines, mutedStyle.Render("No database selected")), "\n")
-	}
-	lines = append(lines, activeStyle.Render(databaseLabel(*database)))
-	switch m.databaseInfoPhase {
-	case phaseLoading:
-		lines = append(lines, mutedStyle.Render("Loading database details..."))
-	case phaseError:
-		lines = append(lines, errorStyle.Render(errorText(m.databaseInfoErr)))
-	case phaseUnavailable:
-		lines = append(lines, warningStyle.Render("Database details are unavailable"))
-		if m.databaseInfo.Physical != "" {
-			lines = append(lines, mutedStyle.Render("Last known details"))
-			lines = appendDatabaseInfo(lines, m.databaseInfo)
-		}
-	case phaseReady:
-		lines = appendDatabaseInfo(lines, m.databaseInfo)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func appendDatabaseInfo(lines []string, info odoo.DatabaseInfo) []string {
-	return append(lines,
-		"logical database: "+info.Logical,
-		"physical database: "+info.Physical,
-		"size: "+info.Size,
-		"owner: "+info.Owner,
-		"connection: "+connectionState(info.Available),
-	)
 }
 
 func (m *Model) addonDetailView() string {
@@ -4213,7 +4173,7 @@ func (m *Model) smallView() string {
 		lines = append(lines, "", titleStyle.Render("Profiles"), strings.Join(cards, "\n\n"))
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
-		lines = append(lines, "", m.databaseTabView())
+		lines = append(lines, "", m.databaseTabView(m.width))
 	}
 	if m.focus == focusAddons && m.selectedProfileName() != "" {
 		lines = append(lines, "", m.addonTabView())
@@ -4258,9 +4218,9 @@ func profileState(state string) string {
 
 func connectionState(available bool) string {
 	if available {
-		return runningStyle.Render("available")
+		return "available"
 	}
-	return warningStyle.Render("unavailable")
+	return "unavailable"
 }
 
 func repositoryState(addon addons.AddonStatus) string {

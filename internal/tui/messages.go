@@ -60,18 +60,16 @@ type DatabasesFailedMsg struct {
 	Err         error
 }
 
-type DatabaseInfoLoadedMsg struct {
-	RequestID        uint64
-	ProfileName      string
+type databaseInfoResult struct {
 	DatabasePhysical string
 	Info             odoo.DatabaseInfo
+	Err              error
 }
 
-type DatabaseInfoFailedMsg struct {
-	RequestID        uint64
-	ProfileName      string
-	DatabasePhysical string
-	Err              error
+type DatabaseInfosLoadedMsg struct {
+	RequestID   uint64
+	ProfileName string
+	Results     []databaseInfoResult
 }
 
 type AddonsLoadedMsg struct {

@@ -14,7 +14,8 @@ import (
 type taskKind uint8
 
 const (
-	taskRun taskKind = iota
+	taskCreate taskKind = iota
+	taskRun
 	taskStop
 	taskRestart
 	taskRecreate
@@ -62,6 +63,8 @@ type taskRequest struct {
 
 func taskActionLabel(kind taskKind) string {
 	switch kind {
+	case taskCreate:
+		return "creating"
 	case taskRun:
 		return "starting"
 	case taskStop:
@@ -103,6 +106,8 @@ func taskActionLabel(kind taskKind) string {
 
 func taskLabel(kind taskKind) string {
 	switch kind {
+	case taskCreate:
+		return "create"
 	case taskRun:
 		return "run"
 	case taskStop:
@@ -165,6 +170,8 @@ func ExecuteProfileTaskCmd(ctx context.Context, service *app.Service, request ta
 			err = errors.New("workspace service is unavailable")
 		} else {
 			switch request.Kind {
+			case taskCreate:
+				err = service.CreateProfile(ctx, request.ProfileName, request.Version)
 			case taskRun:
 				err = service.RunProfile(ctx, app.RunProfileInput{Name: request.ProfileName, Version: request.Version}, profileOptions)
 			case taskStop:

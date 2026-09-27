@@ -33,6 +33,7 @@ type modalMode uint8
 
 const (
 	modalNone modalMode = iota
+	modalCreateProfile
 	modalConfirmRemove
 	modalRunVersion
 	modalConfirmDrop
@@ -133,6 +134,9 @@ type Model struct {
 	pendingDatabaseRefresh bool
 	modal                  modalMode
 	versionInput           string
+	createProfileName      string
+	createProfileVersion   string
+	createProfileErr       error
 	taskID                 uint64
 	pendingTask            *taskRequest
 	activeTaskKind         taskKind
@@ -604,7 +608,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.openAddonMountChooser(true)
 		}
 	case "c":
-		if m.focus == focusAddons {
+		if m.focus == focusProfiles {
+			m.openCreateProfileForm()
+		} else if m.focus == focusAddons {
 			m.openCloneAddonForm()
 		}
 	case "w":
@@ -679,6 +685,17 @@ func (m *Model) queueSelectedDatabaseTask(kind taskKind, updateAll bool) tea.Cmd
 		DatabasePhysical: m.taskDatabasePhysical,
 		UpdateAll:        updateAll,
 	})
+}
+
+func (m *Model) openCreateProfileForm() {
+	if m.rejectMutatingAction() {
+		return
+	}
+	m.createProfileName = ""
+	m.createProfileVersion = ""
+	m.createProfileErr = nil
+	m.formField = 0
+	m.modal = modalCreateProfile
 }
 
 func (m *Model) openDropConfirmation() {
@@ -855,6 +872,30 @@ func (m *Model) refreshProfiles() tea.Cmd {
 
 func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
+	case modalCreateProfile:
+		switch msg.String() {
+		case "esc":
+			m.modal = modalNone
+		case "enter":
+			return m, m.submitCreateProfile()
+		case "tab":
+			m.moveFormField(1)
+		case "shift+tab":
+			m.moveFormField(-1)
+		case "backspace", "ctrl+h":
+			m.removeFormText()
+			m.createProfileErr = nil
+		case "ctrl+u":
+			m.clearFormText()
+			m.createProfileErr = nil
+		default:
+			value := msg.String()
+			runes := []rune(value)
+			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+				m.appendFormText(value)
+				m.createProfileErr = nil
+			}
+		}
 	case modalConfirmRemove:
 		switch msg.String() {
 		case "esc", "n", "N":
@@ -1014,6 +1055,25 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) submitCreateProfile() tea.Cmd {
+	name := strings.TrimSpace(m.createProfileName)
+	version := strings.TrimSpace(m.createProfileVersion)
+	if name == "" {
+		m.createProfileErr = errors.New("container name is required")
+		return nil
+	}
+	if version == "" {
+		m.createProfileErr = errors.New("Odoo version is required")
+		return nil
+	}
+	if err := docker.ValidateProfileVersion(version); err != nil {
+		m.createProfileErr = err
+		return nil
+	}
+	m.modal = modalNone
+	return m.queueTask(taskRequest{Kind: taskCreate, ProfileName: name, Version: version})
+}
+
 func (m *Model) submitAddonForm() tea.Cmd {
 	switch m.modal {
 	case modalCloneAddon:
@@ -1123,6 +1183,8 @@ func (m *Model) queueRestoreTask() tea.Cmd {
 
 func (m *Model) formFieldCount() int {
 	switch m.modal {
+	case modalCreateProfile:
+		return 2
 	case modalCloneAddon:
 		return 4
 	case modalWorktreeAddon:
@@ -1192,6 +1254,14 @@ func (m *Model) toggleFormField() bool {
 
 func (m *Model) formText() *string {
 	switch m.modal {
+	case modalCreateProfile:
+		if m.formField == 0 {
+			return &m.createProfileName
+		}
+		if m.formField == 1 {
+			return &m.createProfileVersion
+		}
+		return nil
 	case modalCloneAddon:
 		switch m.formField {
 		case 0:
@@ -1694,6 +1764,10 @@ func (m *Model) stopLogStream() {
 }
 
 func (m *Model) moveFocus(delta int) tea.Cmd {
+	if m.selectedProfileName() == "" {
+		m.focus = focusProfiles
+		return nil
+	}
 	previousFocus := m.focus
 	m.focus = focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount))
 	if m.focus == focusProfiles {
@@ -2007,6 +2081,18 @@ func (m *Model) addonRows() string {
 }
 
 func (m *Model) rightView(width int) string {
+	if m.selectedProfileName() == "" {
+		height := m.height - 2
+		if height < 1 {
+			height = 1
+		}
+		return lipgloss.NewStyle().
+			Width(width).
+			Height(height).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render("create your first container")
+	}
+
 	var content string
 	switch m.focus {
 	case focusProfiles:
@@ -2293,8 +2379,12 @@ func (m *Model) row(value string, selected bool) string {
 
 func (m *Model) footerView() string {
 	keys := "tab/←/→ focus  ctrl+r refresh  ? help  q quit"
-	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? help  q quit"
+	if m.focus == focusProfiles {
+		if m.selectedProfileName() != "" {
+			keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? help  q quit"
+		} else {
+			keys = "tab/←/→ focus  c create  ctrl+r refresh  ? help  q quit"
+		}
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
 		keys = "tab/←/→ focus  ↑/↓ databases  i init"
@@ -2308,8 +2398,12 @@ func (m *Model) footerView() string {
 	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  ctrl+r refresh  q quit  ? hide help"
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
+		if m.focus == focusProfiles {
+			if m.selectedProfileName() != "" {
+				keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
+			} else {
+				keys = "tab/←/→ focus  c create  ctrl+r refresh  ? hide help"
+			}
 		}
 		if m.focus == focusDatabases && m.selectedProfileName() != "" {
 			keys = "tab/←/→ focus  ↑/↓/j/k databases  i init new database"
@@ -2332,7 +2426,7 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "enter open  x start  r restart  R recreate  s stop  d remove"
+	return "c create  enter open  x start  r restart  R recreate  s stop  d remove"
 }
 
 func databaseActionHints() string {
@@ -2361,6 +2455,18 @@ func (m *Model) modalView() string {
 			"",
 			mutedStyle.Render("enter/y confirm  n/esc cancel"),
 		}
+	case modalCreateProfile:
+		lines = []string{
+			titleStyle.Render("Create container"),
+			m.formLine("name", m.createProfileName, 0, true),
+			m.formLine("version", m.createProfileVersion, 1, true),
+			"Adds the container to workspace state without starting it.",
+			"Odoo version is required, e.g. 17 or 18.",
+		}
+		if m.createProfileErr != nil {
+			lines = append(lines, errorStyle.Render(m.createProfileErr.Error()))
+		}
+		lines = append(lines, "", mutedStyle.Render("tab field  type  enter create  esc cancel"))
 	case modalRunVersion:
 		lines = []string{
 			titleStyle.Render("Odoo version required"),
@@ -2597,6 +2703,9 @@ func (m *Model) smallView() string {
 		lines = append(lines, "", m.addonTabView())
 	}
 	hints := profileActionHints()
+	if m.focus == focusProfiles && m.selectedProfileName() == "" {
+		hints = "c create"
+	}
 	if m.focus == focusDatabases {
 		hints = "i init new database"
 		if m.selectedDatabase() != nil {

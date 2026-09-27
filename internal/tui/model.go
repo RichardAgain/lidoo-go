@@ -327,6 +327,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if listOnly && m.selectedProfileName() == m.profileResourceName {
 			return m, nil
 		}
+		if m.selectedProfileName() != "" && m.selectedProfileName() == m.profileResourceName {
+			return m, m.refreshProfileResources()
+		}
 		return m, m.beginProfileResources()
 	case ProfilesFailedMsg:
 		m.profileListOnlyRefresh = false
@@ -360,8 +363,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pendingDatabaseRefresh = false
-		m.profilePhase = phaseError
 		m.profileDetailErr = msg.Err
+		if m.profilePhase != phaseReady {
+			m.profilePhase = phaseError
+		}
 		return m, nil
 	case DatabasesLoadedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -408,11 +413,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.databaseErr = msg.Err
-		m.databaseInfoPhase = phaseUnavailable
-		if m.profileIsRunning() {
-			m.databasePhase = phaseError
-		} else {
-			m.databasePhase = phaseUnavailable
+		if m.databasePhase != phaseReady && m.databasePhase != phaseEmpty {
+			m.databaseInfoPhase = phaseUnavailable
+			if m.profileIsRunning() {
+				m.databasePhase = phaseError
+			} else {
+				m.databasePhase = phaseUnavailable
+			}
 		}
 		return m, nil
 	case DatabaseInfosLoadedMsg:
@@ -432,8 +439,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
 			return m, nil
 		}
+		selectedAddonName := ""
+		if selected := m.selectedAddon(); selected != nil {
+			selectedAddonName = selected.Name
+		}
 		m.addons = append([]addons.AddonStatus(nil), msg.Addons...)
 		m.addonIndex = min(m.addonIndex, max(0, len(m.addons)-1))
+		for index, addon := range m.addons {
+			if addon.Name == selectedAddonName {
+				m.addonIndex = index
+				break
+			}
+		}
 		m.addonErr = nil
 		if len(m.addons) == 0 {
 			m.addonPhase = phaseEmpty
@@ -455,8 +472,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
 			return m, nil
 		}
-		m.addonPhase = phaseError
 		m.addonErr = msg.Err
+		if m.addonPhase != phaseReady && m.addonPhase != phaseEmpty {
+			m.addonPhase = phaseError
+		}
 		if m.modal == modalAddonMount && !m.addonMountAttach && msg.ProfileName == m.addonChoiceProfile {
 			m.addonChoicePhase = phaseError
 			m.addonChoiceErr = msg.Err
@@ -1775,7 +1794,7 @@ func (m *Model) submitAdminPasswordForm() tea.Cmd {
 
 func (m *Model) refreshProfiles() tea.Cmd {
 	m.profileListOnlyRefresh = false
-	m.loading = true
+	m.loading = len(m.profiles) == 0
 	m.err = nil
 	return LoadProfilesCmd(m.ctx, m.service)
 }
@@ -2476,7 +2495,7 @@ func (m *Model) refreshAfterTask(profileName string) tea.Cmd {
 		m.taskProfileName = profileName
 	}
 	m.profileListOnlyRefresh = false
-	m.loading = true
+	m.loading = len(m.profiles) == 0
 	m.err = nil
 	return LoadProfilesCmd(m.ctx, m.service)
 }
@@ -2633,6 +2652,35 @@ func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
 			break
 		}
 	}
+}
+
+func (m *Model) refreshProfileResources() tea.Cmd {
+	profileName := m.selectedProfileName()
+	if profileName == "" {
+		return m.beginProfileResources()
+	}
+	m.profileRequest++
+	m.databaseRequest++
+	m.profileResourceName = profileName
+	m.pendingDatabaseRefresh = false
+	commands := []tea.Cmd{
+		LoadProfileDetailCmd(m.ctx, m.service, profileName, m.profileRequest),
+		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
+		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
+	}
+	if m.focus == focusProfiles {
+		commands = append(commands, m.refreshLogLoad())
+	}
+	return tea.Batch(commands...)
+}
+
+func (m *Model) refreshLogLoad() tea.Cmd {
+	preserveReadyView := m.logPhase == phaseReady
+	cmd := m.beginLogLoad()
+	if preserveReadyView && m.profileIsRunning() {
+		m.logPhase = phaseReady
+	}
+	return cmd
 }
 
 func (m *Model) beginProfileResources() tea.Cmd {
@@ -2811,8 +2859,10 @@ func (m *Model) moveFocus(delta int) tea.Cmd {
 
 func (m *Model) beginDatabaseInfosLoad() tea.Cmd {
 	m.databaseRequest++
-	m.databaseInfoPhase = phaseLoading
-	m.databaseInfos = make(map[string]odoo.DatabaseInfo, len(m.databases))
+	if m.databaseInfoPhase != phaseReady {
+		m.databaseInfoPhase = phaseLoading
+		m.databaseInfos = make(map[string]odoo.DatabaseInfo, len(m.databases))
+	}
 	if len(m.databases) == 0 {
 		m.databaseInfoPhase = phaseEmpty
 		return nil
@@ -3084,8 +3134,17 @@ func cardHeader(name, state string, width int) string {
 	return name + strings.Repeat(" ", gap) + state
 }
 
+func profileTaskAffectsCard(kind taskKind) bool {
+	switch kind {
+	case taskCreate, taskRun, taskStop, taskRestart, taskRecreate, taskRemove:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Model) profileCardStatus(profile docker.ProfileSummary) string {
-	if m.taskActive() && m.taskProfileName == profile.Name {
+	if m.taskActive() && profileTaskAffectsCard(m.activeTaskKind) && m.taskProfileName == profile.Name {
 		return activeStyle.Render(taskActionLabel(m.activeTaskKind)) + " " + m.activitySpinner.View()
 	}
 	if profile.PendingRecreation.Pending {
@@ -3135,7 +3194,11 @@ func (m *Model) addonRows(width int) string {
 	case phaseLoading:
 		return mutedStyle.Render("  loading...")
 	case phaseEmpty:
-		return mutedStyle.Render("  no add-ons registered")
+		message := mutedStyle.Render("  no add-ons registered")
+		if m.addonErr != nil {
+			return message + "\n" + errorStyle.Render("  refresh failed: "+errorText(m.addonErr))
+		}
+		return message
 	case phaseError:
 		return errorStyle.Render("  refresh failed")
 	case phaseReady:
@@ -3161,7 +3224,7 @@ func (m *Model) addonRows(width int) string {
 			row := []string{addon.Name, branch, source, check}
 			rows = append(rows, row)
 		}
-		return (dataTable{
+		view := (dataTable{
 			Columns: []dataTableColumn{
 				{Title: "NAME", Flex: 2, MinWidth: 12},
 				{Title: "BRANCH", Flex: 1, MinWidth: 8},
@@ -3170,6 +3233,10 @@ func (m *Model) addonRows(width int) string {
 			},
 			Rows: rows, SelectedRow: m.addonIndex, Width: width,
 		}).View()
+		if m.addonErr != nil {
+			view += "\n" + errorStyle.Render("  refresh failed: "+errorText(m.addonErr))
+		}
+		return view
 	default:
 		return mutedStyle.Render("  not loaded")
 	}
@@ -3559,6 +3626,9 @@ func (m *Model) databaseTabView(width int) string {
 		}
 	case phaseReady:
 		lines = append(lines, m.databaseTableRows(width))
+		if m.databaseErr != nil {
+			lines = append(lines, errorStyle.Render("  refresh failed; showing last snapshot: "+errorText(m.databaseErr)))
+		}
 	default:
 		lines = append(lines, mutedStyle.Render("  not loaded"))
 	}
@@ -3636,6 +3706,9 @@ func (m *Model) profileDetailView() string {
 		"filestore volume: "+detail.FilestoreVolume,
 		"pending recreation: "+detail.PendingRecreation.String(),
 	)
+	if m.profileDetailErr != nil {
+		lines = append(lines, errorStyle.Render("refresh failed; showing last snapshot: "+errorText(m.profileDetailErr)))
+	}
 	return strings.Join(lines, "\n")
 }
 

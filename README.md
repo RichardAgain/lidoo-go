@@ -129,10 +129,16 @@ Discover and inspect databases through the running profile:
 go run ./cmd db list --name testing
 go run ./cmd db info --name testing --database testing_db
 go run ./cmd db shell --name testing --database testing_db
+LIDOO_ADMIN_PASSWORD='new-admin-password' \
+  go run ./cmd db set-password --name testing --database testing_db
 ```
 
-`db list` only shows databases allowed by the profile prefix. `db shell` is an
-interactive `psql` session; its terminal and exit status are passed through.
+`db list` shows the databases allowed by the profile's filter mode (all of them
+when the mode is `disabled`, the matching pattern when it is `custom`). `db
+shell` is an interactive `psql` session; its terminal and exit status are passed
+through. `db set-password` changes the built-in `admin` user's login password
+through Odoo; it takes the password from `LIDOO_ADMIN_PASSWORD` or prompts on a
+terminal without echoing, so the secret is never an argument.
 
 Initialize a database with the requested comma-separated modules:
 
@@ -263,7 +269,10 @@ Profiles:
 - `space` toggles run/stop for the selected profile; `x` starts, `s` stops,
   `r` restarts, `R` recreates, `enter` opens the URL, `d` removes. Actions that
   do not apply (starting a running profile, stopping a stopped one) report a
-  notice instead of failing.
+  notice instead of failing. Starting a profile waits until Odoo answers before
+  the task reports `completed` (cancel with `c`).
+- Destructive actions (remove profile, drop database, move/overwrite restore)
+  ask you to type the resource name before they run.
 
 Databases (the list follows the profile's database filter mode):
 
@@ -271,7 +280,12 @@ Databases (the list follows the profile's database filter mode):
   database. It runs `odoo shell` inside the profile (the profile must be
   running) and pipes the script on standard input, so the password never
   appears in a process argument list. This is the user login password, **not**
-  `admin_passwd`.
+  `admin_passwd`. The same operation is available as
+  `lidoo db set-password --name <profile> --database <db>`, taking the password
+  from `LIDOO_ADMIN_PASSWORD` or an interactive prompt.
+- `R` restores into the selected database. It first offers the dump files found
+  under `backups/` (`.zip`/`.dump`) in a select, or "Enter a path…" for any other
+  source.
 
 Add-ons:
 
@@ -289,11 +303,16 @@ Logs:
 - Task output is never mixed into that panel. The `Latest task` block below the
   panel shows a short tail, and the full task stream lives in the viewer's
   `tasks` source.
+- The inline panel can be scoped to one database: open logs from the Databases
+  panel with `L` and it filters to the selected database (the panel shows the
+  active `db filter`).
 - `L` opens the fullscreen viewer from any panel. `tab` cycles
   `container` / `tasks` / `all`, `d` cycles the database filter, `1`–`4` filter
   by minimum level (`all`, `info+`, `warn+`, `error`), `/` searches, `f` toggles
   follow, and `g`/`G` jump to top/bottom. Mouse wheel and `pgup`/`pgdn` scroll.
   Each profile keeps its own log buffer; profiles never share a stream.
+- Mouse: the wheel scrolls logs, clicking a profile selects it, and clicking the
+  tab bar (`Databases` / `Add-ons` / `Info`) switches panels.
 
 Changes that need a container rebuild stay pending until `R` recreates the
 profile, or the recreate option is chosen in the attach/detach dialog.

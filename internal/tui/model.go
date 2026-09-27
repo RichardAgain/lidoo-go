@@ -2616,7 +2616,20 @@ func (m *Model) modalView() string {
 	if modalWidth > 72 {
 		modalWidth = 72
 	}
+	lines = modalTitleSeparator(lines, modalWidth)
 	return lipgloss.NewStyle().Width(modalWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(activeBorderStyle).Render(strings.Join(lines, "\n"))
+}
+
+func modalTitleSeparator(lines []string, width int) []string {
+	if len(lines) < 2 || width < 1 {
+		return lines
+	}
+	separatorWidth := width - 4 // modal horizontal padding
+	if separatorWidth < 1 {
+		separatorWidth = 1
+	}
+	separator := lipgloss.NewStyle().Foreground(activeBorderStyle).Render(strings.Repeat("─", separatorWidth))
+	return append([]string{lines[0], separator}, lines[1:]...)
 }
 
 func (m *Model) addonMountModalLines() []string {

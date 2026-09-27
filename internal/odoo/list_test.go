@@ -56,3 +56,14 @@ func TestParseDatabasesRejectsInvalidPattern(t *testing.T) {
 		t.Fatal("expected an error for an invalid custom pattern")
 	}
 }
+
+func TestParseDatabasesHidesTemplateCache(t *testing.T) {
+	output := "cache-202609031306-abc\nsmoke__alpha\n"
+	databases, err := ParseDatabases(output, "smoke__", profile.DBFilterModeDisabled, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(databases) != 1 || databases[0].Physical != "smoke__alpha" {
+		t.Fatalf("databases = %+v", databases)
+	}
+}

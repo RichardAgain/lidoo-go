@@ -84,6 +84,11 @@ func ParseDatabases(output, prefix, mode, pattern string) ([]Database, error) {
 		if protectedDatabases[physical] {
 			continue
 		}
+		// click-odoo-initdb keeps its template cache in cache-<...> databases;
+		// they are internal and should not be managed as user databases.
+		if strings.HasPrefix(physical, "cache-") {
+			continue
+		}
 		logical, ok := logicalFor(physical)
 		if !ok {
 			continue

@@ -216,6 +216,8 @@ type Model struct {
 	backupFilestore        bool
 	backupForce            bool
 	restoreSource          string
+	restoreDestination     string
+	restoreErr             error
 	restoreCopy            bool
 	restoreForce           bool
 	restoreNeutralize      bool
@@ -1150,12 +1152,60 @@ func (m *Model) openRestoreForm(source string) {
 		return
 	}
 	m.restoreSource = source
+	m.restoreDestination = m.defaultRestoreDestination(source)
+	m.restoreErr = nil
 	m.restoreCopy = true
 	m.restoreForce = false
 	m.restoreNeutralize = false
 	m.restoreJobs = "1"
 	m.formField = 0
 	m.modal = modalRestoreDatabase
+}
+
+// defaultRestoreDestination derives a fresh, non-colliding database name from
+// the dump file name so restoring never silently targets an existing database.
+func (m *Model) defaultRestoreDestination(source string) string {
+	base := strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
+	base = sanitizeDatabaseName(base)
+	if base == "" {
+		base = "restored"
+	}
+	return m.uniqueDatabaseName(base)
+}
+
+func sanitizeDatabaseName(value string) string {
+	var builder strings.Builder
+	for _, character := range strings.ToLower(value) {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= '0' && character <= '9',
+			character == '_', character == '-', character == '.':
+			builder.WriteRune(character)
+		default:
+			builder.WriteRune('_')
+		}
+	}
+	return strings.Trim(builder.String(), "_.-")
+}
+
+func (m *Model) uniqueDatabaseName(base string) string {
+	if !m.restoreDestinationExists(base) {
+		return base
+	}
+	candidate := base + "_restore"
+	for index := 2; m.restoreDestinationExists(candidate); index++ {
+		candidate = fmt.Sprintf("%s_restore_%d", base, index)
+	}
+	return candidate
+}
+
+func (m *Model) restoreDestinationExists(name string) bool {
+	for _, database := range m.databases {
+		if database.Logical == name || database.Physical == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) startRestorePicker() tea.Cmd {
@@ -1855,6 +1905,9 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.applySelectChoice()
 		}
 	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
+		if m.modal == modalRestoreDatabase {
+			m.restoreErr = nil
+		}
 		switch msg.String() {
 		case "esc":
 			m.modal = modalNone
@@ -2086,13 +2139,26 @@ func (m *Model) submitDatabaseForm() tea.Cmd {
 			Force:            m.backupForce,
 		})
 	case modalRestoreDatabase:
-		if strings.TrimSpace(m.restoreSource) == "" {
+		m.restoreErr = nil
+		destination := strings.TrimSpace(m.restoreDestination)
+		if destination == "" {
+			m.restoreErr = errors.New("destination database is required")
 			return nil
 		}
+		if strings.TrimSpace(m.restoreSource) == "" {
+			m.restoreErr = errors.New("restore source is required")
+			return nil
+		}
+		if m.restoreCopy && m.restoreDestinationExists(destination) && !m.restoreForce {
+			m.restoreErr = errors.New("destination already exists; pick another name or enable overwrite")
+			return nil
+		}
+		m.taskDatabaseName = destination
+		m.taskDatabasePhysical = ""
 		if m.restoreForce || !m.restoreCopy {
 			m.openTypedConfirm(
 				"Move or overwrite can replace existing database data.",
-				m.taskDatabaseName,
+				destination,
 				func() tea.Cmd { return m.queueRestoreTask() },
 			)
 			return nil
@@ -2130,7 +2196,7 @@ func (m *Model) formFieldCount() int {
 	case modalBackupDatabase:
 		return 4
 	case modalRestoreDatabase:
-		return 5
+		return 6
 	case modalCreateProfile:
 		return 1
 	case modalConfigPattern, modalConfigPassword:
@@ -2178,13 +2244,13 @@ func (m *Model) toggleFormField() bool {
 		}
 	case modalRestoreDatabase:
 		switch m.formField {
-		case 1:
+		case 2:
 			m.restoreCopy = !m.restoreCopy
 			return true
-		case 2:
+		case 3:
 			m.restoreForce = !m.restoreForce
 			return true
-		case 3:
+		case 4:
 			m.restoreNeutralize = !m.restoreNeutralize
 			return true
 		}
@@ -2233,8 +2299,10 @@ func (m *Model) formText() *string {
 	case modalRestoreDatabase:
 		switch m.formField {
 		case 0:
+			return &m.restoreDestination
+		case 1:
 			return &m.restoreSource
-		case 4:
+		case 5:
 			return &m.restoreJobs
 		}
 	case modalCreateProfile:
@@ -3689,18 +3757,28 @@ func (m *Model) modalView() string {
 		if source == "" {
 			source = "(required)"
 		}
+		destination := m.restoreDestination
+		if destination == "" {
+			destination = "(required)"
+		}
 		lines = []string{
 			titleStyle.Render("Restore database"),
 			"Profile: " + m.taskProfileName,
-			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
-			m.formLine("source", source, 0, m.formField == 0),
-			m.formLine("mode", restoreMode(m.restoreCopy), 1, false),
-			m.formLine("overwrite", yesNo(m.restoreForce), 2, false),
-			m.formLine("neutralize", yesNo(m.restoreNeutralize), 3, false),
-			m.formLine("jobs", m.restoreJobs, 4, m.formField == 4),
-			"",
-			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
+			m.formLine("destination", destination, 0, true),
+			m.formLine("source", source, 1, true),
+			m.formLine("mode", restoreMode(m.restoreCopy), 2, false),
+			m.formLine("overwrite", yesNo(m.restoreForce), 3, false),
+			m.formLine("neutralize", yesNo(m.restoreNeutralize), 4, false),
+			m.formLine("jobs", m.restoreJobs, 5, true),
 		}
+		if m.restoreErr != nil {
+			lines = append(lines, errorStyle.Render(m.restoreErr.Error()))
+		}
+		lines = append(lines,
+			"",
+			mutedStyle.Render("copy creates a new database (destination must not exist); move replaces it"),
+			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
+		)
 	case modalCloneAddon:
 		lines = []string{
 			titleStyle.Render("Clone and register add-on"),

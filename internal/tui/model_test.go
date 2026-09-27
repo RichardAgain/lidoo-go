@@ -470,3 +470,47 @@ func TestProfileIndexAtRow(t *testing.T) {
 		t.Fatalf("no profiles = %d, want -1", got)
 	}
 }
+
+func TestRestoreDefaultDestinationIsFresh(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusDatabases
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
+	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
+	model.databaseIndex = 0
+
+	model.openRestoreForm("/home/me/Downloads/IPM Backup.zip")
+	if model.modal != modalRestoreDatabase {
+		t.Fatalf("modal = %v, want restore form", model.modal)
+	}
+	if model.restoreDestination != "ipm_backup" {
+		t.Fatalf("destination = %q, want ipm_backup", model.restoreDestination)
+	}
+}
+
+func TestRestoreDefaultDestinationAvoidsCollision(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
+	model.databases = []odoo.Database{{Logical: "ipm_backup", Physical: "pp__ipm_backup"}}
+
+	if got := model.defaultRestoreDestination("/tmp/ipm_backup.zip"); got != "ipm_backup_restore" {
+		t.Fatalf("destination = %q, want ipm_backup_restore", got)
+	}
+}
+
+func TestRestoreCopyRejectsExistingDestination(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalRestoreDatabase
+	model.taskProfileName = "demo"
+	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
+	model.restoreSource = "/tmp/x.zip"
+	model.restoreDestination = "demo_db"
+	model.restoreCopy = true
+	model.restoreForce = false
+
+	if cmd := model.submitDatabaseForm(); cmd != nil {
+		t.Fatal("existing destination in copy mode should not queue a task")
+	}
+	if model.restoreErr == nil {
+		t.Fatal("existing destination in copy mode should set an error")
+	}
+}

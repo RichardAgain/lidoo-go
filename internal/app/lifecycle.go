@@ -72,6 +72,23 @@ func normalizeProfileOperationOptions(options []ProfileOperationOptions) Profile
 	return result
 }
 
+// CreateProfile adds a profile to workspace state without creating or starting
+// a Docker container, storing the required version for its first run.
+func (s *Service) CreateProfile(ctx context.Context, name, version string) error {
+	return s.mutateProfile(ctx, true, func(state files.State) error {
+		if version == "" {
+			return errors.New("create requires --version")
+		}
+		if err := docker.ValidateProfileVersion(version); err != nil {
+			return err
+		}
+		if err := profile.UpdateConfig(state, name, profile.ConfigUpdate{}); err != nil {
+			return err
+		}
+		return profile.SetVersion(state, name, version)
+	})
+}
+
 func (s *Service) RunProfile(ctx context.Context, input RunProfileInput, options ...ProfileOperationOptions) error {
 	operationOptions := normalizeProfileOperationOptions(options)
 	return s.mutateProfile(ctx, true, func(state files.State) error {

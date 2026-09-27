@@ -42,6 +42,13 @@ func buildImageWithOptions(dockerfile, image string, options CommandOptions) err
 	return dockerQuietWithOptions(options, buildImageArgs(dockerfile, image, buildx)...)
 }
 
+func ValidateProfileVersion(version string) error {
+	if !odooVersion.MatchString(version) {
+		return fmt.Errorf("invalid Odoo version %q", version)
+	}
+	return nil
+}
+
 func Run(name, version string, state files.State) error {
 	return RunWithOptions(name, version, state, CommandOptions{})
 }
@@ -71,8 +78,8 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 	} else if version == "" {
 		return fmt.Errorf("run requires --version because container %q has no stored version", name)
 	}
-	if !odooVersion.MatchString(selectedVersion) {
-		return fmt.Errorf("invalid Odoo version %q", selectedVersion)
+	if err := ValidateProfileVersion(selectedVersion); err != nil {
+		return err
 	}
 
 	config, found, err := profile.Lookup(state, name)

@@ -3525,7 +3525,7 @@ func (m *Model) databaseTabView(width int) string {
 	case phaseLoading:
 		lines = append(lines, mutedStyle.Render("  loading databases..."))
 	case phaseEmpty:
-		lines = append(lines, mutedStyle.Render("  no databases found"))
+		lines = append(lines, m.databaseTableRows(width), "", mutedStyle.Render("  no database found"))
 	case phaseUnavailable:
 		if len(m.databases) == 0 {
 			lines = append(lines, warningStyle.Render("  databases unavailable while stopped"))

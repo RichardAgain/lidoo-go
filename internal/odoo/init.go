@@ -38,6 +38,7 @@ func Init(name, database, modules string, state files.State, options ...Operatio
 		"--log-level=error",
 		"--new-database", database,
 		"--modules", modules,
+		"--without-demo=all",
 	}
 	if err := runWithCommandOptions(container, commandOptions, args...); err != nil {
 		return result, fmt.Errorf("initialize database %q: %w", database, err)

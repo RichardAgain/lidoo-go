@@ -44,7 +44,6 @@ const (
 	modalInitDatabase
 	modalBackupDatabase
 	modalRestoreDatabase
-	modalAddonMount
 	modalCloneAddon
 	modalWorktreeAddon
 	modalConfirmWorktreeAddon
@@ -162,15 +161,6 @@ type Model struct {
 	databaseInfos          map[string]odoo.DatabaseInfo
 	addonPhase             resourcePhase
 	addonErr               error
-	addonChoiceRequest     uint64
-	addonChoiceProfile     string
-	addonChoicePhase       resourcePhase
-	addonChoiceErr         error
-	addonChoices           []addons.AddonStatus
-	addonChoiceIndex       int
-	addonChoiceSelected    map[string]bool
-	addonMountAttach       bool
-	addonMountRecreate     bool
 	addonFormErr           error
 	cloneAddonName         string
 	cloneAddonURL          string
@@ -199,6 +189,8 @@ type Model struct {
 	taskDatabaseName       string
 	taskDatabasePhysical   string
 	taskName               string
+	taskAddonNames         []string
+	taskAddonRecreate      bool
 	taskStatus             string
 	taskErr                error
 	taskNotice             string
@@ -317,11 +309,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ProfilesLoadedMsg:
 		listOnly := m.profileListOnlyRefresh
 		m.profileListOnlyRefresh = false
-		previousSelection := m.selectedProfileName()
 		m.setProfiles(msg.Profiles)
-		if m.modal == modalAddonMount && m.selectedProfileName() != previousSelection {
-			m.closeAddonMountChooser()
-		}
 		m.loading = false
 		m.err = nil
 		if listOnly && m.selectedProfileName() == m.profileResourceName {
@@ -457,16 +445,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.addonPhase = phaseReady
 		}
-		if m.modal == modalAddonMount && !m.addonMountAttach && msg.ProfileName == m.addonChoiceProfile {
-			m.addonChoices = attachedAddons(m.addons, msg.ProfileName)
-			m.addonChoiceIndex = 0
-			m.addonChoiceSelected = make(map[string]bool, len(m.addonChoices))
-			m.addonChoiceErr = nil
-			m.addonChoicePhase = m.addonPhase
-			if len(m.addonChoices) == 0 {
-				m.addonChoicePhase = phaseEmpty
-			}
-		}
 		return m, nil
 	case AddonsFailedMsg:
 		if !m.currentProfileRequest(msg.RequestID, msg.ProfileName) {
@@ -476,31 +454,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.addonPhase != phaseReady && m.addonPhase != phaseEmpty {
 			m.addonPhase = phaseError
 		}
-		if m.modal == modalAddonMount && !m.addonMountAttach && msg.ProfileName == m.addonChoiceProfile {
-			m.addonChoicePhase = phaseError
-			m.addonChoiceErr = msg.Err
-		}
-		return m, nil
-	case AvailableAddonsLoadedMsg:
-		if !m.currentAddonChoiceRequest(msg.RequestID, msg.ProfileName) {
-			return m, nil
-		}
-		m.addonChoices = append([]addons.AddonStatus(nil), msg.Addons...)
-		m.addonChoiceSelected = make(map[string]bool, len(m.addonChoices))
-		m.addonChoiceIndex = 0
-		m.addonChoiceErr = nil
-		if len(m.addonChoices) == 0 {
-			m.addonChoicePhase = phaseEmpty
-		} else {
-			m.addonChoicePhase = phaseReady
-		}
-		return m, nil
-	case AvailableAddonsFailedMsg:
-		if !m.currentAddonChoiceRequest(msg.RequestID, msg.ProfileName) {
-			return m, nil
-		}
-		m.addonChoicePhase = phaseError
-		m.addonChoiceErr = msg.Err
 		return m, nil
 	case VersionsLoadedMsg:
 		if !m.currentSelectRequest(msg.RequestID) {
@@ -644,7 +597,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.currentTask(msg.ID) {
 			return m, nil
 		}
+		kind := m.activeTaskKind
+		addonNames := append([]string(nil), m.taskAddonNames...)
+		recreate := m.taskAddonRecreate
 		m.finishTask("completed", nil)
+		if !recreate && (kind == taskAttachAddons || kind == taskDetachAddons) {
+			return m, m.refreshAfterAddonMountTask(msg.ProfileName, kind == taskAttachAddons, addonNames)
+		}
 		return m, m.refreshAfterTask(msg.ProfileName)
 	case TaskFailedMsg:
 		if !m.currentTask(msg.ID) {
@@ -874,13 +833,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			)
 		} else if m.focus == focusDatabases {
 			m.openDropConfirmation()
-		} else if m.focus == focusAddons {
-			return m, m.openAddonMountChooser(false)
 		}
 	case "a", "A":
-		if m.focus == focusAddons {
-			return m, m.openAddonMountChooser(true)
-		}
 		if m.focus == focusDatabases {
 			m.openAdminPasswordForm()
 		}
@@ -1262,40 +1216,6 @@ func (m *Model) filePickerParent() tea.Cmd {
 	return m.openFilePicker(parent)
 }
 
-func (m *Model) openAddonMountChooser(attach bool) tea.Cmd {
-	profileName := m.selectedProfileName()
-	if profileName == "" || m.rejectMutatingAction() {
-		return nil
-	}
-	m.addonChoiceRequest++
-	m.addonChoiceProfile = profileName
-	m.addonMountAttach = attach
-	m.addonMountRecreate = false
-	m.addonChoiceErr = nil
-	m.addonChoiceIndex = 0
-	m.addonChoiceSelected = make(map[string]bool)
-	m.addonChoices = nil
-	m.modal = modalAddonMount
-	if attach {
-		m.addonChoicePhase = phaseLoading
-		return LoadAvailableAddonsCmd(m.ctx, m.service, profileName, m.addonChoiceRequest)
-	}
-
-	m.addonChoices = attachedAddons(m.addons, profileName)
-	m.addonChoicePhase = m.addonPhase
-	if len(m.addonChoices) == 0 && m.addonChoicePhase == phaseReady {
-		m.addonChoicePhase = phaseEmpty
-	}
-	if m.addonChoicePhase == phaseIdle {
-		m.addonChoicePhase = phaseLoading
-		return LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest)
-	}
-	if m.addonChoicePhase == phaseError {
-		m.addonChoiceErr = m.addonErr
-	}
-	return nil
-}
-
 func (m *Model) openCloneAddonForm() {
 	if m.rejectMutatingAction() {
 		return
@@ -1379,38 +1299,6 @@ func (m *Model) queueSelectedAddonTask(kind taskKind) tea.Cmd {
 		ProfileName: m.selectedProfileName(),
 		AddonName:   addon.Name,
 	})
-}
-
-func (m *Model) closeAddonMountChooser() {
-	m.addonChoiceRequest++
-	m.modal = modalNone
-}
-
-func (m *Model) submitAddonMount() tea.Cmd {
-	if m.addonChoicePhase != phaseReady {
-		return nil
-	}
-	selected := make([]string, 0, len(m.addonChoiceSelected))
-	for _, addon := range m.addonChoices {
-		if m.addonChoiceSelected[addon.Name] {
-			selected = append(selected, addon.Name)
-		}
-	}
-	if len(selected) == 0 {
-		m.addonChoiceErr = errors.New("select at least one add-on")
-		return nil
-	}
-	request := taskRequest{
-		Kind:        taskAttachAddons,
-		ProfileName: m.addonChoiceProfile,
-		AddonNames:  selected,
-		Recreate:    m.addonMountRecreate,
-	}
-	if !m.addonMountAttach {
-		request.Kind = taskDetachAddons
-	}
-	m.closeAddonMountChooser()
-	return m.queueTask(request)
 }
 
 func (m *Model) currentSelectRequest(requestID uint64) bool {
@@ -1852,25 +1740,6 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.modal = modalNone
 			return m, m.queueTask(request)
-		}
-	case modalAddonMount:
-		switch msg.String() {
-		case "esc", "n", "N":
-			m.closeAddonMountChooser()
-		case "up", "k":
-			m.moveIndex(&m.addonChoiceIndex, len(m.addonChoices), -1)
-		case "down", "j":
-			m.moveIndex(&m.addonChoiceIndex, len(m.addonChoices), 1)
-		case " ":
-			if m.addonChoicePhase == phaseReady && m.addonChoiceIndex >= 0 && m.addonChoiceIndex < len(m.addonChoices) {
-				name := m.addonChoices[m.addonChoiceIndex].Name
-				m.addonChoiceSelected[name] = !m.addonChoiceSelected[name]
-				m.addonChoiceErr = nil
-			}
-		case "tab":
-			m.addonMountRecreate = !m.addonMountRecreate
-		case "enter":
-			return m, m.submitAddonMount()
 		}
 	case modalRunVersion:
 		switch msg.String() {
@@ -2387,6 +2256,8 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	m.taskDatabaseName = request.DatabaseName
 	m.taskDatabasePhysical = request.DatabasePhysical
 	m.taskName = taskLabel(request.Kind)
+	m.taskAddonNames = append([]string(nil), request.AddonNames...)
+	m.taskAddonRecreate = request.Recreate
 	if request.ProfileName != "" {
 		m.taskName += " " + request.ProfileName
 	}
@@ -2455,6 +2326,8 @@ func (m *Model) finishTask(status string, taskErr error) {
 	m.taskContext = nil
 	m.taskProgress = nil
 	m.pendingTask = nil
+	m.taskAddonNames = nil
+	m.taskAddonRecreate = false
 	m.taskStarting = false
 	m.taskRunning = false
 	m.taskNotice = ""
@@ -2488,6 +2361,70 @@ func interactiveTaskName(message any) string {
 		return "psql " + profileName + "/" + databaseName
 	}
 	return "follow logs " + profileName
+}
+
+func (m *Model) refreshAfterAddonMountTask(profileName string, attach bool, addonNames []string) tea.Cmd {
+	if profileName == "" {
+		return m.refreshAfterTask(profileName)
+	}
+	m.updateAddonAttachments(profileName, addonNames, attach)
+	m.profileListOnlyRefresh = true
+	m.loading = len(m.profiles) == 0
+	m.err = nil
+	return LoadProfilesCmd(m.ctx, m.service)
+}
+
+func (m *Model) updateAddonAttachments(profileName string, addonNames []string, attach bool) {
+	selected := make(map[string]bool, len(addonNames))
+	for _, name := range addonNames {
+		selected[name] = true
+	}
+	for index := range m.addons {
+		addon := &m.addons[index]
+		if !selected[addon.Name] {
+			continue
+		}
+		profiles := make([]string, 0, len(addon.AttachedProfiles)+1)
+		found := false
+		for _, name := range addon.AttachedProfiles {
+			if name == profileName {
+				found = true
+				if !attach {
+					continue
+				}
+			}
+			profiles = append(profiles, name)
+		}
+		if attach && !found {
+			profiles = append(profiles, profileName)
+			sort.Strings(profiles)
+		}
+		addon.AttachedProfiles = profiles
+	}
+	if m.profileDetail.Name == profileName {
+		attached := append([]string(nil), m.profileDetail.AttachedAddons...)
+		for _, name := range addonNames {
+			found := false
+			for _, current := range attached {
+				if current == name {
+					found = true
+					break
+				}
+			}
+			if attach && !found {
+				attached = append(attached, name)
+			} else if !attach && found {
+				filtered := attached[:0]
+				for _, current := range attached {
+					if current != name {
+						filtered = append(filtered, current)
+					}
+				}
+				attached = filtered
+			}
+		}
+		m.profileDetail.AttachedAddons = attached
+	}
 }
 
 func (m *Model) refreshAfterTask(profileName string) tea.Cmd {
@@ -2647,9 +2584,11 @@ func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
 	m.profiles = append([]docker.ProfileSummary(nil), profiles...)
 	m.profileIndex = 0
 	for index, profile := range m.profiles {
+		if profile.Name == m.profileDetail.Name {
+			m.profileDetail.PendingRecreation = profile.PendingRecreation
+		}
 		if profile.Name == selected {
 			m.profileIndex = index
-			break
 		}
 	}
 }
@@ -2904,12 +2843,6 @@ func (m *Model) moveIndex(index *int, count, delta int) bool {
 	return old != *index
 }
 
-func (m *Model) currentAddonChoiceRequest(requestID uint64, profileName string) bool {
-	return requestID == m.addonChoiceRequest && m.modal == modalAddonMount &&
-		m.addonMountAttach && profileName == m.addonChoiceProfile &&
-		profileName == m.selectedProfileName()
-}
-
 func (m *Model) currentProfileRequest(requestID uint64, profileName string) bool {
 	return requestID == m.profileRequest && profileName != "" && profileName == m.selectedProfileName()
 }
@@ -2962,16 +2895,6 @@ func addonAttached(addon addons.AddonStatus, profileName string) bool {
 		}
 	}
 	return false
-}
-
-func attachedAddons(statuses []addons.AddonStatus, profileName string) []addons.AddonStatus {
-	attached := make([]addons.AddonStatus, 0, len(statuses))
-	for _, addon := range statuses {
-		if addonAttached(addon, profileName) {
-			attached = append(attached, addon)
-		}
-	}
-	return attached
 }
 
 func (m *Model) profileIsRunning() bool {
@@ -3134,17 +3057,8 @@ func cardHeader(name, state string, width int) string {
 	return name + strings.Repeat(" ", gap) + state
 }
 
-func profileTaskAffectsCard(kind taskKind) bool {
-	switch kind {
-	case taskCreate, taskRun, taskStop, taskRestart, taskRecreate, taskRemove:
-		return true
-	default:
-		return false
-	}
-}
-
 func (m *Model) profileCardStatus(profile docker.ProfileSummary) string {
-	if m.taskActive() && profileTaskAffectsCard(m.activeTaskKind) && m.taskProfileName == profile.Name {
+	if m.taskActive() && m.taskProfileName == profile.Name {
 		return activeStyle.Render(taskActionLabel(m.activeTaskKind)) + " " + m.activitySpinner.View()
 	}
 	if profile.PendingRecreation.Pending {
@@ -3735,7 +3649,7 @@ func (m *Model) footerView() string {
 		keys += "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.focus == focusAddons {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  enter attach/detach  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+		keys = "tab/←/→ focus  ↑/↓ add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil) + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
@@ -3750,7 +3664,7 @@ func (m *Model) footerView() string {
 			keys += "  L logs  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusAddons {
-			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter attach/detach  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil) + "  L logs  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -3770,13 +3684,10 @@ func databaseActionHints() string {
 	return "u update  U update-all  d drop  b backup  R restore  p psql  a admin user password"
 }
 
-func addonActionHints(hasSelection, hasProfile bool) string {
+func addonActionHints(hasSelection bool) string {
 	hints := "c clone  w worktree  x remove"
-	if hasProfile {
-		hints = "a attach  " + hints
-	}
 	if hasSelection {
-		hints += "  d detach  f fetch  p pull"
+		hints += "  f fetch  p pull"
 	}
 	return hints
 }
@@ -3974,8 +3885,6 @@ func (m *Model) modalView() string {
 			mutedStyle.Render("NOT admin_passwd; changes the login password of the admin user via Odoo"),
 			mutedStyle.Render("tab field  type  enter apply  esc cancel"),
 		)
-	case modalAddonMount:
-		lines = m.addonMountModalLines()
 	}
 	modalWidth := m.width - 4
 	if modalWidth < 20 {
@@ -4031,69 +3940,6 @@ func modalTitleSeparator(lines []string, width int) []string {
 	}
 	separator := lipgloss.NewStyle().Foreground(activeBorderStyle).Render(strings.Repeat("─", separatorWidth))
 	return append([]string{lines[0], separator}, lines[1:]...)
-}
-
-func (m *Model) addonMountModalLines() []string {
-	action := "Attach"
-	if !m.addonMountAttach {
-		action = "Detach"
-	}
-	lines := []string{
-		titleStyle.Render(action + " add-ons for " + m.addonChoiceProfile),
-	}
-	switch m.addonChoicePhase {
-	case phaseLoading:
-		lines = append(lines, mutedStyle.Render("Loading add-ons..."))
-	case phaseEmpty:
-		if m.addonMountAttach {
-			lines = append(lines, mutedStyle.Render("No unattached add-ons available"))
-		} else {
-			lines = append(lines, mutedStyle.Render("No add-ons attached"))
-		}
-	case phaseError:
-		lines = append(lines, errorStyle.Render(errorText(m.addonChoiceErr)))
-	case phaseReady:
-		budget := m.modalListBudget() - 2 // recreate line and hint below
-		start := windowStart(len(m.addonChoices), m.addonChoiceIndex, budget)
-		end := start + budget
-		if end > len(m.addonChoices) {
-			end = len(m.addonChoices)
-		}
-		if start > 0 {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
-		}
-		for index := start; index < end; index++ {
-			addon := m.addonChoices[index]
-			checked := "[ ] "
-			if m.addonChoiceSelected[addon.Name] {
-				checked = "[x] "
-			}
-			row := checked + addon.Name
-			if !addon.PathAvailable {
-				row += " (path unavailable)"
-			}
-			if index == m.addonChoiceIndex {
-				lines = append(lines, activeStyle.Render("> "+row))
-			} else {
-				lines = append(lines, "  "+row)
-			}
-		}
-		if end < len(m.addonChoices) {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.addonChoices)-end)))
-		}
-	default:
-		lines = append(lines, mutedStyle.Render("Add-on list is not available"))
-	}
-	recreate := "no (leave pending)"
-	if m.addonMountRecreate {
-		recreate = "yes (apply now)"
-	}
-	lines = append(lines, "", "Recreate profile now: "+recreate)
-	if m.addonChoiceErr != nil && m.addonChoicePhase != phaseError {
-		lines = append(lines, errorStyle.Render(m.addonChoiceErr.Error()))
-	}
-	lines = append(lines, "", mutedStyle.Render("↑/↓ move  space select  tab toggle recreate  enter apply  esc cancel"))
-	return lines
 }
 
 func (m *Model) profileSettingsModalLines() []string {
@@ -4287,7 +4133,7 @@ func (m *Model) smallView() string {
 		}
 	}
 	if m.focus == focusAddons {
-		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
+		hints = addonActionHints(m.selectedAddon() != nil)
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
 	if task := m.taskView(); task != "" {

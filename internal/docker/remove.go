@@ -59,7 +59,18 @@ func remove(name string, state files.State, options RemoveOptions) error {
 		return fmt.Errorf("find container with name %q: %w", name, err)
 	}
 	if len(containers) == 0 {
-		return fmt.Errorf("no container with name %q", name)
+		if state == nil {
+			return fmt.Errorf("no container with name %q", name)
+		}
+		previousState := files.CloneState(state)
+		if err := profile.Remove(state, name); err != nil {
+			return fmt.Errorf("update workspace: %w", err)
+		}
+		if err := proxy.SyncWithContext(options.Context, state); err != nil {
+			files.RestoreState(state, previousState)
+			return fmt.Errorf("synchronize Caddy routing: %w", err)
+		}
+		return nil
 	}
 
 	running, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, false, options.CommandOptions)

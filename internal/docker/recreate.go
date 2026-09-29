@@ -42,6 +42,7 @@ func RecreateWithOptions(name string, state files.State, options CommandOptions)
 	if err := RemoveWithStateOptions(name, state, RemoveOptions{
 		CommandOptions: options,
 		Yes:            true,
+		KeepFilestore:  true,
 	}); err != nil {
 		return fmt.Errorf("remove container %q: %w", name, err)
 	}

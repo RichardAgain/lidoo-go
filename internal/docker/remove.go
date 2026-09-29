@@ -16,8 +16,9 @@ import (
 // presentation boundary; the Docker package only supplies the decision point.
 type RemoveOptions struct {
 	CommandOptions
-	Yes     bool
-	Confirm func() (bool, error)
+	Yes           bool
+	Confirm       func() (bool, error)
+	KeepFilestore bool
 }
 
 // Remove keeps the original package API for callers that do not have loaded
@@ -58,10 +59,35 @@ func remove(name string, state files.State, options RemoveOptions) error {
 	if err != nil {
 		return fmt.Errorf("find container with name %q: %w", name, err)
 	}
-	if len(containers) == 0 {
-		if state == nil {
-			return fmt.Errorf("no container with name %q", name)
+	if len(containers) == 0 && state == nil {
+		return fmt.Errorf("no container with name %q", name)
+	}
+	running, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, false, options.CommandOptions)
+	if err != nil {
+		return fmt.Errorf("check container with name %q: %w", name, err)
+	}
+	if !options.Yes {
+		exists := false
+		if !options.KeepFilestore {
+			exists, err = filestoreVolumeExists(name, options.CommandOptions)
+			if err != nil {
+				return err
+			}
 		}
+		if exists || len(running) > 0 {
+			if options.Confirm == nil {
+				return errors.New("remove requires confirmation")
+			}
+			confirmed, err := options.Confirm()
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				return nil
+			}
+		}
+	}
+	if len(containers) == 0 {
 		previousState := files.CloneState(state)
 		if err := profile.Remove(state, name); err != nil {
 			return fmt.Errorf("update workspace: %w", err)
@@ -70,24 +96,13 @@ func remove(name string, state files.State, options RemoveOptions) error {
 			files.RestoreState(state, previousState)
 			return fmt.Errorf("synchronize Caddy routing: %w", err)
 		}
+		if !options.KeepFilestore {
+			if err := removeFilestoreVolume(name, options.CommandOptions); err != nil {
+				files.RestoreState(state, previousState)
+				return combineErrors(err, proxy.SyncWithContext(options.Context, state))
+			}
+		}
 		return nil
-	}
-
-	running, err := containerIDsWithOptions("label="+containerNameLabel+"="+name, false, options.CommandOptions)
-	if err != nil {
-		return fmt.Errorf("check container with name %q: %w", name, err)
-	}
-	if len(running) > 0 && !options.Yes {
-		if options.Confirm == nil {
-			return errors.New("remove requires confirmation for a running container")
-		}
-		confirmed, err := options.Confirm()
-		if err != nil {
-			return err
-		}
-		if !confirmed {
-			return nil
-		}
 	}
 
 	var previousState files.State
@@ -120,11 +135,16 @@ func remove(name string, state files.State, options RemoveOptions) error {
 			return rollback(fmt.Errorf("remove container %s: %w", container, err))
 		}
 	}
+	if !options.KeepFilestore {
+		if err := removeFilestoreVolume(name, options.CommandOptions); err != nil {
+			return rollback(err)
+		}
+	}
 	return nil
 }
 
 func defaultRemovalConfirmation() (bool, error) {
-	fmt.Fprint(os.Stderr, "container is running, stop it? [Y/N] ")
+	fmt.Fprint(os.Stderr, "remove profile and its filestore volume (if present)? [Y/N] ")
 	var answer string
 	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
 		return false, fmt.Errorf("read confirmation: %w", err)

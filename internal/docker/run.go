@@ -149,7 +149,7 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 	if _, err := os.Stat(databaseEnvFile); err != nil {
 		return fmt.Errorf("%q not found: %w", databaseEnvFile, err)
 	}
-	if err := EnsureVolumeWithContext(options.Context); err != nil {
+	if err := EnsureVolumeWithContext(options.Context, name); err != nil {
 		return fmt.Errorf("ensure filestore volume: %w", err)
 	}
 
@@ -167,7 +167,7 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 		"--env", "HOST=lidoo-postgres",
 		"--env", "PORT=5432",
 		"--label", containerNameLabel + "=" + name,
-		"-v", FilestoreVolumeName + ":/var/lib/odoo",
+		"-v", filestoreVolumeName(name) + ":/var/lib/odoo",
 	}
 	if runtimeConfig != "" {
 		containerArgs = append(containerArgs,

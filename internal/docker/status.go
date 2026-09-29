@@ -143,7 +143,7 @@ func profileDetail(name string, state files.State, runtime runtimeProfile) (Prof
 		AttachedAddons:    append([]string(nil), config.Addons...),
 		DatabasePrefix:    config.Prefix,
 		Image:             "-",
-		FilestoreVolume:   FilestoreVolumeName + " (not attached)",
+		FilestoreVolume:   filestoreVolumeName(name) + " (not attached)",
 		PendingRecreation: RecreationStatus{},
 	}
 	if runtime.ID == "" {
@@ -156,7 +156,7 @@ func profileDetail(name string, state files.State, runtime runtimeProfile) (Prof
 	if runtime.Version != "" {
 		detail.OdooVersion = runtime.Version
 	}
-	detail.PendingRecreation = recreationStatus(state, config, runtime.Mounts)
+	detail.PendingRecreation = recreationStatus(state, name, config, runtime.Mounts)
 	return detail, nil
 }
 
@@ -224,7 +224,7 @@ func mountDisplay(mounts []runtimeMount, destination string) string {
 	return "not attached"
 }
 
-func recreationStatus(state files.State, config profile.Config, mounts []runtimeMount) RecreationStatus {
+func recreationStatus(state files.State, name string, config profile.Config, mounts []runtimeMount) RecreationStatus {
 	expected, err := addons.ResolveMounts(state, config.Addons)
 	if err != nil {
 		return RecreationStatus{
@@ -255,7 +255,7 @@ func recreationStatus(state files.State, config profile.Config, mounts []runtime
 			continue
 		}
 		filestoreFound = true
-		if mount.Name != FilestoreVolumeName {
+		if mount.Name != filestoreVolumeName(name) {
 			return RecreationStatus{Checked: true, Pending: true}
 		}
 	}

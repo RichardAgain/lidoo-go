@@ -179,7 +179,7 @@ func (s *Service) RemoveProfile(ctx context.Context, input RemoveProfileInput, o
 				return operationOptions.Confirm(ProfileConfirmation{
 					ProfileName: input.Name,
 					Action:      "stop and remove the running profile container",
-					Description: "The profile workspace entry is removed; PostgreSQL data, the filestore volume, and registered add-on checkouts are kept.",
+					Description: "The profile workspace entry and its filestore volume are deleted; PostgreSQL data and registered add-on checkouts are kept.",
 				})
 			}
 		}

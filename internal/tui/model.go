@@ -834,7 +834,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			name := m.selectedProfileName()
 			m.taskProfileName = name
 			m.openTypedConfirm(
-				"This removes the Docker container and profile workspace entry. PostgreSQL data, the filestore volume, and add-on checkouts are kept.",
+				"This removes the Docker container, profile workspace entry, and its filestore volume. PostgreSQL data and add-on checkouts are kept.",
 				name,
 				func() tea.Cmd {
 					return m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})

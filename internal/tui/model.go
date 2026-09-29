@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -74,6 +73,10 @@ const (
 // selectCustomValue is the sentinel value for "type a value instead of
 // choosing one" entries in a select modal.
 const selectCustomValue = "\x00custom"
+
+// pasteHint is the explicit paste shortcut shown in every text form, so nobody
+// has to guess whether pasting works.
+const pasteHint = "ctrl+v paste"
 
 type selectItem struct {
 	Label string
@@ -290,6 +293,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
+	case ClipboardContentMsg:
+		m.applyClipboardPaste(msg)
+		return m, nil
 	case tea.MouseMsg:
 		return m.updateMouse(msg)
 	case spinner.TickMsg:
@@ -711,6 +717,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancelTask()
 		return m, tea.Quit
 	}
+	if msg.String() == "ctrl+v" && m.pasteTarget() != nil {
+		return m, ReadClipboardCmd()
+	}
 	if m.modal != modalNone {
 		return m.updateModalKey(msg)
 	}
@@ -1081,6 +1090,18 @@ func (m *Model) prepareDatabaseAction() bool {
 	return true
 }
 
+// prepareRestoreAction only needs a profile: a restore creates its database from
+// a dump file, so it must also work when the profile has no databases yet.
+func (m *Model) prepareRestoreAction() bool {
+	if m.selectedProfileName() == "" {
+		return false
+	}
+	m.taskProfileName = m.selectedProfileName()
+	m.taskDatabaseName = ""
+	m.taskDatabasePhysical = ""
+	return true
+}
+
 func (m *Model) queueSelectedDatabaseTask(kind taskKind, updateAll bool) tea.Cmd {
 	if !m.prepareDatabaseAction() {
 		return nil
@@ -1143,7 +1164,7 @@ func (m *Model) openBackupForm() {
 }
 
 func (m *Model) openRestoreForm(source string) {
-	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
+	if !m.prepareRestoreAction() || m.rejectMutatingAction() {
 		return
 	}
 	m.restoreSource = source
@@ -1173,7 +1194,7 @@ func (m *Model) restoreDestinationExists(name string) bool {
 }
 
 func (m *Model) startRestorePicker() tea.Cmd {
-	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
+	if !m.prepareRestoreAction() || m.rejectMutatingAction() {
 		return nil
 	}
 	dir, err := os.Getwd()
@@ -1705,9 +1726,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmInput = ""
 			m.confirmErr = nil
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+			if value := keyInsertText(msg); value != "" {
 				m.confirmInput += value
 				m.confirmErr = nil
 			}
@@ -1761,9 +1780,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+u":
 			m.versionInput = ""
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+			if value := keyInsertText(msg); value != "" {
 				m.versionInput += value
 			}
 		}
@@ -1813,11 +1830,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.appendFormText(" ")
 			}
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
-				m.appendFormText(value)
-			}
+			m.appendFormText(keyInsertText(msg))
 		}
 	case modalCloneAddon, modalWorktreeAddon, modalRemoveAddon:
 		switch msg.String() {
@@ -1841,9 +1854,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.addonFormErr = nil
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+			if value := keyInsertText(msg); value != "" {
 				m.appendFormText(value)
 				m.addonFormErr = nil
 			}
@@ -1881,9 +1892,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.configFormErr = nil
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+			if value := keyInsertText(msg); value != "" {
 				m.appendFormText(value)
 				m.configFormErr = nil
 			}
@@ -1910,9 +1919,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.clearProfileFormErr()
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+			if value := keyInsertText(msg); value != "" {
 				m.appendFormText(value)
 				m.clearProfileFormErr()
 			}
@@ -2213,6 +2220,47 @@ func (m *Model) formText() *string {
 		}
 	}
 	return nil
+}
+
+// pasteTarget is the text field a paste must land in, or nil when the current
+// view has no text input. Restore and clone forms are plain single-line text,
+// so a paste is just appended at the cursor (always at the end of the value).
+func (m *Model) pasteTarget() *string {
+	if m.logViewerOpen && m.logViewerTyping {
+		return &m.logViewerSearch
+	}
+	if m.modal == modalNone {
+		return nil
+	}
+	if target := m.formText(); target != nil {
+		return target
+	}
+	switch m.modal {
+	case modalTypedConfirm:
+		return &m.confirmInput
+	case modalRunVersion:
+		return &m.versionInput
+	}
+	return nil
+}
+
+func (m *Model) applyClipboardPaste(msg ClipboardContentMsg) {
+	if msg.Err != nil {
+		m.notice = "paste failed: " + msg.Err.Error()
+		return
+	}
+	target := m.pasteTarget()
+	if target == nil || msg.Text == "" {
+		return
+	}
+	*target += msg.Text
+	m.notice = ""
+	m.addonFormErr = nil
+	m.configFormErr = nil
+	m.restoreErr = nil
+	m.confirmErr = nil
+	m.adminPasswordErr = nil
+	m.clearProfileFormErr()
 }
 
 func (m *Model) appendFormText(value string) {
@@ -2961,7 +3009,18 @@ func (m *Model) fitView(view string) string {
 }
 
 func (m *Model) modalOverlay(background string) string {
-	base := strings.Split(lipgloss.NewStyle().Faint(true).Render(background), "\n")
+	base := strings.Split(background, "\n")
+	if m.logViewerOpen {
+		// The log viewer keeps its content behind a modal, because its pickers
+		// are read against the lines they filter.
+		for index := range base {
+			base[index] = lipgloss.NewStyle().Faint(true).Render(base[index])
+		}
+	} else {
+		// A modal replaces the dashboard with a plain surface: live log lines
+		// bleeding through a dialog make it hard to read.
+		base = blankLines(len(base), m.width)
+	}
 	modal := lipgloss.NewStyle().
 		Padding(0, 1).
 		Render(m.modalView())
@@ -2981,6 +3040,20 @@ func (m *Model) modalOverlay(background string) string {
 		base[row] = ansi.Cut(base[row], 0, left) + modalLine + ansi.Cut(base[row], left+modalWidth, m.width)
 	}
 	return m.fitView(strings.Join(base, "\n"))
+}
+
+// blankLines returns count empty rows of the given width, so a modal can be
+// drawn on a plain surface instead of on top of the live view.
+func blankLines(count, width int) []string {
+	if count < 1 {
+		count = 1
+	}
+	row := lipgloss.NewStyle().Width(width).Render("")
+	lines := make([]string, count)
+	for index := range lines {
+		lines[index] = row
+	}
+	return lines
 }
 
 func (m *Model) leftView(width int) string {
@@ -3119,7 +3192,7 @@ func (m *Model) addonRows(width int) string {
 		rows := make([][]string, 0, len(m.addons))
 		profileName := m.selectedProfileName()
 		for _, addon := range m.addons {
-			branch := addon.Entry.Branch
+			branch := addon.Branch
 			source := addon.Entry.Source
 			if addon.Kind == "worktree" {
 				source = addon.Entry.WorktreeOf
@@ -3133,7 +3206,7 @@ func (m *Model) addonRows(width int) string {
 			attached := addonAttached(addon, profileName)
 			check := ""
 			if attached {
-				check = ""
+				check = runningStyle.Render("")
 			}
 			row := []string{addon.Name, branch, source, check}
 			rows = append(rows, row)
@@ -3143,7 +3216,7 @@ func (m *Model) addonRows(width int) string {
 				{Title: "NAME", Flex: 2, MinWidth: 12},
 				{Title: "BRANCH", Flex: 1, MinWidth: 8},
 				{Title: "SOURCE", Flex: 2, MinWidth: 10},
-				{Title: "", Width: 2},
+				{Title: "ATTACHED", Width: 8},
 			},
 			Rows: rows, SelectedRow: m.addonIndex, Width: width,
 		}).View()
@@ -3391,9 +3464,7 @@ func (m *Model) updateLogViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+u":
 			m.logViewerSearch = ""
 		default:
-			value := msg.String()
-			runes := []rune(value)
-			if len(runes) == 1 && unicode.IsPrint(runes[0]) {
+			if value := keyInsertText(msg); value != "" {
 				m.logViewerSearch += value
 			}
 		}
@@ -3525,7 +3596,12 @@ func (m *Model) databaseTabView(width int) string {
 	case phaseLoading:
 		lines = append(lines, mutedStyle.Render("  loading databases..."))
 	case phaseEmpty:
-		lines = append(lines, m.databaseTableRows(width), "", mutedStyle.Render("  no database found"))
+		lines = append(lines,
+			mutedStyle.Render("  no databases found"),
+			"",
+			mutedStyle.Render("  R restore a database from a dump file"),
+			mutedStyle.Render("  i create an empty database"),
+		)
 	case phaseUnavailable:
 		if len(m.databases) == 0 {
 			lines = append(lines, warningStyle.Render("  databases unavailable while stopped"))
@@ -3559,29 +3635,49 @@ func (m *Model) addonTabView(width int) string {
 	}, "\n\n")
 }
 
+// taskOutputLines is how many useful output lines the inline task block shows.
+// The full stream is always available in the log viewer (`L`, then `tab`).
+const taskOutputLines = 10
+
 func (m *Model) taskView() string {
 	if m.taskStatus == "" || m.taskName == "" {
 		return ""
 	}
-	lines := []string{titleStyle.Render("Latest task"), m.taskName + "  " + taskStatus(m.taskStatus)}
+	title := "Latest task"
+	if m.taskActive() {
+		title = "Running task"
+	}
+	lines := []string{titleStyle.Render(title), m.taskName + "  " + taskStatus(m.taskStatus)}
 	if m.taskNotice != "" {
 		lines = append(lines, errorStyle.Render(m.taskNotice))
 	}
 	if m.taskErr != nil {
 		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
 	}
-	if m.taskOutput != "" {
-		lines = append(lines, mutedStyle.Render(taskOutputTail(m.taskOutput, 6)))
+	if tail, truncated := taskOutputTail(m.taskOutput, taskOutputLines); tail != "" {
+		if truncated {
+			lines = append(lines, mutedStyle.Render("… older output above"))
+		}
+		lines = append(lines, tail)
 	}
 	return strings.Join(lines, "\n")
 }
 
-func taskOutputTail(output string, maxLines int) string {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) > maxLines {
+// taskOutputTail renders the last useful output lines, indented under the task
+// header and readable as plain text instead of dimmed noise.
+func taskOutputTail(output string, maxLines int) (string, bool) {
+	lines := usefulTaskLines(output)
+	if len(lines) == 0 {
+		return "", false
+	}
+	truncated := len(lines) > maxLines
+	if truncated {
 		lines = lines[len(lines)-maxLines:]
 	}
-	return strings.Join(lines, "\n")
+	for index, line := range lines {
+		lines[index] = "  " + strings.TrimRight(line, " \t")
+	}
+	return strings.Join(lines, "\n"), truncated
 }
 
 func taskStatus(status string) string {
@@ -3642,14 +3738,11 @@ func (m *Model) footerView() string {
 		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.focus == focusDatabases && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ databases  i init"
-		if m.selectedDatabase() != nil {
-			keys += "  " + databaseActionHints()
-		}
+		keys = "tab/←/→ focus  ↑/↓ databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
 		keys += "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.focus == focusAddons {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil) + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+		keys = "tab/←/→ focus  ↑/↓ add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.showHelp {
 		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
@@ -3657,14 +3750,11 @@ func (m *Model) footerView() string {
 			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusDatabases && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k databases  i init new database"
-			if m.selectedDatabase() != nil {
-				keys += "  " + databaseActionHints()
-			}
+			keys = "tab/←/→ focus  ↑/↓/j/k databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
 			keys += "  L logs  ctrl+r refresh  ? hide help"
 		}
 		if m.focus == focusAddons {
-			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil) + "  L logs  ctrl+r refresh  ? hide help"
+			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
 		}
 	}
 	if m.taskStarting || m.taskRunning {
@@ -3684,7 +3774,16 @@ func databaseActionHints() string {
 	return "u update  U update-all  d drop  b backup  R restore  p psql  a admin user password"
 }
 
-func addonActionHints(hasSelection bool) string {
+// databaseEmptyActionHints keeps restore and init reachable when the profile
+// has no databases: restore only needs a dump file, not an existing database.
+func databaseEmptyActionHints(hasSelection bool) string {
+	if hasSelection {
+		return "i init  " + databaseActionHints()
+	}
+	return "i init new database  R restore from dump"
+}
+
+func addonActionHints(hasSelection, hasProfile bool) string {
 	hints := "c clone  w worktree  x remove"
 	if hasSelection {
 		hints += "  f fetch  p pull"
@@ -3706,7 +3805,7 @@ func (m *Model) modalView() string {
 		if m.confirmErr != nil {
 			lines = append(lines, errorStyle.Render(m.confirmErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("enter confirm  esc cancel"))
+		lines = append(lines, "", mutedStyle.Render("enter confirm  esc cancel  "+pasteHint))
 	case modalRunVersion:
 		lines = []string{
 			titleStyle.Render("Odoo version required"),
@@ -3714,7 +3813,7 @@ func (m *Model) modalView() string {
 			"No stored Odoo version exists for this profile.",
 			"version: " + activeStyle.Render(m.versionInput+"▏"),
 			"",
-			mutedStyle.Render("type a version  enter run  esc cancel"),
+			mutedStyle.Render("type a version  enter run  esc cancel  " + pasteHint),
 		}
 	case modalInitDatabase:
 		lines = []string{
@@ -3723,7 +3822,7 @@ func (m *Model) modalView() string {
 			m.formLine("database", m.initDatabaseName, 0, true),
 			m.formLine("modules", m.initModules, 1, true),
 			"",
-			mutedStyle.Render("tab field  type  enter run  esc cancel"),
+			mutedStyle.Render("tab field  type  enter run  esc cancel  " + pasteHint),
 		}
 	case modalBackupDatabase:
 		destination := m.backupDestination
@@ -3739,7 +3838,7 @@ func (m *Model) modalView() string {
 			m.formLine("filestore", yesNo(m.backupFilestore), 2, false),
 			m.formLine("overwrite", yesNo(m.backupForce), 3, false),
 			"",
-			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
+			mutedStyle.Render("tab field  space toggle  enter run  esc cancel  " + pasteHint),
 		}
 	case modalRestoreDatabase:
 		source := m.restoreSource
@@ -3766,7 +3865,7 @@ func (m *Model) modalView() string {
 		lines = append(lines,
 			"",
 			mutedStyle.Render("copy creates a new database (destination must not exist); move replaces it"),
-			mutedStyle.Render("tab field  space toggle  enter run  esc cancel"),
+			mutedStyle.Render("tab field  space toggle  enter run  esc cancel  "+pasteHint),
 		)
 	case modalCloneAddon:
 		lines = []string{
@@ -3779,7 +3878,7 @@ func (m *Model) modalView() string {
 		if m.addonFormErr != nil {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("tab field  type  enter clone  esc cancel"))
+		lines = append(lines, "", mutedStyle.Render("tab field  type  enter clone  esc cancel  "+pasteHint))
 	case modalWorktreeAddon:
 		lines = []string{
 			titleStyle.Render("Create add-on worktree"),
@@ -3790,7 +3889,7 @@ func (m *Model) modalView() string {
 		if m.addonFormErr != nil {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("tab field  type  enter continue  esc cancel"))
+		lines = append(lines, "", mutedStyle.Render("tab field  type  enter continue  esc cancel  "+pasteHint))
 	case modalConfirmWorktreeAddon:
 		lines = []string{
 			titleStyle.Render("Confirm worktree creation"),
@@ -3838,7 +3937,7 @@ func (m *Model) modalView() string {
 		lines = append(lines,
 			"",
 			mutedStyle.Render("adds the profile to state with this version; start it later with space"),
-			mutedStyle.Render("type a lowercase name  enter create  esc cancel"),
+			mutedStyle.Render("type a lowercase name  enter create  esc cancel  "+pasteHint),
 		)
 	case modalProfileSettings:
 		lines = m.profileSettingsModalLines()
@@ -3853,7 +3952,7 @@ func (m *Model) modalView() string {
 		lines = append(lines,
 			"",
 			mutedStyle.Render("matched against physical database names, e.g. ^smoke__(dev|staging)$"),
-			mutedStyle.Render("tab field  type  enter apply  esc back"),
+			mutedStyle.Render("tab field  type  enter apply  esc back  "+pasteHint),
 		)
 	case modalConfigPassword:
 		lines = []string{
@@ -3866,7 +3965,7 @@ func (m *Model) modalView() string {
 		lines = append(lines,
 			"",
 			mutedStyle.Render("this is admin_passwd (/web/database), not the admin user login password"),
-			mutedStyle.Render("tab field  type  enter apply  esc back"),
+			mutedStyle.Render("tab field  type  enter apply  esc back  "+pasteHint),
 		)
 	case modalAdminPassword:
 		lines = []string{
@@ -3883,7 +3982,7 @@ func (m *Model) modalView() string {
 		lines = append(lines,
 			"",
 			mutedStyle.Render("NOT admin_passwd; changes the login password of the admin user via Odoo"),
-			mutedStyle.Render("tab field  type  enter apply  esc cancel"),
+			mutedStyle.Render("tab field  type  enter apply  esc cancel  "+pasteHint),
 		)
 	}
 	modalWidth := m.width - 4
@@ -4127,13 +4226,10 @@ func (m *Model) smallView() string {
 	}
 	hints := profileActionHints()
 	if m.focus == focusDatabases {
-		hints = "i init new database"
-		if m.selectedDatabase() != nil {
-			hints = databaseActionHints()
-		}
+		hints = databaseEmptyActionHints(m.selectedDatabase() != nil)
 	}
 	if m.focus == focusAddons {
-		hints = addonActionHints(m.selectedAddon() != nil)
+		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
 	if task := m.taskView(); task != "" {

@@ -2,17 +2,145 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"lidoo/internal/addons"
 	"lidoo/internal/docker"
 	"lidoo/internal/files"
 	"lidoo/internal/odoo"
 	"lidoo/internal/profile"
 )
+
+func TestAddonTableShowsLiveBranch(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusAddons
+	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
+	model.addonPhase = phaseReady
+	model.addons = []addons.AddonStatus{
+		{Name: "enterprise", Kind: "clone", Branch: "saas-18.1", Entry: addons.Entry{Source: "git@github.com:acme/enterprise.git"}},
+	}
+
+	rows := ansi.Strip(model.addonRows(80))
+	if !strings.Contains(rows, "saas-18.1") {
+		t.Fatalf("branch column should show the current branch, got %q", rows)
+	}
+	if strings.Contains(rows, "—") {
+		t.Fatalf("branch column should not be empty, got %q", rows)
+	}
+}
+
+func TestModalHidesBackgroundLogs(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width = 120
+	model.height = 40
+	model.loading = false
+	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running", URL: "http://testing.lidoo.localhost"}}
+	model.profileLogs["testing"] = &profileLogBuffer{container: "Actualizando archivos: 58%"}
+	model.logPhase = phaseReady
+
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "Actualizando archivos: 58%") {
+		t.Fatalf("logs should be visible without a modal, got %q", view)
+	}
+
+	model.modal = modalCloneAddon
+	view := ansi.Strip(model.View())
+	if strings.Contains(view, "Actualizando archivos: 58%") {
+		t.Fatalf("background logs should be hidden behind a modal, got %q", view)
+	}
+	if !strings.Contains(view, "Clone and register add-on") {
+		t.Fatalf("modal should be visible, got %q", view)
+	}
+}
+
+func TestAddonTableLabelsAttachedColumn(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusAddons
+	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
+	model.addonPhase = phaseReady
+	model.addons = []addons.AddonStatus{
+		{Name: "enterprise", Kind: "clone", Branch: "18.0", AttachedProfiles: []string{"testing"}},
+		{Name: "lidoo", Kind: "clone", Branch: "18.0"},
+	}
+
+	rows := ansi.Strip(model.addonRows(80))
+	if !strings.Contains(rows, "ATTACHED") {
+		t.Fatalf("the check column needs a header, got %q", rows)
+	}
+	if !strings.Contains(rows, "\uf00c") {
+		t.Fatalf("attached add-on should show a check, got %q", rows)
+	}
+}
+
+func TestTaskOutputDropsPythonTracebackNoise(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.taskName = "update"
+	model.taskStatus = "completed"
+	model.taskOutput = strings.Join([]string{
+		"loading addons",
+		`/usr/lib/python3/odoo/tools/func.py:42: DeprecationWarning: call of deprecated method`,
+		`  File "/usr/lib/python3/dist-packages/odoo/tools/func.py", line 42, in __get__`,
+		"    value = self.fget(obj)",
+		`  File "/usr/lib/python3/dist-packages/odoo/modules/registry.py", line 400, in field_computed`,
+		"    warnings.warn(",
+		"",
+		`database "testing__ipm_2026-09-25_20-13-47" updated`,
+	}, "\n")
+
+	view := ansi.Strip(model.taskView())
+	if !strings.Contains(view, `database "testing__ipm_2026-09-25_20-13-47" updated`) {
+		t.Fatalf("the result line must be visible, got %q", view)
+	}
+	if strings.Contains(view, "File \"") || strings.Contains(view, "self.fget") || strings.Contains(view, "warnings.warn(") {
+		t.Fatalf("traceback noise should be dropped, got %q", view)
+	}
+	if !strings.Contains(view, "loading addons") {
+		t.Fatalf("real progress lines must be kept, got %q", view)
+	}
+}
+
+func TestTaskOutputCollapsesCarriageReturnProgress(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.taskName = "clone add-on"
+	model.taskStatus = "completed"
+	model.taskOutput = "Enumerating objects: 10%\rEnumerating objects: 58%\rEnumerating objects: 100%\r"
+
+	view := ansi.Strip(model.taskView())
+	if !strings.Contains(view, "Enumerating objects: 100%") {
+		t.Fatalf("progress should keep its last update, got %q", view)
+	}
+	if strings.Contains(view, "10%") || strings.Contains(view, "58%") {
+		t.Fatalf("stale progress frames should be dropped, got %q", view)
+	}
+}
+
+func TestTaskViewShowsRunningTitleAndTruncation(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.taskName = "update"
+	model.taskStatus = "running"
+	model.taskRunning = true
+	for index := 0; index < 14; index++ {
+		model.taskOutput += fmt.Sprintf("step %d\n", index)
+	}
+
+	view := ansi.Strip(model.taskView())
+	if !strings.Contains(view, "Running task") {
+		t.Fatalf("a running task should say so, got %q", view)
+	}
+	if !strings.Contains(view, "older output above") {
+		t.Fatalf("truncated output should be marked, got %q", view)
+	}
+	if !strings.Contains(view, "step 13") {
+		t.Fatalf("the newest line must be visible, got %q", view)
+	}
+	if strings.Contains(view, "step 3\n") {
+		t.Fatalf("only the tail should be shown, got %q", view)
+	}
+}
 
 func TestProfileFocusShowsLogsWithoutLogTab(t *testing.T) {
 	model := NewModel(context.Background(), nil)
@@ -342,8 +470,8 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running", URL: "http://demo.lidoo.localhost"}}
 	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
 	model.databasePhase = phaseReady
-	model.databaseInfo = odoo.DatabaseInfo{Logical: "demo_db", Physical: "demo__demo_db", Size: "1 MB", Available: true}
 	model.databaseInfoPhase = phaseReady
+	model.databaseInfos = map[string]odoo.DatabaseInfo{"demo__demo_db": {Logical: "demo_db", Physical: "demo__demo_db", Size: "1 MB", Available: true}}
 	model.appendContainerLog("demo", "2026-01-02 03:04:05,678 9 INFO demo__demo_db odoo.modules.loading: ready 1 0.100 0.200\n")
 	model.appendTaskLog("demo", "done\n")
 	model.logPhase = phaseReady
@@ -356,7 +484,7 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	_ = model.leftView(40)
 	_ = model.rightView(80)
 	_ = model.smallView()
-	_ = model.databaseTabView()
+	_ = model.databaseTabView(80)
 
 	for _, modal := range []modalMode{modalProfileSettings, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
 		model.modal = modal
@@ -518,6 +646,53 @@ func TestRestoreCopyRejectsExistingDestination(t *testing.T) {
 	}
 	if model.restoreErr == nil {
 		t.Fatal("existing destination in copy mode should set an error")
+	}
+}
+
+func TestRestoreWorksWithoutExistingDatabases(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusDatabases
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
+	model.databases = nil
+	model.databasePhase = phaseEmpty
+
+	updated, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	model = updated.(*Model)
+	if model.modal != modalFilePicker {
+		t.Fatalf("modal = %v, want file picker", model.modal)
+	}
+	if cmd == nil {
+		t.Fatal("R should load the picker directory")
+	}
+	if model.taskProfileName != "demo" {
+		t.Fatalf("task profile = %q, want demo", model.taskProfileName)
+	}
+
+	model.filePickerPhase = phaseReady
+	model.filePickerItems = []files.DirEntry{{Name: "ipm.zip", Path: "/tmp/ipm.zip"}}
+	model.filePickerIndex = 0
+	if cmd := model.chooseFilePickerEntry(); cmd != nil {
+		t.Fatal("choosing a dump should not queue a task")
+	}
+	if model.modal != modalRestoreDatabase {
+		t.Fatalf("modal = %v, want restore form", model.modal)
+	}
+	if model.restoreDestination != "ipm" {
+		t.Fatalf("destination = %q, want ipm", model.restoreDestination)
+	}
+}
+
+func TestRestoreNeedsSelectedProfile(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.focus = focusDatabases
+	model.profiles = nil
+	model.databasePhase = phaseEmpty
+
+	if cmd := model.startRestorePicker(); cmd != nil {
+		t.Fatal("restore without a profile should not open the picker")
+	}
+	if model.modal != modalNone {
+		t.Fatalf("modal = %v, want none", model.modal)
 	}
 }
 

@@ -482,7 +482,7 @@ func renderAddonList(output io.Writer, statuses []addons.AddonStatus) error {
 		if source == "" {
 			source = "-"
 		}
-		branch := status.Entry.Branch
+		branch := status.Branch
 		if branch == "" {
 			branch = "-"
 		}
@@ -520,8 +520,8 @@ func renderAddonStatus(output io.Writer, status addons.AddonStatus) error {
 	if status.Entry.WorktreeOf != "" {
 		fmt.Fprintf(output, "worktree parent: %s\n", status.Entry.WorktreeOf)
 	}
-	if status.Entry.Branch != "" {
-		fmt.Fprintf(output, "branch: %s\n", status.Entry.Branch)
+	if status.Branch != "" {
+		fmt.Fprintf(output, "branch: %s\n", status.Branch)
 	}
 	fmt.Fprintf(output, "path: %s\n", status.Path)
 	if status.PathAvailable {

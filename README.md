@@ -290,7 +290,9 @@ internal `cache-*` template databases are hidden):
   `admin_passwd`. The same operation is available as
   `lidoo db set-password --name <profile> --database <db>`, taking the password
   from `LIDOO_ADMIN_PASSWORD` or an interactive prompt.
-- `R` restores into a database. It opens a file picker that starts in the
+- `R` restores into a database. It works even when the profile has **no
+  databases yet**: a restore only needs a dump file, so `R` opens the picker
+  from an empty list too. The picker starts in the
   working directory: `↑`/`↓` move, `enter` enters a folder or picks a
   `.zip`/`.dump`, and `h`/`backspace` goes up. Any dump on your machine is
   reachable this way, and the restore form still accepts a typed path. The
@@ -299,22 +301,43 @@ internal `cache-*` template databases are hidden):
   you had selected; edit `destination` and switch `mode` to `move` to replace an
   existing database.
 
+Text fields (forms, the log search, and the typed confirmation) accept a paste
+from the terminal (`ctrl+v`/`ctrl+shift+v` in most terminals) and `ctrl+v`
+inside the TUI, which reads the system clipboard through the first available
+tool (`wl-paste`, `pbpaste`, `xclip`, `xsel`) and reports a notice when none is
+installed. Pasted line breaks and tabs are dropped instead of submitting the
+form.
+
 Add-ons:
 
+- The table's `BRANCH` column is the branch the checkout is **currently** on,
+  read from Git on every refresh (so `—` only means the path is not a repository
+  or HEAD is detached). It is the same value `lidoo addon list` and
+  `lidoo addon status` print.
 - `c` clones a new checkout.
 - `w` creates a worktree: choose the source add-on and then a branch from a
   select (with a "New branch…" option).
 - `a` attaches and `d` detaches add-ons for the selected profile, `f` fetches,
-  `p` pulls, and `x` removes a checkout chosen from a select.
+  `p` pulls, and `x` removes a checkout chosen from a select. The `ATTACHED`
+  column is the checkmark for the selected profile, so attachment is visible
+  without opening anything.
 
 Logs:
 
 - The profile panel shows only the container stream inline; Odoo lines are
   compacted (level gutter, no date/pid, werkzeug access lines summarised with the
   database name).
-- Task output is never mixed into that panel. The `Latest task` block below the
-  panel shows a short tail, and the full task stream lives in the viewer's
-  `tasks` source.
+- Task output is never mixed into that panel. The task block below the panel
+  (`Running task` while it works, `Latest task` when it is done) shows the last
+  10 **useful** lines: Python traceback frames and the `*.py:NN: DeprecationWarning`
+  headers an Odoo update prints in bulk are dropped, and carriage-return progress
+  (git) collapses to its last update, so the line that says the database was
+  updated is never buried. A `… older output above` marker means the block is
+  truncated; the full, unfiltered stream lives in the viewer's `tasks` source
+  (`L`, then `tab`).
+- While a form or dialog is open, the dashboard behind it is replaced by a plain
+  surface, so live log lines never bleed through the dialog. The log viewer is
+  the exception: its pickers stay readable against the lines they filter.
 - The inline panel can be scoped to one database. Press `D` in the Profiles panel
   (or `d` in the viewer) to get a select with `all databases` plus every database
   of the profile and every database seen in the log lines. Opening logs from the

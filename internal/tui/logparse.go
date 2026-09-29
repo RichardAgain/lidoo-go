@@ -90,6 +90,12 @@ var (
 	odooPerf      = regexp.MustCompile(` (\d+) (\d+\.\d+) (\d+\.\d+)$`)
 	odooPerfEmpty = regexp.MustCompile(` - - -$`)
 	odooAccess    = regexp.MustCompile(`^\S+ - - \[[^\]]*\] "([A-Z]+) (\S+) [^"]*" (\d{3}) (\S+)$`)
+	// pythonFrame matches a Python traceback frame, for example
+	// `  File "/usr/lib/python3/odoo/tools/func.py", line 42, in __get__`.
+	pythonFrame = regexp.MustCompile(`^\s*File "[^"]+", line \d+, in \S+`)
+	// pythonWarning matches the `path/to/file.py:123: DeprecationWarning: ...`
+	// header that introduces a warning.
+	pythonWarning = regexp.MustCompile(`^\S+\.py:\d+: `)
 )
 
 func buildLogEntries(container, task string) []logEntry {
@@ -181,6 +187,49 @@ func perfMilliseconds(value string) int {
 		return 0
 	}
 	return int(seconds*1000 + 0.5)
+}
+
+// usefulTaskLines keeps the task output lines that say something. Two kinds of
+// noise are dropped because they bury the one line that matters (for example
+// `database "demo__dev" updated` after an update):
+//   - carriage-return progress (git writes `Enumerating objects: 10%\r… 20%`),
+//     collapsed to the last update of each line;
+//   - Python traceback frames and the source line under them, which an Odoo
+//     update prints dozens of times from deprecation warnings.
+func usefulTaskLines(output string) []string {
+	raw := strings.Split(strings.TrimSpace(output), "\n")
+	lines := make([]string, 0, len(raw))
+	skipFrameSource := false
+	for _, line := range raw {
+		line = carriageReturnTail(strings.TrimSuffix(line, "\r"))
+		if pythonFrame.MatchString(line) {
+			skipFrameSource = true
+			continue
+		}
+		if skipFrameSource {
+			skipFrameSource = false
+			// The frame's own source line is indented under it; anything at
+			// column zero is a new message and must survive.
+			if strings.TrimSpace(line) == "" || line[0] == ' ' || line[0] == '\t' {
+				continue
+			}
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed == "Traceback (most recent call last):" || pythonWarning.MatchString(trimmed) {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// carriageReturnTail returns the text after the last carriage return, so a
+// line rewritten in place keeps only its final state.
+func carriageReturnTail(line string) string {
+	if index := strings.LastIndex(line, "\r"); index >= 0 {
+		return line[index+1:]
+	}
+	return line
 }
 
 func logLevelTag(level logLevel) string {

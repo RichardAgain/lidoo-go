@@ -15,6 +15,7 @@ type AddonStatus struct {
 	Entry            Entry
 	Path             string
 	Kind             string
+	Branch           string
 	PathAvailable    bool
 	Dirty            bool
 	RepositoryError  string
@@ -91,6 +92,16 @@ func inspectAddon(state files.State, name string, entry Entry) (AddonStatus, err
 		status.RepositoryError = "path is not a directory"
 	} else {
 		status.PathAvailable = true
+		// The branch a checkout is really on is read from Git, because the
+		// recorded Entry.Branch is empty for a plain clone and goes stale as
+		// soon as someone checks out another branch. A failure here (detached
+		// HEAD, missing Git) only means "no branch to show".
+		if branch, err := currentBranch(path); err == nil {
+			status.Branch = branch
+		}
+		if status.Branch == "" {
+			status.Branch = entry.Branch
+		}
 		dirty, err := gitStatusDirty(path)
 		if err != nil {
 			status.RepositoryError = err.Error()

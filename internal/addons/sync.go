@@ -149,6 +149,12 @@ func currentBranchWithContext(ctx context.Context, path string) (string, error) 
 	return branch, nil
 }
 
+// currentBranch reports the branch the checkout is currently on, so views can
+// show the real branch instead of only the one recorded at registration time.
+func currentBranch(path string) (string, error) {
+	return currentBranchWithContext(context.Background(), path)
+}
+
 func configuredUpstreamWithContext(ctx context.Context, path string) (string, error) {
 	command := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
 	output, err := command.Output()

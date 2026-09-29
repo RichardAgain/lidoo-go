@@ -165,6 +165,21 @@ requires explicit confirmation:
 go run ./cmd drop --name testing --database testing_db --yes
 ```
 
+Copy a database within a running profile using PostgreSQL's template copy and
+copy its filestore (the source must have no active connections unless
+`--force-disconnect` is given):
+
+```sh
+go run ./cmd copydb --name testing testing_db testing_db_copy
+```
+
+`copydb` accepts `--unless-dest-exists`, `--if-source-exists`, and
+`--filestore-copy-mode default|rsync|hardlink`. The last two modes require
+`rsync` in the profile image. Source and destination use logical database names;
+the destination is created under the profile's database prefix. Copies are not
+neutralized; use a copy only where running duplicate scheduled jobs and external
+integrations is safe.
+
 Create a backup or restore one using the corresponding `click-odoo-contrib`
 options. The source and destination paths are local paths; Lidoo copies them
 through Docker because profile containers do not mount the project directory:
@@ -204,7 +219,7 @@ a restore never silently replaces an existing database.
 
 The selected profile must be running. These commands execute
 `click-odoo-initdb`, `click-odoo-update`, `click-odoo-dropdb`,
-`click-odoo-backupdb`, or `click-odoo-restoredb` inside the profile container,
+`click-odoo-copydb`, `click-odoo-backupdb`, or `click-odoo-restoredb` inside the profile container,
 using its Odoo version, addons path, and PostgreSQL connection. PostgreSQL
 credentials are always read from the profile environment
 (`POSTGRES_USER` and `POSTGRES_PASSWORD`); Lidoo has no hardcoded database

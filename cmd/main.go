@@ -35,8 +35,9 @@ func main() {
 	flags.SetOutput(os.Stderr)
 
 	var name, version, database, modules, format string
-	var destination string
+	var destination, filestoreCopyMode string
 	var updateAll, yes, force, ifExists, filestore, noFilestore bool
+	var forceDisconnect, unlessDestExists, ifSourceExists bool
 	var copyDatabase, move, neutralize, follow, waitForReady bool
 	var jobs, tail int
 	var waitTimeout time.Duration
@@ -55,6 +56,10 @@ func main() {
 	flags.BoolVar(&yes, "yes", false, "confirm to all")
 	flags.BoolVar(&force, "force", false, "overwrite an existing backup or database")
 	flags.BoolVar(&ifExists, "if-exists", false, "skip backup if the database does not exist")
+	flags.BoolVar(&forceDisconnect, "force-disconnect", false, "disconnect users from the copy source")
+	flags.BoolVar(&unlessDestExists, "unless-dest-exists", false, "skip copy if destination exists")
+	flags.BoolVar(&ifSourceExists, "if-source-exists", false, "skip copy if source does not exist")
+	flags.StringVar(&filestoreCopyMode, "filestore-copy-mode", "default", "filestore copy mode: default, rsync, or hardlink")
 	flags.StringVar(&format, "format", "zip", "backup format: zip, dump, or folder")
 	flags.BoolVar(&filestore, "filestore", true, "include the filestore in a backup")
 	flags.BoolVar(&noFilestore, "no-filestore", false, "exclude the filestore from a backup")
@@ -182,6 +187,8 @@ func main() {
 			backupPath = positional[0]
 		}
 		_, err = service.BackupDatabase(context.Background(), name, database, backupPath, format, force, ifExists, filestore && !noFilestore, databaseOptions)
+	case "copydb":
+		_, err = service.CopyDatabase(context.Background(), name, positional[0], positional[1], forceDisconnect, unlessDestExists, ifSourceExists, filestoreCopyMode, databaseOptions)
 	case "restore":
 		if destination != "" && database != "" && destination != database {
 			err = errors.New("--destination and --database disagree; pass only one")
@@ -671,7 +678,7 @@ func isProfileLifecycleCommand(command string) bool {
 func commandNeedsSharedServices(command string, positional []string) bool {
 	switch command {
 	case "tui", "run", "wait", "restart", "recreate", "remove",
-		"init", "update", "drop", "backup", "restore":
+		"init", "update", "drop", "backup", "restore", "copydb":
 		return true
 	case "db":
 		if len(positional) == 0 {
@@ -755,7 +762,7 @@ func confirmAddonOperation(confirmation app.AddonConfirmation) (bool, error) {
 
 func isDatabaseMutationCommand(command string) bool {
 	switch command {
-	case "init", "update", "drop", "backup", "restore":
+	case "init", "update", "drop", "backup", "restore", "copydb":
 		return true
 	default:
 		return false
@@ -943,6 +950,10 @@ func parseWorktreeArgs(args []string) (string, string, string, bool, error) {
 
 func validatePositionals(command string, positional []string) error {
 	switch command {
+	case "copydb":
+		if len(positional) != 2 {
+			return errors.New("usage: lidoo copydb --name <profile> [--force-disconnect] [--unless-dest-exists] [--if-source-exists] [--filestore-copy-mode default|rsync|hardlink] <source> <destination>")
+		}
 	case "backup":
 		if len(positional) > 1 {
 			return errors.New("usage: lidoo backup --name <profile> --database <database> [options] [<destination>]")
@@ -999,7 +1010,7 @@ func configureProfile(state files.State, name, mode, pattern, adminPasswd string
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: lidoo <tui|list|status|logs|init|update|drop|backup|restore|run|wait|recreate|stop|restart|remove|config|db> [options]")
+	fmt.Fprintln(os.Stderr, "usage: lidoo <tui|list|status|logs|init|update|drop|copydb|backup|restore|run|wait|recreate|stop|restart|remove|config|db> [options]")
 	fmt.Fprintln(os.Stderr, "  tui")
 	fmt.Fprintln(os.Stderr, "  list")
 	fmt.Fprintln(os.Stderr, "  status [--name <profile>]")
@@ -1008,6 +1019,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  init --name <profile> --database <database> [--modules <csv>]")
 	fmt.Fprintln(os.Stderr, "  update --name <profile> --database <database> [--update-all]")
 	fmt.Fprintln(os.Stderr, "  drop --name <profile> --database <database> --yes")
+	fmt.Fprintln(os.Stderr, "  copydb --name <profile> [--force-disconnect] [--unless-dest-exists] [--if-source-exists] [--filestore-copy-mode default|rsync|hardlink] <source> <destination>")
 	fmt.Fprintln(os.Stderr, "  backup --name <profile> --database <database> [options] [<destination>]")
 	fmt.Fprintln(os.Stderr, "  restore --name <profile> [--destination <database>|--database <database>] [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
 	fmt.Fprintln(os.Stderr, "          destination defaults to --database, then to a unique name derived from <source>")

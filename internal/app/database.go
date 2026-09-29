@@ -47,6 +47,17 @@ func (s *Service) UpdateDatabase(ctx context.Context, name, database string, upd
 	})
 }
 
+func (s *Service) CopyDatabase(ctx context.Context, name, source, destination string, forceDisconnect, unlessDestExists, ifSourceExists bool, filestoreCopyMode string, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
+	operationOptions := normalizeDatabaseOperationOptions(options)
+	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {
+		return odoo.Copy(name, source, destination, forceDisconnect, unlessDestExists, ifSourceExists, filestoreCopyMode, state, odoo.OperationOptions{
+			Context:     ctx,
+			Output:      operationOptions.Output,
+			ErrorOutput: operationOptions.ErrorOutput,
+		})
+	})
+}
+
 func (s *Service) DropDatabase(ctx context.Context, name, database string, yes bool, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
 	operationOptions := normalizeDatabaseOperationOptions(options)
 	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {

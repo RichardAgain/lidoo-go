@@ -39,6 +39,7 @@ type modalMode uint8
 const (
 	modalNone modalMode = iota
 	modalTypedConfirm
+	modalConfirmDropDatabase
 	modalRunVersion
 	modalInitDatabase
 	modalBackupDatabase
@@ -1119,20 +1120,7 @@ func (m *Model) openDropConfirmation() {
 	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
-	name := m.taskDatabaseName
-	m.openTypedConfirm(
-		"This permanently deletes the database "+databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical})+" and its filestore.",
-		name,
-		func() tea.Cmd {
-			return m.queueTask(taskRequest{
-				Kind:             taskDrop,
-				ProfileName:      m.taskProfileName,
-				DatabaseName:     m.taskDatabaseName,
-				DatabasePhysical: m.taskDatabasePhysical,
-				Yes:              true,
-			})
-		},
-	)
+	m.modal = modalConfirmDropDatabase
 }
 
 func (m *Model) openInitForm() {
@@ -1730,6 +1718,20 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.confirmInput += value
 				m.confirmErr = nil
 			}
+		}
+	case modalConfirmDropDatabase:
+		switch msg.String() {
+		case "esc", "n", "N":
+			m.modal = modalNone
+		case "enter", "y", "Y":
+			m.modal = modalNone
+			return m, m.queueTask(taskRequest{
+				Kind:             taskDrop,
+				ProfileName:      m.taskProfileName,
+				DatabaseName:     m.taskDatabaseName,
+				DatabasePhysical: m.taskDatabasePhysical,
+				Yes:              true,
+			})
 		}
 	case modalConfirmWorktreeAddon:
 		switch msg.String() {
@@ -3805,7 +3807,14 @@ func (m *Model) modalView() string {
 		if m.confirmErr != nil {
 			lines = append(lines, errorStyle.Render(m.confirmErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("enter confirm  esc cancel  "+pasteHint))
+		lines = append(lines, "", mutedStyle.Render("enter confirm  esc cancel	"+pasteHint))
+	case modalConfirmDropDatabase:
+		lines = []string{
+			titleStyle.Render("Delete database " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}) + "?"),
+			warningStyle.Render("This permanently deletes the database and its filestore."),
+			"",
+			mutedStyle.Render("enter/y confirm  n/esc cancel"),
+		}
 	case modalRunVersion:
 		lines = []string{
 			titleStyle.Render("Odoo version required"),

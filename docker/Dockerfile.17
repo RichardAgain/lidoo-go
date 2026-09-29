@@ -1,0 +1,10 @@
+FROM odoo:17
+
+USER root
+RUN pip3 install --no-cache-dir click-odoo-contrib==1.23.1
+USER odoo
+
+LABEL io.lidoo.managed="true"
+LABEL io.lidoo.odoo-version="17.0"
+
+CMD ["odoo", "--dev=all"]

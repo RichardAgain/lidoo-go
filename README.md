@@ -98,7 +98,7 @@ builds; build failures still print the complete Docker output.
 ## LAN access
 
 Odoo ports are not published by default. Configure a fixed host port per profile
-in `.lidoo.json` through the CLI or the TUI's Profile Settings (`LAN port`):
+in `.lidoo.json` through the CLI or the TUI's `Config` tab (`LAN port`):
 
 ```sh
 lidoo config --name testing --lan-port 18069
@@ -112,6 +112,10 @@ Odoo on all IPv4 interfaces; restrict access with your firewall and use appropri
 Odoo credentials. Each running profile needs an available host port; Docker rejects
 ports already in use. `status` shows the configured port and marks port changes as
 pending recreation. Changing the setting alone does not alter an existing container.
+
+In the TUI, select a profile and navigate to `Config` with `tab` or by clicking
+its tab. Press `enter` or `e` to edit the LAN port, then `R` to recreate the
+container and apply it. This tab currently contains only the LAN port setting.
 
 Set `--lan-port 0` and recreate to disable publishing. Accepted values are `0–65535`.
 Different ports on the same IP do not isolate browser cookies between profiles;

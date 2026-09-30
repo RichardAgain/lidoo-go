@@ -31,6 +31,7 @@ const (
 	focusDatabases
 	focusAddons
 	focusInfo
+	focusConfig
 	focusAreaCount
 )
 
@@ -244,7 +245,6 @@ type Model struct {
 	profileSettingsIndex   int
 	configPatternDraft     string
 	configPasswordDraft    string
-	configLANPort          int
 	configLANPortDraft     string
 	adminPassword          string
 	adminPasswordConfirm   string
@@ -497,6 +497,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.configProfileName = msg.ProfileName
 		m.applyLoadedProfileConfig(msg.Config)
+		if m.focus == focusConfig {
+			m.configLANPortDraft = strconv.Itoa(msg.Config.LANPort)
+			m.formField = 0
+			m.modal = modalConfigLANPort
+		}
 		return m, nil
 	case ProfileConfigFailedMsg:
 		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectConfigDBFilterMode {
@@ -769,6 +774,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if profile != nil {
 				return m, OpenProfileURLCmd(profile.URL)
 			}
+		} else if m.focus == focusConfig {
+			return m, m.openProfileConfig()
 		} else if m.focus == focusAddons {
 			addon := m.selectedAddon()
 			profileName := m.selectedProfileName()
@@ -799,7 +806,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.refreshProfiles()
 	case "R":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if (m.focus == focusProfiles || m.focus == focusConfig) && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskRecreate, ProfileName: m.selectedProfileName()})
 		}
 		if m.focus == focusDatabases {
@@ -867,7 +874,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.startCreateProfile()
 		}
 	case "e":
-		if m.focus == focusProfiles {
+		if m.focus == focusProfiles || m.focus == focusConfig {
 			return m, m.openProfileConfig()
 		}
 	case "f":
@@ -965,13 +972,16 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 	reached := x - (leftWidth + 2)
 	header := m.rightViewHeaderLines()
 	if y == header {
-		if reached < 14 {
+		if reached < 15 {
 			return m.setFocus(focusDatabases)
 		}
-		if reached < 26 {
+		if reached < 28 {
 			return m.setFocus(focusAddons)
 		}
-		return m.setFocus(focusInfo)
+		if reached < 38 {
+			return m.setFocus(focusInfo)
+		}
+		return m.setFocus(focusConfig)
 	}
 
 	rowStart := header + 6
@@ -1498,6 +1508,9 @@ func (m *Model) openProfileConfig() tea.Cmd {
 	m.selectRequest++
 	m.selectKind = selectConfigDBFilterMode
 	m.selectTitle = "Database filter mode · " + profileName
+	if m.focus == focusConfig {
+		m.selectTitle = "LAN port · " + profileName
+	}
 	m.selectItems = nil
 	m.selectIndex = 0
 	m.selectErr = nil
@@ -1510,7 +1523,6 @@ func (m *Model) applyLoadedProfileConfig(config profile.Config) {
 	m.configDBFilterMode = config.EffectiveDBFilterMode()
 	m.configDBFilterPattern = config.DBFilterPattern
 	m.configAdminPasswd = config.AdminPasswd
-	m.configLANPort = config.LANPort
 	m.configFormErr = nil
 	m.profileSettingsIndex = 0
 	m.modal = modalProfileSettings
@@ -1522,7 +1534,6 @@ const (
 	settingDBFilterMode profileSettingRow = iota
 	settingDBFilterPattern
 	settingAdminPasswd
-	settingLANPort
 )
 
 // profileSettingRows lists the settings that apply to the current mode. The
@@ -1533,7 +1544,7 @@ func (m *Model) profileSettingRows() []profileSettingRow {
 	if m.configDBFilterMode == profile.DBFilterModeCustom {
 		rows = append(rows, settingDBFilterPattern)
 	}
-	rows = append(rows, settingAdminPasswd, settingLANPort)
+	rows = append(rows, settingAdminPasswd)
 	return rows
 }
 
@@ -1571,11 +1582,6 @@ func (m *Model) editProfileSetting() tea.Cmd {
 		m.configPasswordDraft = m.configAdminPasswd
 		m.formField = 0
 		m.modal = modalConfigPassword
-		return nil
-	case settingLANPort:
-		m.configLANPortDraft = strconv.Itoa(m.configLANPort)
-		m.formField = 0
-		m.modal = modalConfigLANPort
 		return nil
 	}
 	return nil
@@ -1670,8 +1676,7 @@ func (m *Model) submitConfigLANPort() tea.Cmd {
 		m.configFormErr = err
 		return nil
 	}
-	m.configLANPort = port
-	m.modal = modalProfileSettings
+	m.modal = modalNone
 	return m.queueTask(taskRequest{
 		Kind:         taskUpdateConfig,
 		ProfileName:  m.configProfileName,
@@ -1905,7 +1910,11 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
 		switch msg.String() {
 		case "esc":
-			m.modal = modalProfileSettings
+			if m.modal == modalConfigLANPort {
+				m.modal = modalNone
+			} else {
+				m.modal = modalProfileSettings
+			}
 		case "enter":
 			return m, m.submitProfileForm()
 		case "tab":
@@ -3288,6 +3297,8 @@ func (m *Model) rightView(width int) string {
 		content = m.databaseTabView(width)
 	case focusAddons:
 		content = m.addonTabView(width)
+	case focusConfig:
+		content = m.configTabView()
 	default:
 		content = m.profileDetailView()
 	}
@@ -3322,6 +3333,7 @@ func (m *Model) tabBar() string {
 		{name: "Databases", focus: focusDatabases},
 		{name: "Add-ons", focus: focusAddons},
 		{name: "Info", focus: focusInfo},
+		{name: "Config", focus: focusConfig},
 	}
 	labels := make([]string, 0, len(tabs))
 	for _, tab := range tabs {
@@ -3731,6 +3743,39 @@ func taskStatus(status string) string {
 	}
 }
 
+func (m *Model) configTabView() string {
+	lines := []string{titleStyle.Render("Config · " + m.selectedProfileName()), ""}
+	switch m.profilePhase {
+	case phaseLoading:
+		return strings.Join(append(lines, mutedStyle.Render("loading configuration...")), "\n")
+	case phaseError:
+		return strings.Join(append(lines, errorStyle.Render(errorText(m.profileDetailErr))), "\n")
+	case phaseReady:
+	default:
+		return strings.Join(append(lines, mutedStyle.Render("configuration unavailable")), "\n")
+	}
+	port := m.profileDetail.LANPort
+	value := "(disabled)"
+	if port != 0 {
+		value = strconv.Itoa(port)
+	}
+	lines = append(lines, activeStyle.Render("> LAN port: "+value))
+	if port != 0 {
+		lines = append(lines, fmt.Sprintf("  LAN URL: http://<host-LAN-IP>:%d", port))
+	}
+	lines = append(lines,
+		"",
+		"pending recreation: "+m.profileDetail.PendingRecreation.String(),
+		mutedStyle.Render("saved to .lidoo.json; 0 disables publishing"),
+		mutedStyle.Render("publishes on all IPv4 interfaces; restrict access with your firewall"),
+		mutedStyle.Render("enter/e edit LAN port  R recreate to apply"),
+	)
+	if m.profileDetailErr != nil {
+		lines = append(lines, errorStyle.Render("refresh failed: "+errorText(m.profileDetailErr)))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m *Model) profileDetailView() string {
 	lines := []string{titleStyle.Render("Profile details")}
 	if m.selectedProfileName() == "" {
@@ -3795,6 +3840,9 @@ func (m *Model) footerView() string {
 		if m.focus == focusAddons {
 			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
 		}
+	}
+	if m.focus == focusConfig {
+		keys = "tab/←/→ focus  enter/e edit LAN port  R recreate  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.taskStarting || m.taskRunning {
 		keys += "  c cancel"
@@ -4139,11 +4187,6 @@ func (m *Model) profileSettingValue(row profileSettingRow) (string, string) {
 			return "Odoo master password", mutedStyle.Render("(not set)")
 		}
 		return "Odoo master password", runningStyle.Render("set")
-	case settingLANPort:
-		if m.configLANPort == 0 {
-			return "LAN port", mutedStyle.Render("(disabled)")
-		}
-		return "LAN port", strconv.Itoa(m.configLANPort)
 	}
 	return "", ""
 }
@@ -4290,12 +4333,18 @@ func (m *Model) smallView() string {
 	if m.focus == focusAddons && m.selectedProfileName() != "" {
 		lines = append(lines, "", m.addonTabView(m.width))
 	}
+	if m.focus == focusConfig && m.selectedProfileName() != "" {
+		lines = append(lines, "", m.tabBar(), "", m.configTabView())
+	}
 	hints := profileActionHints()
 	if m.focus == focusDatabases {
 		hints = databaseEmptyActionHints(m.selectedDatabase() != nil)
 	}
 	if m.focus == focusAddons {
 		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
+	}
+	if m.focus == focusConfig {
+		hints = "tab focus  enter/e edit LAN port  R recreate"
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
 	if task := m.taskView(); task != "" {

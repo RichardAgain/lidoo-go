@@ -95,6 +95,28 @@ installations that do not include the Buildx plugin, Lidoo falls back to the
 compatible builder and keeps its diagnostic output hidden on successful
 builds; build failures still print the complete Docker output.
 
+## LAN access
+
+Odoo ports are not published by default. Configure a fixed host port per profile
+in `.lidoo.json` through the CLI or the TUI's Profile Settings (`LAN port`):
+
+```sh
+lidoo config --name testing --lan-port 18069
+lidoo recreate --name testing
+```
+
+For a new profile, use `run --name testing --version 18` instead of `recreate`.
+Teammates can then open `http://<your-host-LAN-IP>:18069`. Lidoo publishes
+`0.0.0.0:18069:8069`, leaving the existing local Caddy URL unchanged. This exposes
+Odoo on all IPv4 interfaces; restrict access with your firewall and use appropriate
+Odoo credentials. Each running profile needs an available host port; Docker rejects
+ports already in use. `status` shows the configured port and marks port changes as
+pending recreation. Changing the setting alone does not alter an existing container.
+
+Set `--lan-port 0` and recreate to disable publishing. Accepted values are `0–65535`.
+Different ports on the same IP do not isolate browser cookies between profiles;
+use separate browser profiles when accessing multiple Odoo profiles through that IP.
+
 ## Database operations
 
 The Odoo image includes `click-odoo-contrib==1.23.1`, which provides the

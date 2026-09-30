@@ -21,6 +21,7 @@ type ProfileDetail struct {
 	Name              string
 	DockerState       string
 	URL               string
+	LANPort           int
 	OdooVersion       string
 	AttachedAddons    []string
 	DatabasePrefix    string
@@ -56,6 +57,12 @@ type runtimeProfile struct {
 	Image   string
 	Version string
 	Mounts  []runtimeMount
+	Ports   map[string][]runtimePortBinding
+}
+
+type runtimePortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
 }
 
 type runtimeMount struct {
@@ -75,7 +82,10 @@ type inspectedContainer struct {
 		Image  string            `json:"Image"`
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
-	Mounts []runtimeMount `json:"Mounts"`
+	Mounts     []runtimeMount `json:"Mounts"`
+	HostConfig struct {
+		PortBindings map[string][]runtimePortBinding `json:"PortBindings"`
+	} `json:"HostConfig"`
 }
 
 // ProfileDetails returns inspection data for profiles known by workspace state,
@@ -139,6 +149,7 @@ func profileDetail(name string, state files.State, runtime runtimeProfile) (Prof
 		Name:              name,
 		DockerState:       "not created",
 		URL:               "http://" + profile.Hostname(name),
+		LANPort:           config.LANPort,
 		OdooVersion:       profileVersion(config),
 		AttachedAddons:    append([]string(nil), config.Addons...),
 		DatabasePrefix:    config.Prefix,
@@ -156,7 +167,7 @@ func profileDetail(name string, state files.State, runtime runtimeProfile) (Prof
 	if runtime.Version != "" {
 		detail.OdooVersion = runtime.Version
 	}
-	detail.PendingRecreation = recreationStatus(state, name, config, runtime.Mounts)
+	detail.PendingRecreation = recreationStatus(state, name, config, runtime.Mounts, runtime.Ports)
 	return detail, nil
 }
 
@@ -192,6 +203,7 @@ func runtimeProfiles() (map[string]runtimeProfile, error) {
 			Image:   inspected.Config.Image,
 			Version: inspected.Config.Labels["io.lidoo.odoo-version"],
 			Mounts:  inspected.Mounts,
+			Ports:   inspected.HostConfig.PortBindings,
 		}
 	}
 	return profiles, nil
@@ -224,7 +236,15 @@ func mountDisplay(mounts []runtimeMount, destination string) string {
 	return "not attached"
 }
 
-func recreationStatus(state files.State, name string, config profile.Config, mounts []runtimeMount) RecreationStatus {
+func recreationStatus(state files.State, name string, config profile.Config, mounts []runtimeMount, ports map[string][]runtimePortBinding) RecreationStatus {
+	bindings := ports["8069/tcp"]
+	portMatches := len(bindings) == 0
+	if config.LANPort != 0 {
+		portMatches = len(bindings) == 1 && bindings[0].HostIP == "0.0.0.0" && bindings[0].HostPort == fmt.Sprint(config.LANPort)
+	}
+	if !portMatches {
+		return RecreationStatus{Checked: true, Pending: true, Reason: "LAN port changed"}
+	}
 	expected, err := addons.ResolveMounts(state, config.Addons)
 	if err != nil {
 		return RecreationStatus{

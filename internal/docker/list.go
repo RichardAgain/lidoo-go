@@ -58,7 +58,7 @@ func ListProfiles(state files.State) ([]ProfileSummary, error) {
 		}
 		if container, ok := runtime[name]; ok {
 			summary.State = container.State
-			summary.PendingRecreation = recreationStatus(state, name, config, container.Mounts)
+			summary.PendingRecreation = recreationStatus(state, name, config, container.Mounts, container.Ports)
 			if container.Version != "" {
 				summary.Version = container.Version
 			}

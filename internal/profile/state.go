@@ -25,6 +25,7 @@ type Config struct {
 	DBFilterMode    string   `json:"db_filter_mode,omitempty"`
 	DBFilterPattern string   `json:"db_filter_pattern,omitempty"`
 	AdminPasswd     string   `json:"admin_passwd,omitempty"`
+	LANPort         int      `json:"lan_port,omitempty"`
 }
 
 // ConfigUpdate uses pointers so a caller can update one setting without
@@ -33,6 +34,7 @@ type ConfigUpdate struct {
 	DBFilterMode    *string
 	DBFilterPattern *string
 	AdminPasswd     *string
+	LANPort         *int
 }
 
 // Validate checks a configuration update before it reaches workspace state.
@@ -42,8 +44,13 @@ func (update ConfigUpdate) Validate() error {
 	modeSet := update.DBFilterMode != nil
 	patternSet := update.DBFilterPattern != nil
 	passwordSet := update.AdminPasswd != nil
-	if !modeSet && !patternSet && !passwordSet {
-		return errors.New("config requires a database filter mode, a filter pattern, or an admin password")
+	if !modeSet && !patternSet && !passwordSet && update.LANPort == nil {
+		return errors.New("config requires a database filter mode, a filter pattern, an admin password, or a LAN port")
+	}
+	if update.LANPort != nil {
+		if err := (Config{LANPort: *update.LANPort}).Validate(); err != nil {
+			return err
+		}
 	}
 	if patternSet && !modeSet {
 		return errors.New("a database filter pattern requires custom mode")
@@ -73,6 +80,9 @@ func (config Config) EffectiveDBFilterMode() string {
 }
 
 func (config Config) Validate() error {
+	if config.LANPort < 0 || config.LANPort > 65535 {
+		return errors.New("LAN port must be between 0 and 65535 (0 disables publishing)")
+	}
 	switch config.EffectiveDBFilterMode() {
 	case DBFilterModeProfile, DBFilterModeDisabled:
 		if config.DBFilterPattern != "" {
@@ -184,6 +194,9 @@ func UpdateConfig(state files.State, name string, update ConfigUpdate) error {
 	}
 	if update.AdminPasswd != nil {
 		config.AdminPasswd = *update.AdminPasswd
+	}
+	if update.LANPort != nil {
+		config.LANPort = *update.LANPort
 	}
 	if err := config.Validate(); err != nil {
 		return err

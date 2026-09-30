@@ -169,6 +169,9 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 		"--label", containerNameLabel + "=" + name,
 		"-v", filestoreVolumeName(name) + ":/var/lib/odoo",
 	}
+	if config.LANPort != 0 {
+		containerArgs = append(containerArgs, "--publish", fmt.Sprintf("0.0.0.0:%d:8069", config.LANPort))
+	}
 	if runtimeConfig != "" {
 		containerArgs = append(containerArgs,
 			"--mount", "type=bind,source="+runtimeConfig+",target=/etc/odoo/odoo.conf,readonly",
@@ -212,6 +215,9 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 		cleanupErr := removeCreatedContainer(containerName, options)
 		files.RestoreState(state, previousState)
 		return combineErrors(fmt.Errorf("synchronize Caddy routing: %w", err), cleanupErr)
+	}
+	if config.LANPort != 0 {
+		fmt.Fprintf(options.Stdout, "LAN access: http://<host-LAN-IP>:%d (all IPv4 interfaces; restrict access with your firewall)\n", config.LANPort)
 	}
 	return reportContainerURL(name, options.Stdout)
 }

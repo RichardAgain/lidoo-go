@@ -54,6 +54,7 @@ const (
 	modalProfileSettings
 	modalConfigPattern
 	modalConfigPassword
+	modalConfigLANPort
 	modalAdminPassword
 	modalFilePicker
 )
@@ -243,6 +244,8 @@ type Model struct {
 	profileSettingsIndex   int
 	configPatternDraft     string
 	configPasswordDraft    string
+	configLANPort          int
+	configLANPortDraft     string
 	adminPassword          string
 	adminPasswordConfirm   string
 	adminPasswordErr       error
@@ -1507,6 +1510,7 @@ func (m *Model) applyLoadedProfileConfig(config profile.Config) {
 	m.configDBFilterMode = config.EffectiveDBFilterMode()
 	m.configDBFilterPattern = config.DBFilterPattern
 	m.configAdminPasswd = config.AdminPasswd
+	m.configLANPort = config.LANPort
 	m.configFormErr = nil
 	m.profileSettingsIndex = 0
 	m.modal = modalProfileSettings
@@ -1518,6 +1522,7 @@ const (
 	settingDBFilterMode profileSettingRow = iota
 	settingDBFilterPattern
 	settingAdminPasswd
+	settingLANPort
 )
 
 // profileSettingRows lists the settings that apply to the current mode. The
@@ -1528,7 +1533,7 @@ func (m *Model) profileSettingRows() []profileSettingRow {
 	if m.configDBFilterMode == profile.DBFilterModeCustom {
 		rows = append(rows, settingDBFilterPattern)
 	}
-	rows = append(rows, settingAdminPasswd)
+	rows = append(rows, settingAdminPasswd, settingLANPort)
 	return rows
 }
 
@@ -1566,6 +1571,11 @@ func (m *Model) editProfileSetting() tea.Cmd {
 		m.configPasswordDraft = m.configAdminPasswd
 		m.formField = 0
 		m.modal = modalConfigPassword
+		return nil
+	case settingLANPort:
+		m.configLANPortDraft = strconv.Itoa(m.configLANPort)
+		m.formField = 0
+		m.modal = modalConfigLANPort
 		return nil
 	}
 	return nil
@@ -1646,6 +1656,26 @@ func (m *Model) submitConfigPassword() tea.Cmd {
 		Kind:         taskUpdateConfig,
 		ProfileName:  m.configProfileName,
 		ConfigUpdate: &profile.ConfigUpdate{AdminPasswd: &password},
+	})
+}
+
+func (m *Model) submitConfigLANPort() tea.Cmd {
+	port, err := strconv.Atoi(strings.TrimSpace(m.configLANPortDraft))
+	if err != nil {
+		m.configFormErr = errors.New("LAN port must be a number between 0 and 65535")
+		return nil
+	}
+	update := profile.ConfigUpdate{LANPort: &port}
+	if err := update.Validate(); err != nil {
+		m.configFormErr = err
+		return nil
+	}
+	m.configLANPort = port
+	m.modal = modalProfileSettings
+	return m.queueTask(taskRequest{
+		Kind:         taskUpdateConfig,
+		ProfileName:  m.configProfileName,
+		ConfigUpdate: &update,
 	})
 }
 
@@ -1872,7 +1902,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m, m.editProfileSetting()
 		}
-	case modalConfigPattern, modalConfigPassword:
+	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
 		switch msg.String() {
 		case "esc":
 			m.modal = modalProfileSettings
@@ -1988,6 +2018,8 @@ func (m *Model) submitProfileForm() tea.Cmd {
 		return m.submitConfigPattern()
 	case modalConfigPassword:
 		return m.submitConfigPassword()
+	case modalConfigLANPort:
+		return m.submitConfigLANPort()
 	case modalAdminPassword:
 		return m.submitAdminPasswordForm()
 	}
@@ -1998,7 +2030,7 @@ func (m *Model) clearProfileFormErr() {
 	switch m.modal {
 	case modalCreateProfile:
 		m.createFormErr = nil
-	case modalConfigPattern, modalConfigPassword:
+	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
 		m.configFormErr = nil
 	case modalAdminPassword:
 		m.adminPasswordErr = nil
@@ -2095,7 +2127,7 @@ func (m *Model) formFieldCount() int {
 		return 6
 	case modalCreateProfile:
 		return 1
-	case modalConfigPattern, modalConfigPassword:
+	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
 		return 1
 	case modalAdminPassword:
 		return 2
@@ -2212,6 +2244,10 @@ func (m *Model) formText() *string {
 	case modalConfigPassword:
 		if m.formField == 0 {
 			return &m.configPasswordDraft
+		}
+	case modalConfigLANPort:
+		if m.formField == 0 {
+			return &m.configLANPortDraft
 		}
 	case modalAdminPassword:
 		switch m.formField {
@@ -3716,6 +3752,7 @@ func (m *Model) profileDetailView() string {
 		"database prefix: "+detail.DatabasePrefix,
 		"image: "+detail.Image,
 		"filestore volume: "+detail.FilestoreVolume,
+		fmt.Sprintf("LAN port (configured): %d", detail.LANPort),
 		"pending recreation: "+detail.PendingRecreation.String(),
 	)
 	if m.profileDetailErr != nil {
@@ -3976,6 +4013,21 @@ func (m *Model) modalView() string {
 			mutedStyle.Render("this is admin_passwd (/web/database), not the admin user login password"),
 			mutedStyle.Render("tab field  type  enter apply  esc back  "+pasteHint),
 		)
+	case modalConfigLANPort:
+		lines = []string{
+			titleStyle.Render("LAN port · " + m.configProfileName),
+			m.formLine("host port", m.configLANPortDraft, 0, true),
+		}
+		if m.configFormErr != nil {
+			lines = append(lines, errorStyle.Render(m.configFormErr.Error()))
+		}
+		lines = append(lines,
+			"",
+			mutedStyle.Render("0 disables; 1–65535 publishes Odoo on all IPv4 interfaces"),
+			mutedStyle.Render("share http://<host-LAN-IP>:<port>; restrict access with your firewall"),
+			mutedStyle.Render("saved to state; recreate (R) applies the change"),
+			mutedStyle.Render("type  enter apply  esc back  "+pasteHint),
+		)
 	case modalAdminPassword:
 		lines = []string{
 			titleStyle.Render("Change Odoo admin user password"),
@@ -4087,6 +4139,11 @@ func (m *Model) profileSettingValue(row profileSettingRow) (string, string) {
 			return "Odoo master password", mutedStyle.Render("(not set)")
 		}
 		return "Odoo master password", runningStyle.Render("set")
+	case settingLANPort:
+		if m.configLANPort == 0 {
+			return "LAN port", mutedStyle.Render("(disabled)")
+		}
+		return "LAN port", strconv.Itoa(m.configLANPort)
 	}
 	return "", ""
 }

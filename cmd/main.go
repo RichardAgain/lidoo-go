@@ -39,7 +39,7 @@ func main() {
 	var updateAll, yes, force, ifExists, filestore, noFilestore bool
 	var forceDisconnect, unlessDestExists, ifSourceExists bool
 	var copyDatabase, move, neutralize, follow, waitForReady, communityOnly bool
-	var jobs, tail int
+	var jobs, tail, lanPort int
 	var waitTimeout time.Duration
 	var dbFilterMode, dbFilterPattern, adminPasswd string
 
@@ -54,6 +54,7 @@ func main() {
 	flags.StringVar(&dbFilterMode, "db-filter-mode", "", "database filter mode: profile, disabled, or custom")
 	flags.StringVar(&dbFilterPattern, "db-filter-pattern", "", "custom database filter regular expression")
 	flags.StringVar(&adminPasswd, "admin-passwd", "", "Odoo master admin password")
+	flags.IntVar(&lanPort, "lan-port", 0, "publish Odoo on this host port for LAN access (0 disables publishing)")
 	flags.BoolVar(&updateAll, "update-all", false, "force a complete module update")
 	flags.BoolVar(&yes, "y", false, "confirm to all")
 	flags.BoolVar(&yes, "yes", false, "confirm to all")
@@ -79,6 +80,10 @@ func main() {
 		os.Exit(2)
 	}
 	positional := flags.Args()
+	if flagWasSet(flags, "lan-port") && command != "config" {
+		fmt.Fprintln(os.Stderr, "--lan-port is only supported by config; use lidoo config --name <profile> --lan-port <port>")
+		os.Exit(2)
+	}
 
 	if err := validatePositionals(command, positional); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -230,8 +235,12 @@ func main() {
 	case "wait":
 		err = odoo.Wait(name, waitTimeout, state)
 	case "config":
+		var ports []int
+		if flagWasSet(flags, "lan-port") {
+			ports = append(ports, lanPort)
+		}
 		err = configureProfile(state, name, dbFilterMode, dbFilterPattern, adminPasswd,
-			flagWasSet(flags, "db-filter-mode"), flagWasSet(flags, "db-filter-pattern"), flagWasSet(flags, "admin-passwd"))
+			flagWasSet(flags, "db-filter-mode"), flagWasSet(flags, "db-filter-pattern"), flagWasSet(flags, "admin-passwd"), ports...)
 	case "recreate":
 		err = service.RecreateProfile(context.Background(), name, profileOptions)
 	case "stop":
@@ -435,6 +444,7 @@ func renderProfileDetails(details []docker.ProfileDetail) error {
 		fmt.Printf("PROFILE: %s\n", detail.Name)
 		fmt.Printf("docker state: %s\n", detail.DockerState)
 		fmt.Printf("url: %s\n", detail.URL)
+		fmt.Printf("LAN port (configured): %d\n", detail.LANPort)
 		fmt.Printf("odoo version: %s\n", detail.OdooVersion)
 		fmt.Printf("attached addons: %s\n", strings.Join(detail.AttachedAddons, ", "))
 		fmt.Printf("database prefix: %s\n", detail.DatabasePrefix)
@@ -1001,7 +1011,7 @@ func flagWasSet(flags *flag.FlagSet, name string) bool {
 	return set
 }
 
-func configureProfile(state files.State, name, mode, pattern, adminPasswd string, modeSet, patternSet, passwordSet bool) error {
+func configureProfile(state files.State, name, mode, pattern, adminPasswd string, modeSet, patternSet, passwordSet bool, lanPort ...int) error {
 	if err := profile.ValidateName(name); err != nil {
 		return err
 	}
@@ -1015,6 +1025,9 @@ func configureProfile(state files.State, name, mode, pattern, adminPasswd string
 	}
 	if passwordSet {
 		update.AdminPasswd = &adminPasswd
+	}
+	if len(lanPort) > 0 {
+		update.LANPort = &lanPort[0]
 	}
 	if err := update.Validate(); err != nil {
 		return err
@@ -1041,7 +1054,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  restore --name <profile> [--destination <database>|--database <database>] [--copy|--move] [--force] [--neutralize] [--jobs N] <source>")
 	fmt.Fprintln(os.Stderr, "          destination defaults to --database, then to a unique name derived from <source>")
 	fmt.Fprintln(os.Stderr, "  run|stop|restart|remove --name <profile>")
-	fmt.Fprintln(os.Stderr, "  config --name <profile> [--db-filter-mode profile|disabled|custom] [--db-filter-pattern <regex>] [--admin-passwd <password>]")
+	fmt.Fprintln(os.Stderr, "  config --name <profile> [--db-filter-mode profile|disabled|custom] [--db-filter-pattern <regex>] [--admin-passwd <password>] [--lan-port <0-65535>]")
 	fmt.Fprintln(os.Stderr, "  db list --name <profile>")
 	fmt.Fprintln(os.Stderr, "  db info --name <profile> --database <database>")
 	fmt.Fprintln(os.Stderr, "  db shell --name <profile> --database <database>")

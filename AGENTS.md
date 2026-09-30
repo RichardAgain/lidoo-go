@@ -30,3 +30,19 @@ Before adding a process, dependency, or configuration layer, state the problem
 it solves, why the current Docker/CLI flow cannot solve it, and the operational
 cost it introduces. Do not add DNS or hosts-file management for local profile
 routing.
+
+## Documentation map
+
+- `ARCHITECTURE.md` — layers, packages, runtime model (profiles, shared
+  Postgres/Caddy, add-on mounts, database lifecycle). Read it before changing a
+  package boundary or the runtime model.
+- `HISTORY.md` — how the CLI and TUI got here; read it for the "why" behind a
+  command or constraint.
+- `README.md` — user-facing command reference; keep it in sync with the CLI.
+- A structural change updates `ARCHITECTURE.md` in the same commit; a new
+  command or behavior updates `README.md`.
+
+## Commits
+
+Use Conventional Commits (`feat(scope):`, `fix(scope):`, `docs:`, `chore:`),
+one reviewable work unit per commit.

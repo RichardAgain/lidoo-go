@@ -65,6 +65,11 @@ func ContainerRuntimeFlags(container string, options CommandOptions) ([]string, 
 
 // RunOneOff runs *command* in a throwaway container built from *container*'s
 // runtime, with *extraMounts* appended as `-v` values.
+//
+// The image entrypoint is bypassed: it appends the PostgreSQL connection
+// arguments derived from the environment at the end of the command line, which
+// duplicates the ones the caller places explicitly and which the `db`
+// subcommand rejects in that position.
 func RunOneOff(container string, extraMounts, command []string, options CommandOptions) error {
 	flags, image, err := ContainerRuntimeFlags(container, options)
 	if err != nil {
@@ -74,7 +79,7 @@ func RunOneOff(container string, extraMounts, command []string, options CommandO
 	for _, mount := range extraMounts {
 		args = append(args, "-v", mount)
 	}
-	args = append(args, image)
+	args = append(args, "--entrypoint", "odoo", image)
 	args = append(args, command...)
 	return dockerQuietWithOptions(options, args...)
 }

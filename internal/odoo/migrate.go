@@ -123,7 +123,7 @@ func Migrate(sourceProfile, sourceDatabase, targetProfile, targetDatabase string
 	// pre-upgrade schema without asking the target Odoo to open the registry,
 	// which would fail because the source schema predates the target models.
 	containerZip := "/tmp/lidoo-migrate.zip"
-	loadCommand := append([]string{"odoo", "db"}, databaseArgs...)
+	loadCommand := append([]string{"db"}, databaseArgs...)
 	loadCommand = append(loadCommand, "load")
 	if force {
 		// Without --force `db load` refuses to overwrite an existing database,
@@ -142,7 +142,6 @@ func Migrate(sourceProfile, sourceDatabase, targetProfile, targetDatabase string
 		return result, err
 	}
 	upgradeCommand := []string{
-		"odoo",
 		"--addons-path=" + addonsPath,
 		"--load=" + migrationLoadModules(openUpgradeAddon),
 		"--database", targetPhysical,

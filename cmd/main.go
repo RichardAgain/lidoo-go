@@ -35,10 +35,10 @@ func main() {
 	flags.SetOutput(os.Stderr)
 
 	var name, version, database, modules, format string
-	var destination, filestoreCopyMode string
+	var destination, filestoreCopyMode, sourceProfile, openupgrade string
 	var updateAll, yes, force, ifExists, filestore, noFilestore bool
 	var forceDisconnect, unlessDestExists, ifSourceExists bool
-	var copyDatabase, move, neutralize, follow, waitForReady bool
+	var copyDatabase, move, neutralize, follow, waitForReady, communityOnly bool
 	var jobs, tail int
 	var waitTimeout time.Duration
 	var dbFilterMode, dbFilterPattern, adminPasswd string
@@ -48,6 +48,9 @@ func main() {
 	flags.StringVar(&database, "database", "", "database name")
 	flags.StringVar(&destination, "destination", "", "restore destination database (defaults to --database or the dump name)")
 	flags.StringVar(&modules, "modules", "base", "comma-separated modules to install")
+	flags.StringVar(&sourceProfile, "source-profile", "", "migrate: source profile holding --database")
+	flags.StringVar(&openupgrade, "openupgrade", "", "migrate: attached addon holding the OpenUpgrade framework")
+	flags.BoolVar(&communityOnly, "community-only", false, "migrate: Community addons only (skip Enterprise)")
 	flags.StringVar(&dbFilterMode, "db-filter-mode", "", "database filter mode: profile, disabled, or custom")
 	flags.StringVar(&dbFilterPattern, "db-filter-pattern", "", "custom database filter regular expression")
 	flags.StringVar(&adminPasswd, "admin-passwd", "", "Odoo master admin password")
@@ -179,6 +182,16 @@ func main() {
 		_, err = service.InitializeDatabase(context.Background(), name, database, modules, databaseOptions)
 	case "update":
 		_, err = service.UpdateDatabase(context.Background(), name, database, updateAll, databaseOptions)
+	case "migrate":
+		if sourceProfile == "" {
+			err = errors.New("usage: lidoo migrate --name <target-profile> --source-profile <source-profile> --database <source-database> [--destination <target-database>] [--community-only] [--openupgrade <addon>]")
+			break
+		}
+		target := destination
+		if target == "" {
+			target = database
+		}
+		_, err = service.MigrateDatabase(context.Background(), sourceProfile, database, name, target, communityOnly, openupgrade, force, databaseOptions)
 	case "drop":
 		_, err = service.DropDatabase(context.Background(), name, database, yes, databaseOptions)
 	case "backup":
@@ -678,7 +691,7 @@ func isProfileLifecycleCommand(command string) bool {
 func commandNeedsSharedServices(command string, positional []string) bool {
 	switch command {
 	case "tui", "run", "wait", "restart", "recreate", "remove",
-		"init", "update", "drop", "backup", "restore", "copydb":
+		"init", "update", "drop", "backup", "restore", "copydb", "migrate":
 		return true
 	case "db":
 		if len(positional) == 0 {
@@ -762,7 +775,7 @@ func confirmAddonOperation(confirmation app.AddonConfirmation) (bool, error) {
 
 func isDatabaseMutationCommand(command string) bool {
 	switch command {
-	case "init", "update", "drop", "backup", "restore", "copydb":
+	case "init", "update", "drop", "backup", "restore", "copydb", "migrate":
 		return true
 	default:
 		return false
@@ -961,6 +974,10 @@ func validatePositionals(command string, positional []string) error {
 	case "restore":
 		if len(positional) != 1 {
 			return errors.New("usage: lidoo restore --name <profile> --database <database> [options] <source>")
+		}
+	case "migrate":
+		if len(positional) != 0 {
+			return errors.New("usage: lidoo migrate --name <target-profile> --source-profile <source-profile> --database <source-database> [--destination <target-database>] [--community-only] [--openupgrade <addon>]")
 		}
 	case "tui", "list", "status", "logs", "init", "update", "drop", "run", "wait", "recreate", "stop", "restart", "remove", "config":
 		if len(positional) != 0 {

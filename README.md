@@ -414,6 +414,40 @@ If a recreation fails, restore the prior `.lidoo.json` from your backup and
 inspect the Docker logs before retrying. Database restore is explicit and can
 use `--copy` (default) or `--move`; never use `--move` as a rollback substitute.
 
+### Migrating a database to a newer Odoo
+
+`migrate` upgrades a copy of a database with the **target** profile's Odoo. The
+source database stays untouched in its own profile: `migrate` backs it up
+(filestore included), restores the backup as a new database in the target
+profile, and runs Odoo's own module upgrade there.
+
+```sh
+go run ./cmd migrate \
+  --name target-profile \
+  --source-profile source-profile \
+  --database source_db \
+  --destination migrated_db \
+  --openupgrade openupgrade
+```
+
+The upgrade is `odoo --update all --stop-after-init`, so every installed
+module's own migration scripts run. `--update all` covers Community and
+Enterprise; attaching OpenUpgrade through `--openupgrade <addon>` additionally
+loads its `openupgrade_framework`, which adds the extra Community migration
+scripts. The addon must be attached to the target profile first (for example
+`lidoo addons attach --name target-profile --as openupgrade /path/to/OpenUpgrade`),
+and its repository root is added to the addons path.
+
+`--community-only` narrows the addons path to the Community directory, so a
+profile that has Enterprise attached can be migrated as Community. Nothing uses
+`psql` or a hand-written SQL bridge: the migration is Odoo's ORM upgrade plus
+the existing backup and restore commands.
+
+Migrate into a fresh database name. The source profile and the target profile
+must differ, and the command never writes to the source database. For
+Enterprise migrations that need Odoo's own rename map, use the supported Odoo
+upgrade service instead.
+
 `.lidoo.json` is created on the first successful state mutation, saved with a
 same-directory temporary file, fsynced, and atomically renamed. Mutating
 commands hold a process lock; a concurrent mutation fails instead of

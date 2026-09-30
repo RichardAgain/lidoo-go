@@ -104,6 +104,19 @@ func (s *Service) RestoreDatabase(ctx context.Context, name, database, source st
 	})
 }
 
+// MigrateDatabase upgrades a copy of a source profile's database with the
+// target profile's Odoo. See odoo.Migrate for the migration contract.
+func (s *Service) MigrateDatabase(ctx context.Context, sourceProfile, sourceDatabase, targetProfile, targetDatabase string, communityOnly bool, openUpgradeAddon string, force bool, options ...DatabaseOperationOptions) (DatabaseOperationResult, error) {
+	operationOptions := normalizeDatabaseOperationOptions(options)
+	return s.withDatabaseOperation(ctx, func(state files.State) (DatabaseOperationResult, error) {
+		return odoo.Migrate(sourceProfile, sourceDatabase, targetProfile, targetDatabase, communityOnly, openUpgradeAddon, force, state, odoo.OperationOptions{
+			Context:     ctx,
+			Output:      operationOptions.Output,
+			ErrorOutput: operationOptions.ErrorOutput,
+		})
+	})
+}
+
 func (s *Service) withDatabaseOperation(ctx context.Context, operation func(files.State) (DatabaseOperationResult, error)) (DatabaseOperationResult, error) {
 	var result DatabaseOperationResult
 	err := s.withWorkspaceOperation(ctx, false, func(state files.State) error {

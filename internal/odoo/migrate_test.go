@@ -17,7 +17,7 @@ func TestMigrationLoadModules(t *testing.T) {
 		want        string
 	}{
 		{name: "odoo scripts only", openUpgrade: "", want: "base,web"},
-		{name: "with openupgrade framework", openUpgrade: "openupgrade", want: "base,web,openupgrade_framework"},
+		{name: "with openupgrade framework", openUpgrade: "openupgrade", want: "base,web,openupgrade_framework,lidoo_upgrade_19"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

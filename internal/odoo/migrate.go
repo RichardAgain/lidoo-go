@@ -23,6 +23,13 @@ const communityAddonsPath = "/usr/lib/python3/dist-packages/odoo/addons"
 // the upgrade so the OpenUpgrade migration scripts run for Community modules.
 const openUpgradeFrameworkModule = "openupgrade_framework"
 
+// openUpgradeRenamesModule is a server-wide module that extends OpenUpgrade's
+// module rename map with the Enterprise renames Odoo 19 introduced. It is only
+// imported, never installed: OpenUpgrade's own `apriori` lists Community
+// modules only, so without the extension the old Enterprise entries stay
+// installed but orphaned and their successors uninstalled.
+const openUpgradeRenamesModule = "lidoo_upgrade_19"
+
 // Migrate upgrades a copy of a source database with the target profile's Odoo.
 //
 // It reuses the existing backup and restore operations to move the source
@@ -220,5 +227,5 @@ func migrationLoadModules(openUpgradeAddon string) string {
 	if openUpgradeAddon == "" {
 		return "base,web"
 	}
-	return "base,web," + openUpgradeFrameworkModule
+	return "base,web," + openUpgradeFrameworkModule + "," + openUpgradeRenamesModule
 }

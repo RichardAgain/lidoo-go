@@ -434,9 +434,17 @@ The upgrade is `odoo --update all --stop-after-init`, so every installed
 module's own migration scripts run. `--update all` covers Community and
 Enterprise; attaching OpenUpgrade through `--openupgrade <addon>` additionally
 loads its `openupgrade_framework`, which adds the extra Community migration
-scripts. The addon must be attached to the target profile first (for example
-`lidoo addons attach --name target-profile --as openupgrade /path/to/OpenUpgrade`),
-and its repository root is added to the addons path.
+scripts. The addon must be registered and attached to the target profile first
+(for example `lidoo addons add openupgrade https://github.com/OCA/OpenUpgrade.git
+--branch 19.0` then `lidoo addons attach --name target-profile openupgrade`),
+and its repository root is added to the addons path. OpenUpgrade also needs
+`openupgradelib` inside the image, which `docker/Dockerfile.19` installs.
+
+Run the migration with the target profile **stopped**: the profile container
+runs Odoo as its main process, and a second Odoo upgrading the same database
+fails with a serialization conflict. The command loads and upgrades through a
+one-off container built from the profile's image, addons and filestore volume,
+so the profile's server is not part of the run.
 
 `--community-only` narrows the addons path to the Community directory, so a
 profile that has Enterprise attached can be migrated as Community. Nothing uses

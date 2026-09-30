@@ -1,7 +1,9 @@
 package docker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -191,6 +193,29 @@ func dockerCommandAvailableWithContext(ctx context.Context, args ...string) bool
 
 func dockerOutput(args ...string) ([]byte, error) {
 	return dockerOutputWithOptions(CommandOptions{}, args...)
+}
+
+// ContainerEnv reads one container's environment as a name->value map. The
+// Odoo image entrypoint derives the PostgreSQL connection arguments from this
+// environment, so a caller that execs Odoo directly needs the same values.
+func ContainerEnv(container string, options CommandOptions) (map[string]string, error) {
+	options = normalizeCommandOptions(options)
+	output, err := dockerOutputWithOptions(options, "inspect", "--format", "{{json .Config.Env}}", container)
+	if err != nil {
+		return nil, fmt.Errorf("inspect container %q: %w", container, err)
+	}
+	var entries []string
+	if err := json.Unmarshal(bytes.TrimSpace(output), &entries); err != nil {
+		return nil, fmt.Errorf("parse container %q environment: %w", container, err)
+	}
+	values := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		name, value, found := strings.Cut(entry, "=")
+		if found {
+			values[name] = value
+		}
+	}
+	return values, nil
 }
 
 func dockerOutputWithOptions(options CommandOptions, args ...string) ([]byte, error) {

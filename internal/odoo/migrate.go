@@ -89,24 +89,52 @@ func Migrate(sourceProfile, sourceDatabase, targetProfile, targetDatabase string
 		return result, fmt.Errorf("backup source database: %w", err)
 	}
 
-	// 2. Restore it as a copy inside the target profile.
-	fmt.Fprintf(stdout, "restoring into profile %q as %q\n", targetProfile, targetDatabase)
-	if _, err := Restore(targetProfile, targetDatabase, backupPath, true, force, false, 1, state,
-		operationOptions); err != nil {
-		return result, fmt.Errorf("restore into target profile: %w", err)
-	}
-
-	// 3. Run the core upgrade in the target container.
+	// 2. The profile container's main process is Odoo itself, so a second Odoo
+	//    upgrading the same database conflicts with it (a serialization failure
+	//    on ir_module_module). Run the load and the upgrade in a throwaway
+	//    container built from the profile's own runtime, with the profile
+	//    stopped for the duration.
 	commandOptions := stdout.commandOptions(stderr, operationOptions.Context)
 	container, err := docker.RequireRunningProfileWithOptions(targetProfile, commandOptions)
 	if err != nil {
 		return result, err
 	}
+	databaseArgs, err := odooDatabaseArgs(container, commandOptions)
+	if err != nil {
+		return result, err
+	}
+	if err := docker.StopWithOptions(targetProfile, commandOptions); err != nil {
+		return result, fmt.Errorf("stop target profile: %w", err)
+	}
+	defer func() {
+		if startErr := docker.StartWithOptions(targetProfile, commandOptions); startErr != nil {
+			fmt.Fprintf(stderr, "warning: restart target profile %q: %v\n", targetProfile, startErr)
+		}
+	}()
+
+	// `odoo db load` is the migration-only restore path: it loads the
+	// pre-upgrade schema without asking the target Odoo to open the registry,
+	// which would fail because the source schema predates the target models.
+	containerZip := "/tmp/lidoo-migrate.zip"
+	loadCommand := append([]string{"odoo", "db"}, databaseArgs...)
+	loadCommand = append(loadCommand, "load")
+	if force {
+		// Without --force `db load` refuses to overwrite an existing database,
+		// which is the safe default for a rehearsal target.
+		loadCommand = append(loadCommand, "-f")
+	}
+	loadCommand = append(loadCommand, targetPhysical, containerZip)
+	fmt.Fprintf(stdout, "loading into profile %q as %q\n", targetProfile, targetDatabase)
+	if err := docker.RunOneOff(container, []string{backupPath + ":" + containerZip + ":ro"}, loadCommand, commandOptions); err != nil {
+		return result, fmt.Errorf("load into target profile: %w", err)
+	}
+
+	// 3. Run the core upgrade in the same throwaway runtime.
 	addonsPath, err := migrationAddonsPath(state, targetProfile, communityOnly, openUpgradeAddon)
 	if err != nil {
 		return result, err
 	}
-	args := []string{
+	upgradeCommand := []string{
 		"odoo",
 		"--addons-path=" + addonsPath,
 		"--load=" + migrationLoadModules(openUpgradeAddon),
@@ -115,12 +143,35 @@ func Migrate(sourceProfile, sourceDatabase, targetProfile, targetDatabase string
 		"--stop-after-init",
 		"--no-http",
 	}
+	upgradeCommand = append(upgradeCommand, databaseArgs...)
 	fmt.Fprintf(stdout, "upgrading database %q in profile %q\n", targetPhysical, targetProfile)
-	if err := runWithCommandOptions(container, commandOptions, args...); err != nil {
+	if err := docker.RunOneOff(container, nil, upgradeCommand, commandOptions); err != nil {
 		return result, fmt.Errorf("upgrade database %q: %w", targetPhysical, err)
 	}
 	fmt.Fprintf(stdout, "database %q migrated with the target profile's Odoo\n", targetPhysical)
 	return result, nil
+}
+
+// odooDatabaseArgs mirrors the Odoo image entrypoint: it turns the container
+// environment into --db_host/--db_port/--db_user/--db_password arguments.
+func odooDatabaseArgs(container string, options docker.CommandOptions) ([]string, error) {
+	environment, err := docker.ContainerEnv(container, options)
+	if err != nil {
+		return nil, err
+	}
+	pairs := [][2]string{
+		{"HOST", "--db_host"},
+		{"PORT", "--db_port"},
+		{"POSTGRES_USER", "--db_user"},
+		{"POSTGRES_PASSWORD", "--db_password"},
+	}
+	args := make([]string, 0, len(pairs)*2)
+	for _, pair := range pairs {
+		if value := environment[pair[0]]; value != "" {
+			args = append(args, pair[1], value)
+		}
+	}
+	return args, nil
 }
 
 // migrationAddonsPath builds the container addons path for the upgrade: the

@@ -1,0 +1,16 @@
+FROM odoo:19
+
+USER root
+# click-odoo-contrib provides the database commands Lidoo runs inside the
+# container. openupgradelib is required by the OpenUpgrade framework when a
+# migration loads it; without it `--load=openupgrade_framework` fails and the
+# upgrade runs without its migration scripts.
+RUN pip3 install --no-cache-dir --break-system-packages \
+    click-odoo-contrib==1.23.1 \
+    openupgradelib
+USER odoo
+
+LABEL io.lidoo.managed="true"
+LABEL io.lidoo.odoo-version="19.0"
+
+CMD ["odoo", "--dev=all"]

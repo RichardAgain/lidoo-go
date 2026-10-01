@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# One foreground SSH tunnel, bound to the Docker host gateway only.
+set -euo pipefail
+profile="${1:-ujap-api}"
+gateway=$(docker exec "lidoo-${profile}" python3 -c 'import socket; print(socket.gethostbyname("host.docker.internal"))')
+printf 'Proxy para Odoo: socks5h://host.docker.internal:1080\n'
+printf 'Túnel enlazado solo a la IP del puente Docker: %s\n' "$gateway"
+printf 'Deja esta terminal abierta. Ctrl+C cierra el túnel.\n'
+exec ssh -N -g -D "${gateway}:1080" -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -l odoousr -p22 157.173.109.24

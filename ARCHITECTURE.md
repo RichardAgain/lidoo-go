@@ -42,6 +42,12 @@ root and runs `go run ./cmd`.
   suffix resolves locally without touching `/etc/hosts`.
 - Browser session isolation comes from the **profile hostname**, not from a
   different port on `localhost` (cookies are not separated by port).
+- Managed containers also receive Docker's standard
+  `host.docker.internal:host-gateway` alias, preserved by one-off operations.
+  This lets an explicit integration client reach an SSH tunnel on the Docker
+  host; it is unrelated to profile routing and does not alter system DNS/hosts.
+  The Odoo 18 image includes PySocks for `requests` SOCKS support. A host tunnel
+  is still user-started, bound to the bridge address only; no proxy service is added.
 
 ## Workspace state
 

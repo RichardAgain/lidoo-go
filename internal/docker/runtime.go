@@ -7,7 +7,7 @@ import (
 )
 
 // ContainerRuntimeFlags reproduces one container's runtime as `docker run`
-// flags, image excluded: its network, environment and mounts.
+// flags, image excluded: its network, environment, mounts and host aliases.
 //
 // The migration uses it to run a one-off Odoo in the profile's own runtime.
 // The profile container's main process is Odoo itself, so a second Odoo
@@ -21,13 +21,18 @@ func ContainerRuntimeFlags(container string, options CommandOptions) ([]string, 
 		"{{json .Config.Env}}",
 		"{{json .Mounts}}",
 		"{{json .NetworkSettings.Networks}}",
+		"{{json .HostConfig.ExtraHosts}}",
 	}, "\t")
 	output, err := dockerOutputWithOptions(options, "inspect", "--format", format, container)
 	if err != nil {
 		return nil, "", fmt.Errorf("inspect container %q: %w", container, err)
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(output)), "\t", 4)
-	if len(parts) != 4 {
+	return runtimeFlagsFromInspect(container, string(output))
+}
+
+func runtimeFlagsFromInspect(container, output string) ([]string, string, error) {
+	parts := strings.SplitN(strings.TrimSpace(output), "\t", 5)
+	if len(parts) != 5 {
 		return nil, "", fmt.Errorf("unexpected docker inspect output for container %q", container)
 	}
 
@@ -47,6 +52,11 @@ func ContainerRuntimeFlags(container string, options CommandOptions) ([]string, 
 		return nil, "", fmt.Errorf("parse container %q networks: %w", container, err)
 	}
 
+	var extraHosts []string
+	if err := json.Unmarshal([]byte(parts[4]), &extraHosts); err != nil {
+		return nil, "", fmt.Errorf("parse container %q host aliases: %w", container, err)
+	}
+
 	network := networkName
 	for name := range networks {
 		network = name
@@ -54,6 +64,9 @@ func ContainerRuntimeFlags(container string, options CommandOptions) ([]string, 
 	}
 
 	flags := []string{"--network", network}
+	for _, host := range extraHosts {
+		flags = append(flags, "--add-host", host)
+	}
 	for _, value := range environment {
 		flags = append(flags, "--env", value)
 	}

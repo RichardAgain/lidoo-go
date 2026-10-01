@@ -95,6 +95,35 @@ installations that do not include the Buildx plugin, Lidoo falls back to the
 compatible builder and keeps its diagnostic output hidden on successful
 builds; build failures still print the complete Docker output.
 
+## UJAP API access from Docker (Odoo 18)
+
+Recreate a profile after this change to install PySocks and Docker's standard
+`host.docker.internal:host-gateway` alias. One-off maintenance operations preserve
+that alias too. No host DNS changes or additional proxy service are required.
+
+For the local UJAP test profile, start the tunnel in a separate terminal:
+
+```sh
+bash bin/ujap-tunnel ujap-api
+```
+
+The helper resolves the host gateway from the container and binds SSH SOCKS only
+to that bridge IP on port 1080, not to `0.0.0.0` or the LAN address. Keep the
+terminal open. SSH authentication remains interactive; no password is stored.
+The connector uses `socks5h://host.docker.internal:1080` by default. Enter the API
+key only in Odoo's administrator form; never in Git or chat. If Odoo is already
+on the authorized server, clear the proxy field for direct access.
+
+If the host firewall drops new INPUT connections, allow TCP 1080 only from
+`lidoo-net`'s bridge/subnet to the tunnel's host-gateway address. FORWARD rules
+for Docker do not allow traffic addressed to the host itself. Do not flush the
+firewall or alter Docker-managed NAT/filter tables. A runtime-only rule may be
+lost on reboot or firewall reload; persist it only through the host's firewall
+configuration with explicit approval.
+
+This is an outbound integration tunnel, not profile hostname routing. UJAP's
+HTTP connection from the authorized SSH server to the API is still unencrypted.
+
 ## Database operations
 
 The Odoo image includes `click-odoo-contrib==1.23.1`, which provides the

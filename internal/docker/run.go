@@ -163,6 +163,7 @@ func RunWithOptions(name, version string, state files.State, options CommandOpti
 		"run", "--detach",
 		"--name", containerName,
 		"--network", networkName,
+		"--add-host", "host.docker.internal:host-gateway",
 		"--env-file", databaseEnvFile,
 		"--env", "HOST=lidoo-postgres",
 		"--env", "PORT=5432",

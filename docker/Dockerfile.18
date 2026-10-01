@@ -1,7 +1,8 @@
 FROM odoo:18
 
 USER root
-RUN pip3 install --no-cache-dir --break-system-packages click-odoo-contrib==1.23.1
+# PySocks lets the existing requests client use the host's SSH SOCKS tunnel.
+RUN pip3 install --no-cache-dir --break-system-packages click-odoo-contrib==1.23.1 PySocks==1.7.1
 # Odoo 18 expects ReportLab's Courier Type 1 alias during startup. The
 # bundled Nimbus Mono font is the same fixed-width fallback Odoo uses when
 # the alias is absent, so link it instead of installing another font package.

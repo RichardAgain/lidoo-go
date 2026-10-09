@@ -3333,6 +3333,20 @@ func (m *Model) rightView(width int) string {
 	default:
 		content = m.profileDetailView()
 	}
+	if m.showHelp {
+		content = strings.Join([]string{
+			titleStyle.Render("Help"),
+			"New profiles are saved without starting a container; space starts them.",
+			"Settings are saved to .lidoo.json; R recreates the container to apply them.",
+			"Database filters match physical names, e.g. ^smoke__(dev|staging)$.",
+			"admin_passwd protects /web/database; it is not the admin login password.",
+			"The admin password action changes the base.user_admin login via Odoo.",
+			"LAN port: 0 disables; 1–65535 publishes on all IPv4 interfaces.",
+			"Share http://<host-LAN-IP>:<port>; restrict access with your firewall.",
+			"Restore copy requires a new destination; move replaces the destination.",
+			"Missing worktree branches are created; parent/worktree rules still apply.",
+		}, "\n")
+	}
 	content = m.tabBar() + "\n\n" + content
 	warnings := make([]string, 0, 4)
 	if m.loading {
@@ -3909,6 +3923,10 @@ func addonActionHints(hasSelection, hasProfile bool) string {
 	return hints
 }
 
+func modalKeyHints(keys string) string {
+	return mutedStyle.Render(keys)
+}
+
 func (m *Model) modalView() string {
 	var lines []string
 	switch m.modal {
@@ -3917,32 +3935,29 @@ func (m *Model) modalView() string {
 			titleStyle.Render(m.confirmTitle),
 			warningStyle.Render(m.confirmPrompt),
 			"",
-			mutedStyle.Render("y/enter confirm · n/esc cancel"),
+			modalKeyHints("y/enter confirm  n/esc cancel"),
 		}
 		if m.confirmForceToggle {
 			force := "Force: " + yesNo(m.removeAddonForce)
 			if m.removeAddonForce {
 				force += " — may discard uncommitted changes"
 			}
-			lines = append(lines[:2], force, "", mutedStyle.Render("f toggle force · y/enter confirm · n/esc cancel"))
+			lines = append(lines[:2], force, "", modalKeyHints("f toggle force  y/enter confirm  n/esc cancel"))
 		}
 	case modalRunVersion:
 		lines = []string{
-			titleStyle.Render("Odoo version required"),
-			"Profile: " + m.taskProfileName,
-			"No stored Odoo version exists for this profile.",
+			titleStyle.Render("Odoo version · " + m.taskProfileName),
 			"version: " + activeStyle.Render(m.versionInput+"▏"),
 			"",
-			mutedStyle.Render("type a version  enter run  esc cancel  " + pasteHint),
+			modalKeyHints("type version  enter run  esc cancel  " + pasteHint),
 		}
 	case modalInitDatabase:
 		lines = []string{
-			titleStyle.Render("Initialize database"),
-			"Profile: " + m.taskProfileName,
+			titleStyle.Render("Initialize database · " + m.taskProfileName),
 			m.formLine("database", m.initDatabaseName, 0, true),
 			m.formLine("modules", m.initModules, 1, true),
 			"",
-			mutedStyle.Render("tab field  type  enter run  esc cancel  " + pasteHint),
+			modalKeyHints("tab field  enter run  esc cancel  " + pasteHint),
 		}
 	case modalBackupDatabase:
 		destination := m.backupDestination
@@ -3950,15 +3965,13 @@ func (m *Model) modalView() string {
 			destination = "(default backups/<database>_...zip)"
 		}
 		lines = []string{
-			titleStyle.Render("Backup database"),
-			"Profile: " + m.taskProfileName,
-			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
+			titleStyle.Render("Backup · " + m.taskProfileName + " / " + m.taskDatabaseName),
 			m.formLine("destination", destination, 0, m.formField == 0),
 			m.formLine("format", m.backupFormat, 1, false),
 			m.formLine("filestore", yesNo(m.backupFilestore), 2, false),
 			m.formLine("overwrite", yesNo(m.backupForce), 3, false),
 			"",
-			mutedStyle.Render("tab field  ctrl+o folder  space toggle  enter run  esc cancel  " + pasteHint),
+			modalKeyHints("tab field  ctrl+o folder  space toggle  enter run  esc cancel  " + pasteHint),
 		}
 	case modalRestoreDatabase:
 		source := m.restoreSource
@@ -3970,8 +3983,7 @@ func (m *Model) modalView() string {
 			destination = "(required)"
 		}
 		lines = []string{
-			titleStyle.Render("Restore database"),
-			"Profile: " + m.taskProfileName,
+			titleStyle.Render("Restore database · " + m.taskProfileName),
 			m.formLine("destination", destination, 0, true),
 			m.formLine("source", source, 1, true),
 			m.formLine("mode", restoreMode(m.restoreCopy), 2, false),
@@ -3984,8 +3996,8 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("copy creates a new database (destination must not exist); move replaces it"),
-			mutedStyle.Render("tab field  space toggle  enter run  esc cancel  "+pasteHint),
+			mutedStyle.Render("copy: new database · move: replace destination"),
+			modalKeyHints("tab field  space toggle  enter run  esc cancel  "+pasteHint),
 		)
 	case modalCloneAddon:
 		lines = []string{
@@ -3998,7 +4010,7 @@ func (m *Model) modalView() string {
 		if m.addonFormErr != nil {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("tab field  type  enter clone  esc cancel  "+pasteHint))
+		lines = append(lines, "", modalKeyHints("tab field  enter clone  esc cancel  "+pasteHint))
 	case modalWorktreeAddon:
 		lines = []string{
 			titleStyle.Render("Create worktree · " + m.worktreeAddonSource),
@@ -4009,8 +4021,8 @@ func (m *Model) modalView() string {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
 		lines = append(lines, "",
-			mutedStyle.Render("Missing branches are created; parent/worktree rules still apply."),
-			mutedStyle.Render("tab field  type  enter create  esc cancel  "+pasteHint),
+			mutedStyle.Render("Missing branches are created."),
+			modalKeyHints("tab field  enter create  esc cancel  "+pasteHint),
 		)
 	case modalSelect:
 		lines = m.selectModalLines()
@@ -4027,8 +4039,8 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("adds the profile to state with this version; start it later with space"),
-			mutedStyle.Render("tab field  ←/→ version  type custom  enter create  esc cancel  "+pasteHint),
+			mutedStyle.Render("space starts the profile after creation"),
+			modalKeyHints("tab field  ←/→ version  type custom  enter create  esc cancel  "+pasteHint),
 		)
 	case modalProfileSettings:
 		lines = m.profileSettingsModalLines()
@@ -4042,8 +4054,8 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("matched against physical database names, e.g. ^smoke__(dev|staging)$"),
-			mutedStyle.Render("tab field  type  enter apply  esc back  "+pasteHint),
+			mutedStyle.Render("Matches physical database names."),
+			modalKeyHints("enter apply  esc back  "+pasteHint),
 		)
 	case modalConfigPassword:
 		lines = []string{
@@ -4055,8 +4067,8 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("this is admin_passwd (/web/database), not the admin user login password"),
-			mutedStyle.Render("tab field  type  enter apply  esc back  "+pasteHint),
+			mutedStyle.Render("admin_passwd for /web/database; not the login password"),
+			modalKeyHints("enter apply  esc back  "+pasteHint),
 		)
 	case modalConfigLANPort:
 		lines = []string{
@@ -4068,17 +4080,12 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("0 disables; 1–65535 publishes Odoo on all IPv4 interfaces"),
-			mutedStyle.Render("share http://<host-LAN-IP>:<port>; restrict access with your firewall"),
-			mutedStyle.Render("saved to state; recreate (R) applies the change"),
-			mutedStyle.Render("type  enter apply  esc back  "+pasteHint),
+			mutedStyle.Render("0 disables LAN access; R recreates to apply"),
+			modalKeyHints("enter apply  esc back  "+pasteHint),
 		)
 	case modalAdminPassword:
 		lines = []string{
-			titleStyle.Render("Change Odoo admin user password"),
-			"Profile: " + m.taskProfileName,
-			"Database: " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}),
-			"User: " + activeStyle.Render("admin") + mutedStyle.Render("  (base.user_admin login)"),
+			titleStyle.Render("Admin password · " + m.taskProfileName + " / " + m.taskDatabaseName),
 			m.formLine("new password", maskSecret(m.adminPassword), 0, true),
 			m.formLine("confirm", maskSecret(m.adminPasswordConfirm), 1, true),
 		}
@@ -4087,8 +4094,8 @@ func (m *Model) modalView() string {
 		}
 		lines = append(lines,
 			"",
-			mutedStyle.Render("NOT admin_passwd; changes the login password of the admin user via Odoo"),
-			mutedStyle.Render("tab field  type  enter apply  esc cancel  "+pasteHint),
+			mutedStyle.Render("Changes the admin login; not admin_passwd."),
+			modalKeyHints("tab field  enter apply  esc cancel  "+pasteHint),
 		)
 	}
 	modalWidth := m.width - 4
@@ -4164,8 +4171,8 @@ func (m *Model) profileSettingsModalLines() []string {
 	}
 	lines = append(lines,
 		"",
-		mutedStyle.Render("saved to .lidoo.json; recreate (R) applies it to a container"),
-		mutedStyle.Render("↑/↓ move  enter edit  esc close"),
+		mutedStyle.Render("R recreates the container to apply changes"),
+		modalKeyHints("↑/↓ move  enter edit  esc close"),
 	)
 	return lines
 }

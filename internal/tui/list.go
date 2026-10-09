@@ -143,7 +143,7 @@ func (m *Model) filePickerModalLines() []string {
 	default:
 		lines = append(lines, mutedStyle.Render("not loaded"))
 	}
-	return append(lines, "", mutedStyle.Render(hint))
+	return append(lines, "", modalKeyHints(hint))
 }
 
 func (m *Model) selectModalLines() []string {
@@ -170,7 +170,7 @@ func (m *Model) selectModalLines() []string {
 	if m.selectErr != nil && m.selectPhase == phaseReady {
 		lines = append(lines, errorStyle.Render(m.selectErr.Error()))
 	}
-	return append(lines, "", mutedStyle.Render("↑/↓ move  type filter  enter select  esc cancel"))
+	return append(lines, "", modalKeyHints("↑/↓ move  type filter  enter select  esc cancel"))
 }
 
 func (m *Model) startBackupDirectoryPicker() tea.Cmd {

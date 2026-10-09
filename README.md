@@ -347,6 +347,10 @@ internal `cache-*` template databases are hidden):
   you had selected; edit `destination` and switch `mode` to `move` to replace an
   existing database.
 
+Press `?` outside a modal to show or hide help, including profile settings,
+LAN access, restore modes, and password distinctions. Modals keep only a short
+hint and their available keys.
+
 Selection lists also support type-to-filter: `↑`/`↓` move through matches,
 `enter` selects, `backspace` deletes, and `ctrl+u` clears the filter.
 

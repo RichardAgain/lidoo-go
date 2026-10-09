@@ -195,6 +195,7 @@ type Model struct {
 	taskErr                error
 	taskNotice             string
 	taskOutput             string
+	taskExpanded           bool
 	taskStarting           bool
 	taskRunning            bool
 	taskCancelRequested    bool
@@ -746,6 +747,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateLogViewerKey(msg)
 	}
 	m.notice = ""
+	if msg.String() == "t" && !m.taskActive() && !m.interactivePreparing && m.taskStatus != "" && m.taskName != "" {
+		m.taskExpanded = !m.taskExpanded
+		return m, nil
+	}
 	if m.interactivePreparing {
 		if msg.String() == "c" {
 			m.cancelTask()
@@ -2406,6 +2411,7 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 	m.taskErr = nil
 	m.taskNotice = ""
 	m.taskOutput = ""
+	m.taskExpanded = false
 	m.taskStarting = true
 	m.taskRunning = false
 	m.taskCancelRequested = false
@@ -2458,12 +2464,14 @@ func (m *Model) finishTask(status string, taskErr error) {
 	m.taskRunning = false
 	m.taskNotice = ""
 	m.taskStatus = status
+	m.taskExpanded = false
 	m.taskCancelRequested = false
 	m.taskErr = taskErr
 }
 
 func (m *Model) retainInteractiveOutput(name string, taskErr error) {
 	m.taskName = name
+	m.taskExpanded = false
 	m.taskStatus = "completed"
 	if taskErr != nil {
 		m.taskStatus = "failed"
@@ -3308,7 +3316,8 @@ func (m *Model) addonRows(width int) string {
 }
 
 func (m *Model) rightView(width int) string {
-	if m.selectedProfileName() == "" && !m.loading {
+	task := m.taskPane(width)
+	if m.selectedProfileName() == "" && !m.loading && task == "" {
 		height := m.height - 2
 		if height < 1 {
 			height = 1
@@ -3332,6 +3341,9 @@ func (m *Model) rightView(width int) string {
 		content = m.configTabView()
 	default:
 		content = m.profileDetailView()
+	}
+	if m.selectedProfileName() == "" && !m.loading {
+		content = "create your first container  ·  press c or n"
 	}
 	if m.showHelp {
 		content = strings.Join([]string{
@@ -3361,7 +3373,9 @@ func (m *Model) rightView(width int) string {
 	if m.watcherDisconnected {
 		warnings = append(warnings, warningStyle.Render("Docker event watcher disconnected"))
 	}
-	if task := m.taskView(); task != "" {
+	if task != "" {
+		height := max(1, m.height-2-m.rightViewHeaderLines()-lipgloss.Height(task)-2)
+		content = lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(content)
 		content += "\n\n" + task
 	}
 	if len(warnings) == 0 {
@@ -3661,10 +3675,11 @@ func (m *Model) logViewerView() string {
 }
 
 func (m *Model) logContainer(width int, content string) string {
-	height := m.height - 6
-	if height < 4 {
-		height = 4
+	height := m.height - 6 - m.rightViewHeaderLines()
+	if task := m.taskPane(width); task != "" {
+		height -= lipgloss.Height(task) + 2
 	}
+	height = max(3, height)
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderStyle).
@@ -3730,9 +3745,31 @@ func (m *Model) addonTabView(width int) string {
 	}, "\n\n")
 }
 
-// taskOutputLines is how many useful output lines the inline task block shows.
-// The full stream is always available in the log viewer (`L`, then `tab`).
-const taskOutputLines = 10
+const taskOutputLines = 6
+
+func (m *Model) taskPane(width int) string {
+	if m.taskStatus == "" || m.taskName == "" {
+		return ""
+	}
+	if !m.taskActive() && !m.interactivePreparing && !m.taskExpanded {
+		suffix := "  " + taskStatus(m.taskStatus) + mutedStyle.Render("  · t expand")
+		name := ansi.Truncate(m.taskName, max(0, width-lipgloss.Width(suffix)), "…")
+		return ansi.Truncate(name+suffix, width, "…")
+	}
+	lines := strings.Split(m.taskView(), "\n")
+	for index, line := range lines {
+		lines[index] = ansi.Truncate(line, width, "…")
+	}
+	if !m.taskActive() && !m.interactivePreparing {
+		lines[0] += mutedStyle.Render("  · t collapse")
+		lines[0] = ansi.Truncate(lines[0], width, "…")
+	}
+	height := max(1, m.height-8-m.rightViewHeaderLines())
+	if len(lines) > height {
+		lines = append(lines[:1], lines[len(lines)-height+1:]...)
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (m *Model) taskView() string {
 	if m.taskStatus == "" || m.taskName == "" {
@@ -4262,11 +4299,13 @@ func (m *Model) smallView() string {
 		hints = "tab focus  enter/e edit LAN port  R recreate"
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
-	if task := m.taskView(); task != "" {
-		lines = append(lines, "", task)
-	}
 	if m.showHelp {
 		lines = append(lines, mutedStyle.Render("tab focus  arrows or j/k move  c cancel task"))
+	}
+	if task := m.taskPane(m.width); task != "" {
+		contentHeight := max(1, m.height-lipgloss.Height(task)-2)
+		content := lipgloss.NewStyle().MaxHeight(contentHeight).Render(strings.Join(lines, "\n"))
+		return content + "\n\n" + task
 	}
 	return strings.Join(lines, "\n")
 }

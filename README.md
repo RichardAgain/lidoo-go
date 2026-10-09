@@ -390,14 +390,14 @@ Logs:
 - The profile panel shows only the container stream inline; Odoo lines are
   compacted (level gutter, no date/pid, werkzeug access lines summarised with the
   database name).
-- Task output is never mixed into that panel. The task block below the panel
-  (`Running task` while it works, `Latest task` when it is done) shows the last
-  10 **useful** lines: Python traceback frames and the `*.py:NN: DeprecationWarning`
-  headers an Odoo update prints in bulk are dropped, and carriage-return progress
-  (git) collapses to its last update, so the line that says the database was
-  updated is never buried. A `… older output above` marker means the block is
-  truncated; the full, unfiltered stream lives in the viewer's `tasks` source
-  (`L`, then `tab`).
+- Task output has its own plain section above the footer; the log panel shrinks
+  to leave room for it. Running tasks show up to 6 **useful** output lines,
+  with fewer in small terminals. Finished tasks collapse to a one-line status;
+  press `t` to expand or collapse their output. Python traceback frames and
+  `*.py:NN: DeprecationWarning` headers are dropped, and carriage-return progress
+  (git) collapses to its last update. A `… older output above` marker means the
+  tail is truncated; the full, unfiltered stream lives in the viewer's `tasks`
+  source (`L`, then `tab`).
 - While a form or dialog is open, the dashboard behind it is replaced by a plain
   surface, so live log lines never bleed through the dialog. The log viewer is
   the exception: its pickers stay readable against the lines they filter.

@@ -319,8 +319,11 @@ Profiles:
   notice instead of failing. Starting a profile waits until Odoo answers before
   the task reports `completed` (cancel with `c`).
 - Confirmations (remove profile, drop database, move/overwrite restore,
-  remove add-on, create worktree) use `y`/`enter` to confirm and `n`/`esc` to
-  cancel. Cancelling add-on removal or worktree creation returns to its form.
+  remove add-on) use `y`/`enter` to confirm and `n`/`esc` to cancel.
+- Creating a profile opens one form for its name and Odoo version. Use `tab`
+  to switch fields and `←`/`→` in the version field to cycle discovered
+  versions, or type a custom version. `enter` creates the profile without
+  starting it.
 
 Databases (the list follows the profile's database filter mode; click-odoo's
 internal `cache-*` template databases are hidden):
@@ -367,10 +370,14 @@ Add-ons:
   or HEAD is detached). It is the same value `lidoo addon list` and
   `lidoo addon status` print.
 - `c` clones a new checkout.
-- `w` creates a worktree: choose the source add-on and then a branch from a
-  select (with a "New branch…" option).
+- `w` creates a worktree from the selected add-on: choose a branch (or
+  "New branch…"), then edit the name and branch in one form. The name defaults
+  to `<source>-<branch>` with branch slashes replaced by hyphens; `enter`
+  creates it directly. Missing branches are created. When no add-on is
+  selected, choose a source first.
 - `a` attaches and `d` detaches add-ons for the selected profile, `f` fetches,
-  `p` pulls, and `x` removes a checkout chosen from a select. The `ATTACHED`
+  `p` pulls, and `x` opens a confirmation for the selected checkout. Press `f`
+  there to toggle force removal of uncommitted changes. The `ATTACHED`
   column is the checkmark for the selected profile, so attachment is visible
   without opening anything.
 

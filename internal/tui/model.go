@@ -46,7 +46,6 @@ const (
 	modalRestoreDatabase
 	modalCloneAddon
 	modalWorktreeAddon
-	modalRemoveAddon
 	modalSelect
 	modalCreateProfile
 	modalProfileSettings
@@ -66,7 +65,6 @@ const (
 	selectConfigDBFilterMode
 	selectAddonWorktreeSource
 	selectAddonWorktreeBranch
-	selectRemoveAddon
 	selectLogDatabase
 )
 
@@ -172,7 +170,6 @@ type Model struct {
 	worktreeAddonSource    string
 	worktreeAddonName      string
 	worktreeAddonBranch    string
-	removeAddonName        string
 	removeAddonForce       bool
 	watchEvents            <-chan app.ProfileInvalidation
 	watchErrors            <-chan error
@@ -253,6 +250,7 @@ type Model struct {
 	confirmPrompt          string
 	confirmTitle           string
 	confirmCancelModal     modalMode
+	confirmForceToggle     bool
 }
 
 var (
@@ -465,6 +463,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case VersionsLoadedMsg:
+		if msg.RequestID == m.selectRequest && m.modal == modalCreateProfile {
+			m.setVersionSelectItems(msg.Options)
+			if m.createProfileVersion == "" && len(msg.Options) > 0 {
+				m.createProfileVersion = msg.Options[0].Version
+			}
+			return m, nil
+		}
 		if !m.currentSelectRequest(msg.RequestID) {
 			return m, nil
 		}
@@ -476,6 +481,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case VersionsFailedMsg:
+		if msg.RequestID == m.selectRequest && m.modal == modalCreateProfile {
+			m.selectErr = msg.Err
+			m.selectPhase = phaseError
+			return m, nil
+		}
 		if !m.currentSelectRequest(msg.RequestID) {
 			return m, nil
 		}
@@ -516,9 +526,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.selectKind {
 		case selectAddonWorktreeSource:
 			m.setAddonSelectItems(msg.Addons, true)
-			return m, nil
-		case selectRemoveAddon:
-			m.setAddonSelectItems(msg.Addons, false)
 			return m, nil
 		default:
 			return m, nil
@@ -1072,6 +1079,7 @@ func (m *Model) toggleSelectedProfile() tea.Cmd {
 }
 
 func (m *Model) openConfirm(title, warning string, cancelModal modalMode, action func() tea.Cmd) {
+	m.confirmForceToggle = false
 	m.confirmTitle = title
 	m.confirmPrompt = warning
 	m.confirmCancelModal = cancelModal
@@ -1265,6 +1273,9 @@ func (m *Model) startWorktreeAddon() tea.Cmd {
 	if m.rejectMutatingAction() {
 		return nil
 	}
+	if addon := m.selectedAddon(); addon != nil {
+		return m.openWorktreeBranchSelect(addon.Name)
+	}
 	m.selectRequest++
 	m.selectKind = selectAddonWorktreeSource
 	m.selectTitle = "Worktree source add-on"
@@ -1278,7 +1289,7 @@ func (m *Model) startWorktreeAddon() tea.Cmd {
 
 func (m *Model) openWorktreeForm(source, branch string) {
 	m.worktreeAddonSource = source
-	m.worktreeAddonName = ""
+	m.worktreeAddonName = source + "-" + strings.ReplaceAll(branch, "/", "-")
 	m.worktreeAddonBranch = branch
 	m.addonFormErr = nil
 	m.formField = 0
@@ -1302,23 +1313,25 @@ func (m *Model) startRemoveAddon() tea.Cmd {
 	if m.rejectMutatingAction() {
 		return nil
 	}
-	m.selectRequest++
-	m.selectKind = selectRemoveAddon
-	m.selectTitle = "Remove add-on checkout"
-	m.selectItems = nil
-	m.selectIndex = 0
-	m.selectErr = nil
-	m.selectPhase = phaseLoading
-	m.modal = modalSelect
-	return LoadAllAddonsCmd(m.ctx, m.service, m.selectRequest)
+	if addon := m.selectedAddon(); addon != nil {
+		m.openRemoveAddonConfirm(addon.Name)
+	}
+	return nil
 }
 
-func (m *Model) openRemoveAddonForm(name string) {
-	m.removeAddonName = name
+func (m *Model) openRemoveAddonConfirm(name string) {
 	m.removeAddonForce = false
-	m.addonFormErr = nil
-	m.formField = 0
-	m.modal = modalRemoveAddon
+	m.openConfirm(
+		"Remove add-on "+name+"?",
+		"This removes the checkout/worktree; attached profiles and child worktrees block removal.",
+		modalNone,
+		func() tea.Cmd {
+			return m.queueTask(taskRequest{
+				Kind: taskRemoveAddon, AddonName: name, Force: m.removeAddonForce, Yes: true,
+			})
+		},
+	)
+	m.confirmForceToggle = true
 }
 
 func (m *Model) queueSelectedAddonTask(kind taskKind) tea.Cmd {
@@ -1445,10 +1458,6 @@ func (m *Model) applySelectChoice() tea.Cmd {
 		}
 		m.openWorktreeForm(m.selectSource, branch)
 		return nil
-	case selectRemoveAddon:
-		m.modal = modalNone
-		m.openRemoveAddonForm(choice.Value)
-		return nil
 	case selectLogDatabase:
 		m.logDatabase = choice.Value
 		m.logViewerDatabase = choice.Value
@@ -1465,13 +1474,12 @@ func (m *Model) startCreateProfile() tea.Cmd {
 		return nil
 	}
 	m.selectRequest++
-	m.selectKind = selectCreateProfileVersion
-	m.selectTitle = "New profile · Odoo version"
+	m.selectKind = selectNone
 	m.selectItems = nil
-	m.selectIndex = 0
+	m.selectFilter = listFilter{}
 	m.selectErr = nil
 	m.selectPhase = phaseLoading
-	m.modal = modalSelect
+	m.openCreateProfileForm("")
 	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
 }
 
@@ -1495,7 +1503,39 @@ func (m *Model) openCreateProfileForm(version string) {
 	m.modal = modalCreateProfile
 }
 
+func (m *Model) cycleCreateVersion(delta int) {
+	count := len(m.selectItems)
+	if count == 0 {
+		return
+	}
+	index := -1
+	for i, item := range m.selectItems {
+		if item.Value == m.createProfileVersion || (item.Value == selectCustomValue && m.createProfileVersion == "") {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		if delta > 0 {
+			index = 0
+		} else {
+			index = count - 1
+		}
+	} else {
+		index = (index + delta + count) % count
+	}
+	m.createProfileVersion = m.selectItems[index].Value
+	if m.createProfileVersion == selectCustomValue {
+		m.createProfileVersion = ""
+	}
+}
+
 func (m *Model) submitCreateProfile() tea.Cmd {
+	version := strings.TrimSpace(m.createProfileVersion)
+	if version == "" {
+		m.createFormErr = errors.New("Odoo version is required")
+		return nil
+	}
 	name := strings.TrimSpace(m.createProfileName)
 	if err := profile.ValidateName(name); err != nil {
 		m.createFormErr = err
@@ -1508,7 +1548,7 @@ func (m *Model) submitCreateProfile() tea.Cmd {
 		}
 	}
 	m.modal = modalNone
-	return m.queueTask(taskRequest{Kind: taskCreate, ProfileName: name, Version: m.createProfileVersion})
+	return m.queueTask(taskRequest{Kind: taskCreate, ProfileName: name, Version: version})
 }
 
 func (m *Model) openProfileConfig() tea.Cmd {
@@ -1755,6 +1795,10 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmAction = nil
 		case "enter", "y", "Y":
 			return m, m.submitConfirm()
+		case "f":
+			if m.confirmForceToggle {
+				m.removeAddonForce = !m.removeAddonForce
+			}
 		}
 	case modalRunVersion:
 		switch msg.String() {
@@ -1848,7 +1892,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			m.appendFormText(keyInsertText(msg))
 		}
-	case modalCloneAddon, modalWorktreeAddon, modalRemoveAddon:
+	case modalCloneAddon, modalWorktreeAddon:
 		switch msg.String() {
 		case "esc":
 			m.modal = modalNone
@@ -1918,6 +1962,15 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case modalCreateProfile, modalAdminPassword:
+		if m.modal == modalCreateProfile && m.formField == 1 && (msg.String() == "left" || msg.String() == "right") {
+			delta := 1
+			if msg.String() == "left" {
+				delta = -1
+			}
+			m.cycleCreateVersion(delta)
+			m.clearProfileFormErr()
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc":
 			m.modal = modalNone
@@ -1993,34 +2046,8 @@ func (m *Model) submitAddonForm() tea.Cmd {
 			AddonBranch: branch,
 			Yes:         true,
 		}
-		m.openConfirm(
-			fmt.Sprintf("Create worktree %s from %s (%s)?", name, source, branch),
-			"If the branch is missing locally and remotely, it will be created; parent/worktree rules still apply.",
-			modalWorktreeAddon,
-			func() tea.Cmd { return m.queueTask(request) },
-		)
-	case modalRemoveAddon:
-		if strings.TrimSpace(m.removeAddonName) == "" {
-			m.addonFormErr = errors.New("add-on name is required")
-			return nil
-		}
-		m.addonFormErr = nil
-		request := taskRequest{
-			Kind:      taskRemoveAddon,
-			AddonName: strings.TrimSpace(m.removeAddonName),
-			Force:     m.removeAddonForce,
-			Yes:       true,
-		}
-		warning := "This removes the checkout/worktree; attached profiles and child worktrees block removal."
-		if request.Force {
-			warning += " Force may discard uncommitted changes."
-		}
-		m.openConfirm(
-			"Remove add-on "+request.AddonName+"?",
-			warning,
-			modalRemoveAddon,
-			func() tea.Cmd { return m.queueTask(request) },
-		)
+		m.modal = modalNone
+		return m.queueTask(request)
 	}
 	return nil
 }
@@ -2132,8 +2159,6 @@ func (m *Model) formFieldCount() int {
 	case modalCloneAddon:
 		return 4
 	case modalWorktreeAddon:
-		return 3
-	case modalRemoveAddon:
 		return 2
 	case modalInitDatabase:
 		return 2
@@ -2142,7 +2167,7 @@ func (m *Model) formFieldCount() int {
 	case modalRestoreDatabase:
 		return 6
 	case modalCreateProfile:
-		return 1
+		return 2
 	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
 		return 1
 	case modalAdminPassword:
@@ -2162,11 +2187,6 @@ func (m *Model) moveFormField(delta int) {
 
 func (m *Model) toggleFormField() bool {
 	switch m.modal {
-	case modalRemoveAddon:
-		if m.formField == 1 {
-			m.removeAddonForce = !m.removeAddonForce
-			return true
-		}
 	case modalBackupDatabase:
 		switch m.formField {
 		case 1:
@@ -2218,15 +2238,9 @@ func (m *Model) formText() *string {
 	case modalWorktreeAddon:
 		switch m.formField {
 		case 0:
-			return &m.worktreeAddonSource
-		case 1:
 			return &m.worktreeAddonName
-		case 2:
+		case 1:
 			return &m.worktreeAddonBranch
-		}
-	case modalRemoveAddon:
-		if m.formField == 0 {
-			return &m.removeAddonName
 		}
 	case modalInitDatabase:
 		switch m.formField {
@@ -2250,8 +2264,11 @@ func (m *Model) formText() *string {
 			return &m.restoreJobs
 		}
 	case modalCreateProfile:
-		if m.formField == 0 {
+		switch m.formField {
+		case 0:
 			return &m.createProfileName
+		case 1:
+			return &m.createProfileVersion
 		}
 	case modalConfigPattern:
 		if m.formField == 0 {
@@ -3902,6 +3919,13 @@ func (m *Model) modalView() string {
 			"",
 			mutedStyle.Render("y/enter confirm · n/esc cancel"),
 		}
+		if m.confirmForceToggle {
+			force := "Force: " + yesNo(m.removeAddonForce)
+			if m.removeAddonForce {
+				force += " — may discard uncommitted changes"
+			}
+			lines = append(lines[:2], force, "", mutedStyle.Render("f toggle force · y/enter confirm · n/esc cancel"))
+		}
 	case modalRunVersion:
 		lines = []string{
 			titleStyle.Render("Odoo version required"),
@@ -3977,26 +4001,17 @@ func (m *Model) modalView() string {
 		lines = append(lines, "", mutedStyle.Render("tab field  type  enter clone  esc cancel  "+pasteHint))
 	case modalWorktreeAddon:
 		lines = []string{
-			titleStyle.Render("Create add-on worktree"),
-			m.formLine("source add-on", m.worktreeAddonSource, 0, true),
-			m.formLine("worktree name", m.worktreeAddonName, 1, true),
-			m.formLine("branch", m.worktreeAddonBranch, 2, true),
+			titleStyle.Render("Create worktree · " + m.worktreeAddonSource),
+			m.formLine("worktree name", m.worktreeAddonName, 0, true),
+			m.formLine("branch", m.worktreeAddonBranch, 1, true),
 		}
 		if m.addonFormErr != nil {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
-		lines = append(lines, "", mutedStyle.Render("tab field  type  enter continue  esc cancel  "+pasteHint))
-	case modalRemoveAddon:
-		lines = []string{
-			titleStyle.Render("Remove add-on checkout"),
-			m.formLine("name", m.removeAddonName, 0, true),
-			m.formLine("force dirty checkout", yesNo(m.removeAddonForce), 1, false),
-			warningStyle.Render("Attached profiles and registered child worktrees block removal."),
-		}
-		if m.addonFormErr != nil {
-			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
-		}
-		lines = append(lines, "", mutedStyle.Render("tab field  space toggle force  enter review  esc cancel"))
+		lines = append(lines, "",
+			mutedStyle.Render("Missing branches are created; parent/worktree rules still apply."),
+			mutedStyle.Render("tab field  type  enter create  esc cancel  "+pasteHint),
+		)
 	case modalSelect:
 		lines = m.selectModalLines()
 	case modalFilePicker:
@@ -4004,8 +4019,8 @@ func (m *Model) modalView() string {
 	case modalCreateProfile:
 		lines = []string{
 			titleStyle.Render("New profile"),
-			"Odoo version: " + activeStyle.Render(m.createProfileVersion),
 			m.formLine("profile name", m.createProfileName, 0, true),
+			m.formLine("Odoo version", m.createProfileVersion, 1, true),
 		}
 		if m.createFormErr != nil {
 			lines = append(lines, errorStyle.Render(m.createFormErr.Error()))
@@ -4013,7 +4028,7 @@ func (m *Model) modalView() string {
 		lines = append(lines,
 			"",
 			mutedStyle.Render("adds the profile to state with this version; start it later with space"),
-			mutedStyle.Render("type a lowercase name  enter create  esc cancel  "+pasteHint),
+			mutedStyle.Render("tab field  ←/→ version  type custom  enter create  esc cancel  "+pasteHint),
 		)
 	case modalProfileSettings:
 		lines = m.profileSettingsModalLines()

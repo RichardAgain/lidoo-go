@@ -318,8 +318,9 @@ Profiles:
   do not apply (starting a running profile, stopping a stopped one) report a
   notice instead of failing. Starting a profile waits until Odoo answers before
   the task reports `completed` (cancel with `c`).
-- Destructive actions (remove profile, drop database, move/overwrite restore)
-  ask you to type the resource name before they run.
+- Confirmations (remove profile, drop database, move/overwrite restore,
+  remove add-on, create worktree) use `y`/`enter` to confirm and `n`/`esc` to
+  cancel. Cancelling add-on removal or worktree creation returns to its form.
 
 Databases (the list follows the profile's database filter mode; click-odoo's
 internal `cache-*` template databases are hidden):
@@ -342,7 +343,7 @@ internal `cache-*` template databases are hidden):
   you had selected; edit `destination` and switch `mode` to `move` to replace an
   existing database.
 
-Text fields (forms, the log search, and the typed confirmation) accept a paste
+Text fields (forms and the log search) accept a paste
 from the terminal (`ctrl+v`/`ctrl+shift+v` in most terminals) and `ctrl+v`
 inside the TUI, which reads the system clipboard through the first available
 tool (`wl-paste`, `pbpaste`, `xclip`, `xsel`) and reports a notice when none is

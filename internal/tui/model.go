@@ -39,17 +39,14 @@ type modalMode uint8
 
 const (
 	modalNone modalMode = iota
-	modalTypedConfirm
-	modalConfirmDropDatabase
+	modalConfirm
 	modalRunVersion
 	modalInitDatabase
 	modalBackupDatabase
 	modalRestoreDatabase
 	modalCloneAddon
 	modalWorktreeAddon
-	modalConfirmWorktreeAddon
 	modalRemoveAddon
-	modalConfirmAddonRemove
 	modalSelect
 	modalCreateProfile
 	modalProfileSettings
@@ -251,9 +248,8 @@ type Model struct {
 	adminPasswordErr       error
 	confirmAction          func() tea.Cmd
 	confirmPrompt          string
-	confirmExpected        string
-	confirmInput           string
-	confirmErr             error
+	confirmTitle           string
+	confirmCancelModal     modalMode
 }
 
 var (
@@ -844,9 +840,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			name := m.selectedProfileName()
 			m.taskProfileName = name
-			m.openTypedConfirm(
-				"This removes the Docker container, profile workspace entry, and its filestore volume. PostgreSQL data and add-on checkouts are kept.",
-				name,
+			m.openConfirm(
+				"Remove profile "+name+"?",
+				"This removes the container, workspace entry, and filestore volume; PostgreSQL data and add-on checkouts are kept.",
+				modalNone,
 				func() tea.Cmd {
 					return m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})
 				},
@@ -1067,26 +1064,18 @@ func (m *Model) toggleSelectedProfile() tea.Cmd {
 	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Wait: true})
 }
 
-func (m *Model) openTypedConfirm(description, expected string, action func() tea.Cmd) {
-	m.confirmPrompt = description
-	m.confirmExpected = expected
-	m.confirmInput = ""
-	m.confirmErr = nil
+func (m *Model) openConfirm(title, warning string, cancelModal modalMode, action func() tea.Cmd) {
+	m.confirmTitle = title
+	m.confirmPrompt = warning
+	m.confirmCancelModal = cancelModal
 	m.confirmAction = action
-	m.formField = 0
-	m.modal = modalTypedConfirm
+	m.modal = modalConfirm
 }
 
-func (m *Model) submitTypedConfirm() tea.Cmd {
-	if m.confirmInput != m.confirmExpected {
-		m.confirmErr = errors.New("type the name exactly to confirm")
-		return nil
-	}
+func (m *Model) submitConfirm() tea.Cmd {
 	action := m.confirmAction
 	m.modal = modalNone
 	m.confirmAction = nil
-	m.confirmInput = ""
-	m.confirmErr = nil
 	if action == nil {
 		return nil
 	}
@@ -1133,7 +1122,19 @@ func (m *Model) openDropConfirmation() {
 	if !m.prepareDatabaseAction() || m.rejectMutatingAction() {
 		return
 	}
-	m.modal = modalConfirmDropDatabase
+	request := taskRequest{
+		Kind:             taskDrop,
+		ProfileName:      m.taskProfileName,
+		DatabaseName:     m.taskDatabaseName,
+		DatabasePhysical: m.taskDatabasePhysical,
+		Yes:              true,
+	}
+	m.openConfirm(
+		"Delete database "+databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical})+"?",
+		"This permanently deletes the database and its filestore.",
+		modalNone,
+		func() tea.Cmd { return m.queueTask(request) },
+	)
 }
 
 func (m *Model) openInitForm() {
@@ -1733,69 +1734,16 @@ func (m *Model) refreshProfiles() tea.Cmd {
 
 func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
-	case modalTypedConfirm:
+	case modalConfirm:
+		if msg.Paste {
+			return m, nil
+		}
 		switch msg.String() {
-		case "esc":
-			m.modal = modalNone
+		case "esc", "n", "N":
+			m.modal = m.confirmCancelModal
 			m.confirmAction = nil
-			m.confirmInput = ""
-			m.confirmErr = nil
-		case "enter":
-			return m, m.submitTypedConfirm()
-		case "backspace", "ctrl+h":
-			m.confirmInput = removeLastRune(m.confirmInput)
-			m.confirmErr = nil
-		case "ctrl+u":
-			m.confirmInput = ""
-			m.confirmErr = nil
-		default:
-			if value := keyInsertText(msg); value != "" {
-				m.confirmInput += value
-				m.confirmErr = nil
-			}
-		}
-	case modalConfirmDropDatabase:
-		switch msg.String() {
-		case "esc", "n", "N":
-			m.modal = modalNone
 		case "enter", "y", "Y":
-			m.modal = modalNone
-			return m, m.queueTask(taskRequest{
-				Kind:             taskDrop,
-				ProfileName:      m.taskProfileName,
-				DatabaseName:     m.taskDatabaseName,
-				DatabasePhysical: m.taskDatabasePhysical,
-				Yes:              true,
-			})
-		}
-	case modalConfirmWorktreeAddon:
-		switch msg.String() {
-		case "esc", "n", "N":
-			m.modal = modalWorktreeAddon
-		case "enter", "y", "Y":
-			request := taskRequest{
-				Kind:        taskWorktreeAddon,
-				AddonName:   strings.TrimSpace(m.worktreeAddonName),
-				AddonSource: strings.TrimSpace(m.worktreeAddonSource),
-				AddonBranch: strings.TrimSpace(m.worktreeAddonBranch),
-				Yes:         true,
-			}
-			m.modal = modalNone
-			return m, m.queueTask(request)
-		}
-	case modalConfirmAddonRemove:
-		switch msg.String() {
-		case "esc", "n", "N":
-			m.modal = modalRemoveAddon
-		case "enter", "y", "Y":
-			request := taskRequest{
-				Kind:      taskRemoveAddon,
-				AddonName: strings.TrimSpace(m.removeAddonName),
-				Force:     m.removeAddonForce,
-				Yes:       true,
-			}
-			m.modal = modalNone
-			return m, m.queueTask(request)
+			return m, m.submitConfirm()
 		}
 	case modalRunVersion:
 		switch msg.String() {
@@ -2007,14 +1955,41 @@ func (m *Model) submitAddonForm() tea.Cmd {
 			return nil
 		}
 		m.addonFormErr = nil
-		m.modal = modalConfirmWorktreeAddon
+		request := taskRequest{
+			Kind:        taskWorktreeAddon,
+			AddonName:   name,
+			AddonSource: source,
+			AddonBranch: branch,
+			Yes:         true,
+		}
+		m.openConfirm(
+			fmt.Sprintf("Create worktree %s from %s (%s)?", name, source, branch),
+			"If the branch is missing locally and remotely, it will be created; parent/worktree rules still apply.",
+			modalWorktreeAddon,
+			func() tea.Cmd { return m.queueTask(request) },
+		)
 	case modalRemoveAddon:
 		if strings.TrimSpace(m.removeAddonName) == "" {
 			m.addonFormErr = errors.New("add-on name is required")
 			return nil
 		}
 		m.addonFormErr = nil
-		m.modal = modalConfirmAddonRemove
+		request := taskRequest{
+			Kind:      taskRemoveAddon,
+			AddonName: strings.TrimSpace(m.removeAddonName),
+			Force:     m.removeAddonForce,
+			Yes:       true,
+		}
+		warning := "This removes the checkout/worktree; attached profiles and child worktrees block removal."
+		if request.Force {
+			warning += " Force may discard uncommitted changes."
+		}
+		m.openConfirm(
+			"Remove add-on "+request.AddonName+"?",
+			warning,
+			modalRemoveAddon,
+			func() tea.Cmd { return m.queueTask(request) },
+		)
 	}
 	return nil
 }
@@ -2093,9 +2068,10 @@ func (m *Model) submitDatabaseForm() tea.Cmd {
 		m.taskDatabaseName = destination
 		m.taskDatabasePhysical = ""
 		if m.restoreForce || !m.restoreCopy {
-			m.openTypedConfirm(
+			m.openConfirm(
+				"Restore database "+destination+"?",
 				"Move or overwrite can replace existing database data.",
-				destination,
+				modalNone,
 				func() tea.Cmd { return m.queueRestoreTask() },
 			)
 			return nil
@@ -2283,8 +2259,6 @@ func (m *Model) pasteTarget() *string {
 		return target
 	}
 	switch m.modal {
-	case modalTypedConfirm:
-		return &m.confirmInput
 	case modalRunVersion:
 		return &m.versionInput
 	}
@@ -2305,7 +2279,6 @@ func (m *Model) applyClipboardPaste(msg ClipboardContentMsg) {
 	m.addonFormErr = nil
 	m.configFormErr = nil
 	m.restoreErr = nil
-	m.confirmErr = nil
 	m.adminPasswordErr = nil
 	m.clearProfileFormErr()
 }
@@ -3881,24 +3854,12 @@ func addonActionHints(hasSelection, hasProfile bool) string {
 func (m *Model) modalView() string {
 	var lines []string
 	switch m.modal {
-	case modalTypedConfirm:
+	case modalConfirm:
 		lines = []string{
-			titleStyle.Render("Confirm: " + m.confirmExpected),
-			m.confirmPrompt,
+			titleStyle.Render(m.confirmTitle),
+			warningStyle.Render(m.confirmPrompt),
 			"",
-			"Type " + activeStyle.Render(m.confirmExpected) + " to confirm:",
-			"  " + m.confirmInput + "▏",
-		}
-		if m.confirmErr != nil {
-			lines = append(lines, errorStyle.Render(m.confirmErr.Error()))
-		}
-		lines = append(lines, "", mutedStyle.Render("enter confirm  esc cancel	"+pasteHint))
-	case modalConfirmDropDatabase:
-		lines = []string{
-			titleStyle.Render("Delete database " + databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical}) + "?"),
-			warningStyle.Render("This permanently deletes the database and its filestore."),
-			"",
-			mutedStyle.Render("enter/y confirm  n/esc cancel"),
+			mutedStyle.Render("y/enter confirm · n/esc cancel"),
 		}
 	case modalRunVersion:
 		lines = []string{
@@ -3984,17 +3945,6 @@ func (m *Model) modalView() string {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
 		lines = append(lines, "", mutedStyle.Render("tab field  type  enter continue  esc cancel  "+pasteHint))
-	case modalConfirmWorktreeAddon:
-		lines = []string{
-			titleStyle.Render("Confirm worktree creation"),
-			"Source: " + strings.TrimSpace(m.worktreeAddonSource),
-			"Name: " + strings.TrimSpace(m.worktreeAddonName),
-			"Branch: " + strings.TrimSpace(m.worktreeAddonBranch),
-			warningStyle.Render("If the branch is missing locally and remotely, create it."),
-			"Existing parent/worktree rules still apply.",
-			"",
-			mutedStyle.Render("enter/y confirm  n/esc back"),
-		}
 	case modalRemoveAddon:
 		lines = []string{
 			titleStyle.Render("Remove add-on checkout"),
@@ -4006,15 +3956,6 @@ func (m *Model) modalView() string {
 			lines = append(lines, errorStyle.Render(m.addonFormErr.Error()))
 		}
 		lines = append(lines, "", mutedStyle.Render("tab field  space toggle force  enter review  esc cancel"))
-	case modalConfirmAddonRemove:
-		lines = []string{
-			titleStyle.Render("Remove add-on " + strings.TrimSpace(m.removeAddonName) + "?"),
-			warningStyle.Render("This removes the checkout/worktree; attached profiles and child worktrees block removal."),
-		}
-		if m.removeAddonForce {
-			lines = append(lines, warningStyle.Render("Force may discard uncommitted changes."))
-		}
-		lines = append(lines, "", mutedStyle.Render("enter/y confirm  n/esc back"))
 	case modalSelect:
 		lines = m.selectModalLines()
 	case modalFilePicker:

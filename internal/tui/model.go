@@ -220,6 +220,7 @@ type Model struct {
 	selectTitle            string
 	selectItems            []selectItem
 	selectIndex            int
+	selectFilter           listFilter
 	selectPhase            resourcePhase
 	selectErr              error
 	selectRequest          uint64
@@ -228,6 +229,8 @@ type Model struct {
 	filePickerPath         string
 	filePickerItems        []files.DirEntry
 	filePickerIndex        int
+	filePickerFilter       listFilter
+	filePickerDirectory    bool
 	filePickerErr          error
 	filePickerPhase        resourcePhase
 	filePickerRequest      uint64
@@ -550,9 +553,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if parent := filepath.Dir(msg.Path); parent != msg.Path {
 			items = append(items, files.DirEntry{Name: "..", Path: parent, Dir: true})
 		}
-		items = append(items, msg.Entries...)
+		for _, entry := range msg.Entries {
+			if !m.filePickerDirectory || entry.Dir {
+				items = append(items, entry)
+			}
+		}
 		m.filePickerItems = items
-		m.filePickerIndex = 0
+		selectFirstIndex(&m.filePickerIndex, m.filePickerIndices())
 		m.filePickerErr = nil
 		if len(items) == 0 {
 			m.filePickerPhase = phaseEmpty
@@ -1203,6 +1210,7 @@ func (m *Model) startRestorePicker() tea.Cmd {
 	if err != nil || dir == "" {
 		dir = "."
 	}
+	m.filePickerDirectory = false
 	return m.openFilePicker(dir)
 }
 
@@ -1210,6 +1218,7 @@ func (m *Model) openFilePicker(path string) tea.Cmd {
 	m.filePickerRequest++
 	m.filePickerPath = path
 	m.filePickerItems = nil
+	m.filePickerFilter = listFilter{}
 	m.filePickerIndex = 0
 	m.filePickerErr = nil
 	m.filePickerPhase = phaseLoading
@@ -1218,7 +1227,7 @@ func (m *Model) openFilePicker(path string) tea.Cmd {
 }
 
 func (m *Model) chooseFilePickerEntry() tea.Cmd {
-	if m.filePickerPhase != phaseReady || m.filePickerIndex < 0 || m.filePickerIndex >= len(m.filePickerItems) {
+	if m.filePickerPhase != phaseReady || !containsIndex(m.filePickerIndices(), m.filePickerIndex) {
 		return nil
 	}
 	entry := m.filePickerItems[m.filePickerIndex]
@@ -1332,6 +1341,7 @@ func (m *Model) closeSelect() {
 	m.selectRequest++
 	m.selectKind = selectNone
 	m.selectItems = nil
+	m.selectFilter = listFilter{}
 	m.modal = modalNone
 }
 
@@ -1351,7 +1361,7 @@ func (m *Model) setVersionSelectItems(options []docker.VersionOption) {
 	}
 	items = append(items, selectItem{Label: "Custom version…", Value: selectCustomValue})
 	m.selectItems = items
-	m.selectIndex = 0
+	selectFirstIndex(&m.selectIndex, m.selectIndices())
 	m.selectErr = nil
 	m.selectPhase = phaseReady
 }
@@ -1372,7 +1382,7 @@ func (m *Model) setAddonSelectItems(statuses []addons.AddonStatus, sourcesOnly b
 		items = append(items, selectItem{Label: status.Name, Value: status.Name, Hint: hint})
 	}
 	m.selectItems = items
-	m.selectIndex = 0
+	selectFirstIndex(&m.selectIndex, m.selectIndices())
 	m.selectErr = nil
 	if len(items) == 0 {
 		m.selectPhase = phaseEmpty
@@ -1388,16 +1398,17 @@ func (m *Model) setBranchSelectItems(branches []string) {
 	}
 	items = append(items, selectItem{Label: "New branch…", Value: selectCustomValue})
 	m.selectItems = items
-	m.selectIndex = 0
+	selectFirstIndex(&m.selectIndex, m.selectIndices())
 	m.selectErr = nil
 	m.selectPhase = phaseReady
 }
 
 func (m *Model) applySelectChoice() tea.Cmd {
-	if m.selectPhase != phaseReady || m.selectIndex < 0 || m.selectIndex >= len(m.selectItems) {
+	if m.selectPhase != phaseReady || !containsIndex(m.selectIndices(), m.selectIndex) {
 		return nil
 	}
 	choice := m.selectItems[m.selectIndex]
+	m.selectFilter = listFilter{}
 	kind := m.selectKind
 	m.selectRequest++
 	m.selectKind = selectNone
@@ -1773,27 +1784,47 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			m.modal = modalNone
-		case "up", "k":
-			m.moveIndex(&m.filePickerIndex, len(m.filePickerItems), -1)
-		case "down", "j":
-			m.moveIndex(&m.filePickerIndex, len(m.filePickerItems), 1)
-		case "backspace", "left", "h":
-			return m, m.filePickerParent()
+			if m.filePickerDirectory {
+				m.modal = modalBackupDatabase
+			}
+		case "up":
+			moveFilteredIndex(&m.filePickerIndex, m.filePickerIndices(), -1)
+		case "down":
+			moveFilteredIndex(&m.filePickerIndex, m.filePickerIndices(), 1)
+		case "ctrl+h", "left":
+			if m.filePickerFilter.query == "" {
+				return m, m.filePickerParent()
+			}
 		case "enter":
 			return m, m.chooseFilePickerEntry()
+		case "ctrl+s":
+			if m.filePickerDirectory && m.filePickerPhase != phaseLoading && m.filePickerPhase != phaseError {
+				m.chooseBackupDirectory()
+			}
+		default:
+			if m.filePickerFilter.update(msg) {
+				selectFirstIndex(&m.filePickerIndex, m.filePickerIndices())
+			}
 		}
 	case modalSelect:
 		switch msg.String() {
 		case "esc":
 			m.closeSelect()
-		case "up", "k":
-			m.moveIndex(&m.selectIndex, len(m.selectItems), -1)
-		case "down", "j":
-			m.moveIndex(&m.selectIndex, len(m.selectItems), 1)
+		case "up":
+			moveFilteredIndex(&m.selectIndex, m.selectIndices(), -1)
+		case "down":
+			moveFilteredIndex(&m.selectIndex, m.selectIndices(), 1)
 		case "enter":
 			return m, m.applySelectChoice()
+		default:
+			if m.selectFilter.update(msg) {
+				selectFirstIndex(&m.selectIndex, m.selectIndices())
+			}
 		}
 	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
+		if m.modal == modalBackupDatabase && msg.String() == "ctrl+o" {
+			return m, m.startBackupDirectoryPicker()
+		}
 		if m.modal == modalRestoreDatabase {
 			m.restoreErr = nil
 		}
@@ -2261,6 +2292,10 @@ func (m *Model) pasteTarget() *string {
 	switch m.modal {
 	case modalRunVersion:
 		return &m.versionInput
+	case modalSelect:
+		return &m.selectFilter.query
+	case modalFilePicker:
+		return &m.filePickerFilter.query
 	}
 	return nil
 }
@@ -2275,6 +2310,12 @@ func (m *Model) applyClipboardPaste(msg ClipboardContentMsg) {
 		return
 	}
 	*target += msg.Text
+	if m.modal == modalSelect {
+		selectFirstIndex(&m.selectIndex, m.selectIndices())
+	}
+	if m.modal == modalFilePicker {
+		selectFirstIndex(&m.filePickerIndex, m.filePickerIndices())
+	}
 	m.notice = ""
 	m.addonFormErr = nil
 	m.configFormErr = nil
@@ -3893,7 +3934,7 @@ func (m *Model) modalView() string {
 			m.formLine("filestore", yesNo(m.backupFilestore), 2, false),
 			m.formLine("overwrite", yesNo(m.backupForce), 3, false),
 			"",
-			mutedStyle.Render("tab field  space toggle  enter run  esc cancel  " + pasteHint),
+			mutedStyle.Render("tab field  ctrl+o folder  space toggle  enter run  esc cancel  " + pasteHint),
 		}
 	case modalRestoreDatabase:
 		source := m.restoreSource
@@ -4130,95 +4171,6 @@ func (m *Model) profileSettingValue(row profileSettingRow) (string, string) {
 		return "Odoo master password", runningStyle.Render("set")
 	}
 	return "", ""
-}
-
-func (m *Model) filePickerModalLines() []string {
-	lines := []string{
-		titleStyle.Render("Restore source · " + m.taskDatabaseName),
-		mutedStyle.Render(m.filePickerPath),
-		"",
-	}
-	switch m.filePickerPhase {
-	case phaseLoading:
-		lines = append(lines, mutedStyle.Render("Loading…"))
-	case phaseError:
-		lines = append(lines, errorStyle.Render(errorText(m.filePickerErr)))
-	case phaseEmpty:
-		lines = append(lines, mutedStyle.Render("No folders or .zip/.dump files here"))
-	case phaseReady:
-		budget := m.modalListBudget()
-		start := windowStart(len(m.filePickerItems), m.filePickerIndex, budget)
-		end := start + budget
-		if end > len(m.filePickerItems) {
-			end = len(m.filePickerItems)
-		}
-		if start > 0 {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
-		}
-		for index := start; index < end; index++ {
-			entry := m.filePickerItems[index]
-			label := entry.Name
-			if entry.Dir {
-				label += "/"
-			}
-			if index == m.filePickerIndex {
-				lines = append(lines, activeStyle.Render("> "+label))
-			} else {
-				lines = append(lines, "  "+label)
-			}
-		}
-		if end < len(m.filePickerItems) {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.filePickerItems)-end)))
-		}
-	default:
-		lines = append(lines, mutedStyle.Render("not loaded"))
-	}
-	lines = append(lines, "", mutedStyle.Render("↑/↓ move  enter open/select  h/backspace up  esc cancel"))
-	return lines
-}
-
-func (m *Model) selectModalLines() []string {
-	lines := []string{titleStyle.Render(m.selectTitle)}
-	switch m.selectPhase {
-	case phaseLoading:
-		lines = append(lines, mutedStyle.Render("Loading options..."))
-	case phaseEmpty:
-		lines = append(lines, mutedStyle.Render("Nothing to choose"))
-	case phaseError:
-		lines = append(lines, errorStyle.Render(errorText(m.selectErr)))
-	case phaseReady:
-		budget := m.modalListBudget()
-		start := windowStart(len(m.selectItems), m.selectIndex, budget)
-		end := start + budget
-		if end > len(m.selectItems) {
-			end = len(m.selectItems)
-		}
-		if start > 0 {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
-		}
-		for index := start; index < end; index++ {
-			item := m.selectItems[index]
-			label := item.Label
-			if item.Hint != "" {
-				label += "  " + mutedStyle.Render(item.Hint)
-			}
-			if index == m.selectIndex {
-				lines = append(lines, activeStyle.Render("> "+label))
-			} else {
-				lines = append(lines, "  "+label)
-			}
-		}
-		if end < len(m.selectItems) {
-			lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.selectItems)-end)))
-		}
-	default:
-		lines = append(lines, mutedStyle.Render("Options are not available"))
-	}
-	if m.selectErr != nil && m.selectPhase == phaseReady {
-		lines = append(lines, errorStyle.Render(m.selectErr.Error()))
-	}
-	lines = append(lines, "", mutedStyle.Render("↑/↓ move  enter select  esc cancel"))
-	return lines
 }
 
 func (m *Model) formLine(label, value string, field int, textField bool) string {

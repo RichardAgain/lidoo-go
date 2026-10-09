@@ -336,12 +336,22 @@ internal `cache-*` template databases are hidden):
   databases yet**: a restore only needs a dump file, so `R` opens the picker
   from an empty list too. The picker starts in the
   working directory: `↑`/`↓` move, `enter` enters a folder or picks a
-  `.zip`/`.dump`, and `h`/`backspace` goes up. Any dump on your machine is
+  `.zip`/`.dump`. Type to filter names (case-insensitive); `backspace` deletes
+  filter text and `ctrl+h`/`←` goes up when the filter is empty. Any dump on your machine is
   reachable this way, and the restore form still accepts a typed path. The
   destination defaults to the dump's file name (made unique against existing
   databases), so a restore creates a new database instead of replacing the one
   you had selected; edit `destination` and switch `mode` to `move` to replace an
   existing database.
+
+Selection lists also support type-to-filter: `↑`/`↓` move through matches,
+`enter` selects, `backspace` deletes, and `ctrl+u` clears the filter.
+
+In the backup form, `ctrl+o` opens a folders-only destination picker. Type to
+filter, `enter` opens a folder, and `ctrl+s` uses the current folder; `esc`
+returns without changing the destination. The existing filename is preserved,
+or defaults to `<database>.<format>` (`<database>` for folder format), and the
+full destination remains editable in the form.
 
 Text fields (forms and the log search) accept a paste
 from the terminal (`ctrl+v`/`ctrl+shift+v` in most terminals) and `ctrl+v`

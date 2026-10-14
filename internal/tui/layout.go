@@ -341,37 +341,50 @@ func (m *Model) tabBar() (string, string) {
 	return labels.String(), underline.String()
 }
 
-func (m *Model) rightView(geometry frameGeometry) string {
-	width := geometry.rightWidth
-	header := m.profileHeader()
-	labels, underline := m.tabBar()
-	task := m.taskRegion(width-1, geometry.mainHeight/2)
-	for index := range task {
-		task[index] = " " + task[index]
-	}
-	contentHeight := max(1, geometry.mainHeight-len(header)-2-len(task))
+// detailLayout splits the detail pane into the profile header, the tab
+// content and the task region.
+type detailLayout struct {
+	header        []string
+	task          []string
+	contentWidth  int
+	contentHeight int
+}
 
-	width--
+func (m *Model) detailLayout(geometry frameGeometry) detailLayout {
+	layout := detailLayout{header: m.profileHeader()}
+	layout.task = m.taskRegion(geometry.rightWidth-1, geometry.mainHeight/2)
+	for index := range layout.task {
+		layout.task[index] = " " + layout.task[index]
+	}
+	layout.contentWidth = max(1, geometry.rightWidth-1)
+	layout.contentHeight = max(1, geometry.mainHeight-len(layout.header)-2-len(layout.task))
+	return layout
+}
+
+func (m *Model) rightView(geometry frameGeometry) string {
+	layout := m.detailLayout(geometry)
+	labels, underline := m.tabBar()
+	width, height := layout.contentWidth, layout.contentHeight
+
 	var content string
 	switch m.tab {
 	case tabLogs:
-		content = m.logView(width, contentHeight)
+		content = m.logView(width, height)
 	case tabDatabases:
-		content = m.databaseTabView(width)
+		content = m.databaseTabView(width, height)
 	case tabAddons:
-		content = m.addonTabView(width)
+		content = m.addonTabView(width, height)
 	case tabConfig:
-		content = m.configTabView()
+		content = m.configTabView(width)
 	default:
-		content = m.profileDetailView()
+		content = m.infoTabView()
 	}
 	if m.showHelp {
 		content = m.helpView()
 	}
-	content = lipgloss.NewStyle().Width(width + 1).MaxWidth(width + 1).PaddingLeft(1).Height(contentHeight).MaxHeight(contentHeight).Render(content)
-	width++
-	lines := append(header, labels, underline, content)
-	return strings.Join(append(lines, task...), "\n")
+	content = lipgloss.NewStyle().Width(width + 1).MaxWidth(width + 1).PaddingLeft(1).Height(height).MaxHeight(height).Render(content)
+	lines := append(layout.header, labels, underline, content)
+	return strings.Join(append(lines, layout.task...), "\n")
 }
 
 func (m *Model) helpView() string {

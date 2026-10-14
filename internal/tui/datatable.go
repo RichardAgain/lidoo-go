@@ -4,65 +4,171 @@ import (
 	"sort"
 	"strings"
 
-	bubblesTable "github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
-const dataTableCellPadding = 1
+const (
+	dataTableCellPadding = 1
+	tablePrefixWidth     = 2 // selection marker and a space
+	tableColumnGap       = 3
+)
 
 type dataTableColumn struct {
 	Title    string
 	Width    int // Fixed content width when Flex is zero; compressed only if necessary to fit.
 	Flex     int // Relative share of unused width when positive.
 	MinWidth int // Minimum content width for a flex column when space permits.
+	MaxWidth int // Cap for a flex column; unused width stays empty.
+	Right    bool
+	Tight    bool // use a one-space gap after this column
+}
+
+func (column dataTableColumn) gapAfter() int {
+	if column.Tight {
+		return 1
+	}
+	return tableColumnGap
+}
+
+// tableCell is one value: an optional status glyph followed by text, each with
+// its own style so the selected row can add a background without losing them.
+type tableCell struct {
+	Text       string
+	Style      lipgloss.Style
+	Glyph      string
+	GlyphStyle lipgloss.Style
 }
 
 type dataTable struct {
 	Columns     []dataTableColumn
-	Rows        [][]string
+	Rows        [][]tableCell
 	SelectedRow int
 	Width       int
+	Height      int  // total rows including the header; zero means unlimited
+	Focused     bool // the selected row is highlighted only in the focused pane
 }
 
-func (table dataTable) View() string {
+// View renders a header and the visible window of rows. It also returns the
+// index of the first visible row, for mouse hit testing.
+func (table dataTable) View() (string, int) {
 	if len(table.Columns) == 0 {
-		return ""
+		return "", 0
 	}
+	count := len(table.Columns)
+	available := table.Width - tablePrefixWidth
+	for _, column := range table.Columns[:count-1] {
+		available -= column.gapAfter()
+	}
+	// responsiveColumnWidths reserves cell padding that this layout replaces
+	// with explicit gaps, so hand it the viewport with that padding added.
+	widths := responsiveColumnWidths(table.Columns, available+2*dataTableCellPadding*count)
 
-	widths := responsiveColumnWidths(table.Columns, table.Width)
-	columns := make([]bubblesTable.Column, len(table.Columns))
+	header := strings.Repeat(" ", tablePrefixWidth)
 	for index, column := range table.Columns {
-		columns[index] = bubblesTable.Column{Title: column.Title, Width: widths[index]}
+		if index > 0 {
+			header += strings.Repeat(" ", table.Columns[index-1].gapAfter())
+		}
+		header += mutedStyle.Render(alignCell(column.Title, widths[index], column.Right))
 	}
-	rows := make([]bubblesTable.Row, len(table.Rows))
-	for index, row := range table.Rows {
-		rows[index] = bubblesTable.Row(row)
-	}
+	lines := []string{header}
 
-	styles := bubblesTable.DefaultStyles()
-	styles.Header = lipgloss.NewStyle().Bold(true).Padding(0, dataTableCellPadding)
-	styles.Cell = lipgloss.NewStyle().Padding(0, dataTableCellPadding)
-	styles.Selected = activeStyle
-	component := bubblesTable.New(
-		bubblesTable.WithStyles(styles),
-		bubblesTable.WithColumns(columns),
-		bubblesTable.WithRows(rows),
-		bubblesTable.WithWidth(table.Width),
-		bubblesTable.WithHeight(len(rows)+1),
-	)
-	component.SetCursor(table.SelectedRow)
-
-	lines := strings.Split(component.View(), "\n")
-	if len(lines) > 0 {
-		lines = append(lines[:1], append([]string{mutedStyle.Render(strings.Repeat("─", max(0, table.Width)))}, lines[1:]...)...)
+	budget := len(table.Rows)
+	if table.Height > 0 {
+		budget = max(1, table.Height-1)
 	}
-	return fitDataTableWidth(strings.Join(lines, "\n"), table.Width)
+	start := windowStart(len(table.Rows), table.SelectedRow, budget)
+	end := min(len(table.Rows), start+budget)
+	for index := start; index < end; index++ {
+		lines = append(lines, table.renderRow(index, table.Rows[index], widths))
+	}
+	return strings.Join(lines, "\n"), start
+}
+
+func (table dataTable) renderRow(index int, row []tableCell, widths []int) string {
+	selected := index == table.SelectedRow
+	focused := selected && table.Focused
+	segment := func(style lipgloss.Style, value string) string {
+		if focused {
+			style = style.Background(colorRule)
+		}
+		return style.Render(value)
+	}
+	marker := segment(lipgloss.NewStyle(), " ")
+	switch {
+	case focused:
+		marker = segment(activeStyle, "▌")
+	case selected:
+		marker = dimStyle.Render("▌")
+	}
+	line := marker + segment(lipgloss.NewStyle(), " ")
+	for column := range table.Columns {
+		if column > 0 {
+			line += segment(lipgloss.NewStyle(), strings.Repeat(" ", table.Columns[column-1].gapAfter()))
+		}
+		var cell tableCell
+		if column < len(row) {
+			cell = row[column]
+		}
+		line += renderTableCell(cell, widths[column], table.Columns[column].Right, column == 0 && focused, segment)
+	}
+	if gap := table.Width - ansi.StringWidth(line); gap > 0 {
+		line += segment(lipgloss.NewStyle(), strings.Repeat(" ", gap))
+	}
+	return line
+}
+
+func renderTableCell(cell tableCell, width int, right, emphasize bool, segment func(lipgloss.Style, string) string) string {
+	style := cell.Style
+	if emphasize {
+		style = activeStyle
+	}
+	text := ansi.Truncate(cell.Text, max(0, width-ansi.StringWidth(cell.Glyph)-boolInt(cell.Glyph != "")), "…")
+	used := ansi.StringWidth(text)
+	if cell.Glyph != "" {
+		used += ansi.StringWidth(cell.Glyph) + 1
+	}
+	pad := segment(lipgloss.NewStyle(), strings.Repeat(" ", max(0, width-used)))
+	var content string
+	if cell.Glyph != "" {
+		content = segment(cell.GlyphStyle, cell.Glyph) + segment(lipgloss.NewStyle(), " ")
+	}
+	content += segment(style, text)
+	if right {
+		return pad + content
+	}
+	return content + pad
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func alignCell(value string, width int, right bool) string {
+	value = ansi.Truncate(value, width, "")
+	pad := strings.Repeat(" ", max(0, width-ansi.StringWidth(value)))
+	if right {
+		return pad + value
+	}
+	return value + pad
 }
 
 // responsiveColumnWidths returns bubbles/table content widths. Its padding is
 // added by the table styles, so subtract it before distributing the viewport.
 func responsiveColumnWidths(columns []dataTableColumn, viewportWidth int) []int {
+	widths := distributeColumnWidths(columns, viewportWidth)
+	for index, column := range columns {
+		if column.Flex > 0 && column.MaxWidth > 0 && widths[index] > column.MaxWidth {
+			widths[index] = column.MaxWidth
+		}
+	}
+	return widths
+}
+
+func distributeColumnWidths(columns []dataTableColumn, viewportWidth int) []int {
 	widths := make([]int, len(columns))
 	flexColumns := make([]int, 0, len(columns))
 	fixedColumns := make([]int, 0, len(columns))
@@ -162,16 +268,4 @@ func widthsTotal(widths []int) int {
 		total += width
 	}
 	return total
-}
-
-func fitDataTableWidth(view string, width int) string {
-	if width <= 0 {
-		return view
-	}
-	lines := strings.Split(view, "\n")
-	for index, line := range lines {
-		line = ansi.Truncate(line, width, "")
-		lines[index] = line + strings.Repeat(" ", max(0, width-ansi.StringWidth(line)))
-	}
-	return strings.Join(lines, "\n")
 }

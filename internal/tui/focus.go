@@ -148,5 +148,7 @@ func (m *Model) moveRow(delta int) {
 		m.moveIndex(&m.databaseIndex, len(m.databases), delta)
 	case tabAddons:
 		m.moveIndex(&m.addonIndex, len(m.addons), delta)
+	case tabConfig:
+		m.moveProfileSetting(delta)
 	}
 }

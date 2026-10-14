@@ -38,7 +38,6 @@ const (
 	modalWorktreeAddon
 	modalSelect
 	modalCreateProfile
-	modalProfileSettings
 	modalConfigPattern
 	modalConfigPassword
 	modalConfigLANPort
@@ -52,7 +51,6 @@ const (
 	selectNone selectKind = iota
 	selectRunProfileVersion
 	selectCreateProfileVersion
-	selectConfigDBFilterMode
 	selectAddonWorktreeSource
 	selectAddonWorktreeBranch
 	selectLogDatabase
@@ -233,6 +231,12 @@ type Model struct {
 	configAdminPasswd      string
 	configFormErr          error
 	profileSettingsIndex   int
+	configPhase            resourcePhase
+	configErr              error
+	configRequest          uint64
+	databaseTableTop       int
+	databaseTableStart     int
+	addonTableStart        int
 	configPatternDraft     string
 	configPasswordDraft    string
 	configLANPortDraft     string
@@ -482,23 +486,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectErr = msg.Err
 		return m, nil
 	case ProfileConfigLoadedMsg:
-		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectConfigDBFilterMode {
+		if msg.RequestID != m.configRequest || msg.ProfileName != m.selectedProfileName() {
 			return m, nil
 		}
 		m.configProfileName = msg.ProfileName
 		m.applyLoadedProfileConfig(msg.Config)
-		if m.onTab(tabConfig) {
-			m.configLANPortDraft = strconv.Itoa(msg.Config.LANPort)
-			m.formField = 0
-			m.modal = modalConfigLANPort
-		}
 		return m, nil
 	case ProfileConfigFailedMsg:
-		if !m.currentSelectRequest(msg.RequestID) || m.selectKind != selectConfigDBFilterMode {
+		if msg.RequestID != m.configRequest || msg.ProfileName != m.selectedProfileName() {
 			return m, nil
 		}
-		m.selectPhase = phaseError
-		m.selectErr = msg.Err
+		m.configErr = msg.Err
+		if m.configPhase != phaseReady {
+			m.configPhase = phaseError
+		}
 		return m, nil
 	case AllAddonsLoadedMsg:
 		if !m.currentSelectRequest(msg.RequestID) {
@@ -761,7 +762,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "enter":
 		if m.onTab(tabConfig) {
-			return m, m.openProfileConfig()
+			return m, m.editProfileSetting()
 		} else if m.onTab(tabAddons) {
 			addon := m.selectedAddon()
 			profileName := m.selectedProfileName()
@@ -809,6 +810,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		if m.onProfiles() && m.selectedProfileName() != "" {
 			return m, m.toggleSelectedProfile()
+		}
+	case "/":
+		if m.tab == tabLogs && m.selectedProfileName() != "" {
+			m.openLogViewer()
+			m.logViewerTyping = true
 		}
 	case "L":
 		if m.selectedProfileName() != "" {
@@ -861,9 +867,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.startCreateProfile()
 		}
 	case "e":
-		if m.onProfiles() || m.onTab(tabConfig) {
-			return m, m.openProfileConfig()
+		if m.onTab(tabConfig) {
+			return m, m.editProfileSetting()
 		}
+		return m, m.openTab(tabConfig)
 	case "f":
 		if m.onTab(tabAddons) {
 			return m, m.queueSelectedAddonTask(taskFetchAddon)
@@ -972,19 +979,21 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 	}
 
 	m.focusDetails()
-	rowStart := tabY + 2 + 2 // tab bar, underline, table header and rule
-	if m.databasePhase == phaseUnavailable || m.databasePhase == phaseError {
-		rowStart += 2
-	}
-	row := y - rowStart
+	contentTop := tabY + 2 // tab bar and underline
 	switch m.tab {
 	case tabDatabases:
-		if row >= 0 && row < len(m.databases) {
+		row := m.databaseTableStart + y - (contentTop + 1 + m.databaseTableTop) // table header
+		if y > contentTop+m.databaseTableTop && row >= 0 && row < len(m.databases) {
 			m.databaseIndex = row
 		}
 	case tabAddons:
-		if row >= 0 && row < len(m.addons) {
+		row := m.addonTableStart + y - (contentTop + 1)
+		if y > contentTop && row >= 0 && row < len(m.addons) {
 			m.addonIndex = row
+		}
+	case tabConfig:
+		if row := y - contentTop; row >= 0 && row < len(m.profileSettingRows()) {
+			m.profileSettingsIndex = row
 		}
 	}
 	return nil
@@ -1368,8 +1377,6 @@ func (m *Model) applySelectChoice() tea.Cmd {
 		}
 		m.openCreateProfileForm(choice.Value)
 		return nil
-	case selectConfigDBFilterMode:
-		return m.applySelectedConfigMode(choice.Value)
 	case selectAddonWorktreeSource:
 		m.modal = modalNone
 		return m.openWorktreeBranchSelect(choice.Value)
@@ -1474,33 +1481,31 @@ func (m *Model) submitCreateProfile() tea.Cmd {
 	return m.queueTask(taskRequest{Kind: taskCreate, ProfileName: name, Version: version})
 }
 
-func (m *Model) openProfileConfig() tea.Cmd {
-	profileName := m.selectedProfileName()
-	if profileName == "" || m.rejectMutatingAction() {
-		return nil
-	}
-	m.configProfileName = profileName
-	m.selectRequest++
-	m.selectKind = selectConfigDBFilterMode
-	m.selectTitle = "Database filter mode · " + profileName
-	if m.onTab(tabConfig) {
-		m.selectTitle = "LAN port · " + profileName
-	}
-	m.selectItems = nil
-	m.selectIndex = 0
-	m.selectErr = nil
-	m.selectPhase = phaseLoading
-	m.modal = modalSelect
-	return LoadProfileConfigCmd(m.ctx, m.service, profileName, m.selectRequest)
-}
-
 func (m *Model) applyLoadedProfileConfig(config profile.Config) {
 	m.configDBFilterMode = config.EffectiveDBFilterMode()
 	m.configDBFilterPattern = config.DBFilterPattern
 	m.configAdminPasswd = config.AdminPasswd
-	m.configFormErr = nil
-	m.profileSettingsIndex = 0
-	m.modal = modalProfileSettings
+	m.configPhase = phaseReady
+	m.configErr = nil
+	rows := m.profileSettingRows()
+	m.profileSettingsIndex = min(m.profileSettingsIndex, len(rows)-1)
+}
+
+// beginConfigLoad reads the profile settings shown on the Config tab.
+func (m *Model) beginConfigLoad(reset bool) tea.Cmd {
+	profileName := m.selectedProfileName()
+	m.configRequest++
+	if reset {
+		m.configPhase = phaseLoading
+		m.configErr = nil
+		m.configFormErr = nil
+		m.profileSettingsIndex = 0
+	}
+	if profileName == "" {
+		m.configPhase = phaseEmpty
+		return nil
+	}
+	return LoadProfileConfigCmd(m.ctx, m.service, profileName, m.configRequest)
 }
 
 type profileSettingRow uint8
@@ -1509,6 +1514,7 @@ const (
 	settingDBFilterMode profileSettingRow = iota
 	settingDBFilterPattern
 	settingAdminPasswd
+	settingLANPort
 )
 
 // profileSettingRows lists the settings that apply to the current mode. The
@@ -1519,73 +1525,47 @@ func (m *Model) profileSettingRows() []profileSettingRow {
 	if m.configDBFilterMode == profile.DBFilterModeCustom {
 		rows = append(rows, settingDBFilterPattern)
 	}
-	rows = append(rows, settingAdminPasswd)
-	return rows
+	return append(rows, settingAdminPasswd, settingLANPort)
 }
 
 func (m *Model) moveProfileSetting(delta int) {
-	rows := m.profileSettingRows()
-	if len(rows) == 0 {
-		return
-	}
-	m.profileSettingsIndex = (m.profileSettingsIndex + delta + len(rows)) % len(rows)
+	m.moveIndex(&m.profileSettingsIndex, len(m.profileSettingRows()), delta)
 }
 
 func (m *Model) editProfileSetting() tea.Cmd {
-	rows := m.profileSettingRows()
-	if m.profileSettingsIndex < 0 || m.profileSettingsIndex >= len(rows) {
+	if m.configPhase != phaseReady || m.selectedProfileName() == "" || m.rejectMutatingAction() {
 		return nil
 	}
+	m.configProfileName = m.selectedProfileName()
 	m.configFormErr = nil
-	switch rows[m.profileSettingsIndex] {
+	switch m.currentSettingRow() {
 	case settingDBFilterMode:
-		m.selectRequest++
-		m.selectKind = selectConfigDBFilterMode
-		m.selectTitle = "Database filter mode · " + m.configProfileName
-		m.selectItems = m.configModeSelectItems()
-		m.selectIndex = m.currentConfigModeIndex()
-		m.selectErr = nil
-		m.selectPhase = phaseReady
-		m.modal = modalSelect
-		return nil
+		return m.applySelectedConfigMode(m.nextConfigMode())
 	case settingDBFilterPattern:
 		m.configPatternDraft = m.configDBFilterPattern
 		m.formField = 0
 		m.modal = modalConfigPattern
-		return nil
 	case settingAdminPasswd:
 		m.configPasswordDraft = m.configAdminPasswd
 		m.formField = 0
 		m.modal = modalConfigPassword
-		return nil
+	case settingLANPort:
+		m.configLANPortDraft = strconv.Itoa(m.profileDetail.LANPort)
+		m.formField = 0
+		m.modal = modalConfigLANPort
 	}
 	return nil
 }
 
-func (m *Model) configModeSelectItems() []selectItem {
-	modes := []struct{ label, value string }{
-		{"profile (only this profile's databases)", profile.DBFilterModeProfile},
-		{"disabled (all databases visible)", profile.DBFilterModeDisabled},
-		{"custom (regular expression)", profile.DBFilterModeCustom},
-	}
-	items := make([]selectItem, 0, len(modes))
-	for _, mode := range modes {
-		item := selectItem{Label: mode.label, Value: mode.value}
-		if mode.value == m.configDBFilterMode {
-			item.Hint = "current"
-		}
-		items = append(items, item)
-	}
-	return items
-}
-
-func (m *Model) currentConfigModeIndex() int {
-	for index, item := range m.configModeSelectItems() {
-		if item.Value == m.configDBFilterMode {
-			return index
+// nextConfigMode is the database filter mode that follows the current one.
+func (m *Model) nextConfigMode() string {
+	modes := []string{profile.DBFilterModeProfile, profile.DBFilterModeDisabled, profile.DBFilterModeCustom}
+	for index, mode := range modes {
+		if mode == m.configDBFilterMode {
+			return modes[(index+1)%len(modes)]
 		}
 	}
-	return 0
+	return modes[0]
 }
 
 // applySelectedConfigMode persists only the filter mode, except when custom is
@@ -1593,7 +1573,6 @@ func (m *Model) currentConfigModeIndex() int {
 // stays valid.
 func (m *Model) applySelectedConfigMode(mode string) tea.Cmd {
 	if mode == profile.DBFilterModeCustom && strings.TrimSpace(m.configDBFilterPattern) == "" {
-		m.configDBFilterMode = mode
 		m.configPatternDraft = ""
 		m.formField = 0
 		m.modal = modalConfigPattern
@@ -1601,7 +1580,7 @@ func (m *Model) applySelectedConfigMode(mode string) tea.Cmd {
 	}
 	selected := mode
 	m.configDBFilterMode = mode
-	m.modal = modalProfileSettings
+	m.modal = modalNone
 	return m.queueTask(taskRequest{
 		Kind:         taskUpdateConfig,
 		ProfileName:  m.configProfileName,
@@ -1618,7 +1597,7 @@ func (m *Model) submitConfigPattern() tea.Cmd {
 	mode := profile.DBFilterModeCustom
 	m.configDBFilterPattern = pattern
 	m.configDBFilterMode = mode
-	m.modal = modalProfileSettings
+	m.modal = modalNone
 	return m.queueTask(taskRequest{
 		Kind:        taskUpdateConfig,
 		ProfileName: m.configProfileName,
@@ -1632,7 +1611,7 @@ func (m *Model) submitConfigPattern() tea.Cmd {
 func (m *Model) submitConfigPassword() tea.Cmd {
 	password := m.configPasswordDraft
 	m.configAdminPasswd = password
-	m.modal = modalProfileSettings
+	m.modal = modalNone
 	return m.queueTask(taskRequest{
 		Kind:         taskUpdateConfig,
 		ProfileName:  m.configProfileName,
@@ -1842,25 +1821,10 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.addonFormErr = nil
 			}
 		}
-	case modalProfileSettings:
-		switch msg.String() {
-		case "esc", "q":
-			m.modal = modalNone
-		case "up", "k":
-			m.moveProfileSetting(-1)
-		case "down", "j":
-			m.moveProfileSetting(1)
-		case "enter":
-			return m, m.editProfileSetting()
-		}
 	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
 		switch msg.String() {
 		case "esc":
-			if m.modal == modalConfigLANPort {
-				m.modal = modalNone
-			} else {
-				m.modal = modalProfileSettings
-			}
+			m.modal = modalNone
 		case "enter":
 			return m, m.submitProfileForm()
 		case "tab":
@@ -2663,6 +2627,7 @@ func (m *Model) refreshProfileResources() tea.Cmd {
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
 	}
+	commands = append(commands, m.beginConfigLoad(false))
 	if m.tab == tabLogs {
 		commands = append(commands, m.refreshLogLoad())
 	}
@@ -2716,12 +2681,14 @@ func (m *Model) beginProfileResources() tea.Cmd {
 		m.logResourceName = ""
 		m.logViewportReady = false
 		m.addonPhase = phaseEmpty
+		m.beginConfigLoad(true)
 		return nil
 	}
 	commands := []tea.Cmd{
 		LoadProfileDetailCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
+		m.beginConfigLoad(true),
 	}
 	if m.tab == tabLogs {
 		commands = append(commands, m.beginLogLoad())
@@ -2998,99 +2965,6 @@ func blankLines(count, width int) []string {
 	return lines
 }
 
-func (m *Model) databaseTableRows(width int) string {
-	rows := make([][]string, 0, len(m.databases))
-	for _, database := range m.databases {
-		name := database.Logical
-		if name == "" {
-			name = database.Physical
-		}
-		size := "—"
-		availability := "unknown"
-		if info, ok := m.databaseInfos[database.Physical]; ok {
-			if info.Size != "" {
-				size = info.Size
-			}
-			availability = connectionState(info.Available)
-		} else if m.databaseInfoPhase == phaseLoading {
-			size = "loading…"
-			availability = "checking"
-		}
-		if m.databasePhase == phaseUnavailable {
-			availability = connectionState(false)
-		}
-		rows = append(rows, []string{name, size, availability})
-	}
-	return (dataTable{
-		Columns: []dataTableColumn{
-			{Title: "NAME", Flex: 1, MinWidth: 12},
-			{Title: "SIZE", Width: 8},
-			{Title: "AVAILABILITY", Width: 14},
-		},
-
-		Rows:        rows,
-		SelectedRow: m.databaseIndex,
-		Width:       width,
-	}).View()
-}
-
-func (m *Model) addonRows(width int) string {
-	switch m.addonPhase {
-	case phaseLoading:
-		return mutedStyle.Render("  loading...")
-	case phaseEmpty:
-		message := mutedStyle.Render("  no add-ons registered")
-		if m.addonErr != nil {
-			return message + "\n" + errorStyle.Render("  refresh failed: "+errorText(m.addonErr))
-		}
-		return message
-	case phaseError:
-		return errorStyle.Render("  refresh failed")
-	case phaseReady:
-		rows := make([][]string, 0, len(m.addons))
-		profileName := m.selectedProfileName()
-		for _, addon := range m.addons {
-			branch := addon.Branch
-			source := addon.Entry.Source
-			if addon.Kind == "worktree" {
-				source = addon.Entry.WorktreeOf
-			}
-			if branch == "" {
-				branch = "—"
-			}
-			if source == "" {
-				source = "—"
-			}
-			attached := addonAttached(addon, profileName)
-			check := ""
-			if attached {
-				check = runningStyle.Render("")
-			}
-			row := []string{addon.Name, branch, source, check}
-			rows = append(rows, row)
-		}
-		view := (dataTable{
-			Columns: []dataTableColumn{
-				{Title: "NAME", Flex: 2, MinWidth: 12},
-				{Title: "BRANCH", Flex: 1, MinWidth: 8},
-				{Title: "SOURCE", Flex: 2, MinWidth: 10},
-				{Title: "ATTACHED", Width: 8},
-			},
-			Rows: rows, SelectedRow: m.addonIndex, Width: width,
-		}).View()
-		if m.addonErr != nil {
-			view += "\n" + errorStyle.Render("  refresh failed: "+errorText(m.addonErr))
-		}
-		return view
-	default:
-		return mutedStyle.Render("  not loaded")
-	}
-}
-
-func (m *Model) logView(width, height int) string {
-	return m.logContainer(width, height, m.logContent())
-}
-
 func (m *Model) logContent() string {
 	if m.selectedProfile() != nil && !m.profileIsRunning() {
 		return mutedStyle.Render("start the container to see logs")
@@ -3098,14 +2972,6 @@ func (m *Model) logContent() string {
 
 	entries := filterLogEntriesByDatabase(containerLogEntries(m.displayLogEntries(m.selectedProfileName())), m.logDatabase)
 	output := renderLogEntries(entries, false)
-	if m.logDatabase != "" {
-		note := mutedStyle.Render("db filter: " + m.logDatabase + "  ·  open logs (L) and press d to change")
-		if output != "" {
-			output = note + "\n" + output
-		} else {
-			output = note
-		}
-	}
 	status := ""
 	switch m.logPhase {
 	case phaseLoading:
@@ -3368,55 +3234,6 @@ func (m *Model) logContainer(width, height int, content string) string {
 	return m.logViewport.View()
 }
 
-func (m *Model) databaseTabView(width int) string {
-	profileName := m.selectedProfileName()
-	if profileName == "" {
-		profileName = "none"
-	}
-	lines := []string{}
-	switch m.databasePhase {
-	case phaseLoading:
-		lines = append(lines, mutedStyle.Render("  loading databases..."))
-	case phaseEmpty:
-		lines = append(lines,
-			mutedStyle.Render("  no databases found"),
-			"",
-			mutedStyle.Render("  R restore a database from a dump file"),
-			mutedStyle.Render("  i create an empty database"),
-		)
-	case phaseUnavailable:
-		if len(m.databases) == 0 {
-			lines = append(lines, warningStyle.Render("  databases unavailable while stopped"))
-		} else {
-			lines = append(lines, warningStyle.Render("  unavailable while stopped; showing last snapshot"), "", m.databaseTableRows(width))
-		}
-	case phaseError:
-		if len(m.databases) == 0 {
-			lines = append(lines, errorStyle.Render("  refresh failed: "+errorText(m.databaseErr)))
-		} else {
-			lines = append(lines, errorStyle.Render("  refresh failed; showing last snapshot"), "", m.databaseTableRows(width))
-		}
-	case phaseReady:
-		lines = append(lines, m.databaseTableRows(width))
-		if m.databaseErr != nil {
-			lines = append(lines, errorStyle.Render("  refresh failed; showing last snapshot: "+errorText(m.databaseErr)))
-		}
-	default:
-		lines = append(lines, mutedStyle.Render("  not loaded"))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *Model) addonTabView(width int) string {
-	profileName := m.selectedProfileName()
-	if profileName == "" {
-		profileName = "none"
-	}
-	return strings.Join([]string{
-		m.addonRows(width),
-	}, "\n\n")
-}
-
 // taskOutputTail renders the last useful output lines, indented under the task
 // header and readable as plain text instead of dimmed noise.
 func taskOutputTail(output string, maxLines int) (string, bool) {
@@ -3445,76 +3262,6 @@ func taskStatus(status string) string {
 	default:
 		return mutedStyle.Render(status)
 	}
-}
-
-func (m *Model) configTabView() string {
-	lines := []string{titleStyle.Render("Config · " + m.selectedProfileName()), ""}
-	switch m.profilePhase {
-	case phaseLoading:
-		return strings.Join(append(lines, mutedStyle.Render("loading configuration...")), "\n")
-	case phaseError:
-		return strings.Join(append(lines, errorStyle.Render(errorText(m.profileDetailErr))), "\n")
-	case phaseReady:
-	default:
-		return strings.Join(append(lines, mutedStyle.Render("configuration unavailable")), "\n")
-	}
-	port := m.profileDetail.LANPort
-	value := "(disabled)"
-	if port != 0 {
-		value = strconv.Itoa(port)
-	}
-	lines = append(lines, activeStyle.Render("> LAN port: "+value))
-	if port != 0 {
-		lines = append(lines, fmt.Sprintf("  LAN URL: http://<host-LAN-IP>:%d", port))
-	}
-	lines = append(lines,
-		"",
-		"pending recreation: "+m.profileDetail.PendingRecreation.String(),
-		mutedStyle.Render("saved to .lidoo.json; 0 disables publishing"),
-		mutedStyle.Render("publishes on all IPv4 interfaces; restrict access with your firewall"),
-		mutedStyle.Render("enter/e edit LAN port  R recreate to apply"),
-	)
-	if m.profileDetailErr != nil {
-		lines = append(lines, errorStyle.Render("refresh failed: "+errorText(m.profileDetailErr)))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *Model) profileDetailView() string {
-	lines := []string{titleStyle.Render("Profile details")}
-	if m.selectedProfileName() == "" {
-		return strings.Join(append(lines, mutedStyle.Render("No profile selected")), "\n")
-	}
-	if m.profilePhase == phaseLoading {
-		return strings.Join(append(lines, activeStyle.Render(m.selectedProfileName()), mutedStyle.Render("Loading profile details...")), "\n")
-	}
-	if m.profilePhase == phaseError {
-		return strings.Join(append(lines, activeStyle.Render(m.selectedProfileName()), errorStyle.Render(errorText(m.profileDetailErr))), "\n")
-	}
-	detail := m.profileDetail
-	lines = append(lines,
-		activeStyle.Render(detail.Name),
-		"docker state: "+profileState(detail.DockerState),
-		"url: "+detail.URL,
-		"odoo version: "+detail.OdooVersion,
-		"attached add-ons: "+strings.Join(detail.AttachedAddons, ", "),
-		"database prefix: "+detail.DatabasePrefix,
-		"image: "+detail.Image,
-		"filestore volume: "+detail.FilestoreVolume,
-		fmt.Sprintf("LAN port (configured): %d", detail.LANPort),
-		"pending recreation: "+detail.PendingRecreation.String(),
-	)
-	if m.profileDetailErr != nil {
-		lines = append(lines, errorStyle.Render("refresh failed; showing last snapshot: "+errorText(m.profileDetailErr)))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *Model) row(value string, selected bool) string {
-	if !selected {
-		return "  " + value
-	}
-	return activeStyle.Render("  " + value)
 }
 
 func (m *Model) footerView() string {
@@ -3701,8 +3448,6 @@ func (m *Model) modalView() string {
 			mutedStyle.Render("space starts the profile after creation"),
 			modalKeyHints("tab field  ←/→ version  type custom  enter create  esc cancel  "+pasteHint),
 		)
-	case modalProfileSettings:
-		lines = m.profileSettingsModalLines()
 	case modalConfigPattern:
 		lines = []string{
 			titleStyle.Render("Database filter pattern · " + m.configProfileName),
@@ -3813,45 +3558,27 @@ func modalTitleSeparator(lines []string, width int) []string {
 	return append([]string{lines[0], separator}, lines[1:]...)
 }
 
-func (m *Model) profileSettingsModalLines() []string {
-	lines := []string{titleStyle.Render("Profile settings · " + m.configProfileName)}
-	rows := m.profileSettingRows()
-	for index, row := range rows {
-		label, value := m.profileSettingValue(row)
-		line := label + ": " + value
-		if index == m.profileSettingsIndex {
-			lines = append(lines, activeStyle.Render("> "+line))
-		} else {
-			lines = append(lines, "  "+line)
-		}
-	}
-	if m.configFormErr != nil {
-		lines = append(lines, errorStyle.Render(m.configFormErr.Error()))
-	}
-	lines = append(lines,
-		"",
-		mutedStyle.Render("R recreates the container to apply changes"),
-		modalKeyHints("↑/↓ move  enter edit  esc close"),
-	)
-	return lines
-}
-
-func (m *Model) profileSettingValue(row profileSettingRow) (string, string) {
+func (m *Model) profileSettingValue(row profileSettingRow) (string, string, lipgloss.Style) {
 	switch row {
 	case settingDBFilterMode:
-		return "database filter mode", m.configDBFilterMode
+		return "Database filter", m.configDBFilterMode, textStyle
 	case settingDBFilterPattern:
 		if strings.TrimSpace(m.configDBFilterPattern) == "" {
-			return "filter pattern", warningStyle.Render("(required)")
+			return "Filter pattern", "(required)", warningStyle
 		}
-		return "filter pattern", m.configDBFilterPattern
+		return "Filter pattern", m.configDBFilterPattern, textStyle
 	case settingAdminPasswd:
 		if m.configAdminPasswd == "" {
-			return "Odoo master password", mutedStyle.Render("(not set)")
+			return "Master password", "(not set)", mutedStyle
 		}
-		return "Odoo master password", runningStyle.Render("set")
+		return "Master password", "set", runningStyle
+	case settingLANPort:
+		if m.profileDetail.LANPort == 0 {
+			return "LAN port", "disabled", mutedStyle
+		}
+		return "LAN port", strconv.Itoa(m.profileDetail.LANPort), textStyle
 	}
-	return "", ""
+	return "", "", textStyle
 }
 
 func (m *Model) formLine(label, value string, field int, textField bool) string {
@@ -3904,11 +3631,11 @@ func (m *Model) smallView() string {
 		labels, _ := m.tabBar()
 		switch m.tab {
 		case tabDatabases:
-			lines = append(lines, "", labels, "", m.databaseTabView(m.width))
+			lines = append(lines, "", labels, "", m.databaseTabView(m.width, max(3, m.height/2)))
 		case tabAddons:
-			lines = append(lines, "", labels, "", m.addonTabView(m.width))
+			lines = append(lines, "", labels, "", m.addonTabView(m.width, max(3, m.height/2)))
 		case tabConfig:
-			lines = append(lines, "", labels, "", m.configTabView())
+			lines = append(lines, "", labels, "", m.configTabView(m.width))
 		}
 	}
 	hints := profileActionHints()

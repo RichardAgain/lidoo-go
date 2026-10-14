@@ -25,7 +25,7 @@ func TestAddonTableShowsLiveBranch(t *testing.T) {
 		{Name: "enterprise", Kind: "clone", Branch: "saas-18.1", Entry: addons.Entry{Source: "git@github.com:acme/enterprise.git"}},
 	}
 
-	rows := ansi.Strip(model.addonRows(80))
+	rows := ansi.Strip(model.addonTabView(80, 20))
 	if !strings.Contains(rows, "saas-18.1") {
 		t.Fatalf("branch column should show the current branch, got %q", rows)
 	}
@@ -57,7 +57,7 @@ func TestModalHidesBackgroundLogs(t *testing.T) {
 	}
 }
 
-func TestAddonTableLabelsAttachedColumn(t *testing.T) {
+func TestAddonTableMarksAttached(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.pane, model.tab = paneDetails, tabAddons
 	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
@@ -67,11 +67,8 @@ func TestAddonTableLabelsAttachedColumn(t *testing.T) {
 		{Name: "lidoo", Kind: "clone", Branch: "18.0"},
 	}
 
-	rows := ansi.Strip(model.addonRows(80))
-	if !strings.Contains(rows, "ATTACHED") {
-		t.Fatalf("the check column needs a header, got %q", rows)
-	}
-	if !strings.Contains(rows, "\uf00c") {
+	rows := ansi.Strip(model.addonTabView(80, 20))
+	if !strings.Contains(rows, "✓") {
 		t.Fatalf("attached add-on should show a check, got %q", rows)
 	}
 }
@@ -279,23 +276,22 @@ func TestCreateProfileQueuesCreateWithoutRun(t *testing.T) {
 
 func TestProfileSettingRowsFollowMode(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.modal = modalProfileSettings
 
 	model.configDBFilterMode = profile.DBFilterModeProfile
-	if got := len(model.profileSettingRows()); got != 2 {
-		t.Fatalf("profile mode rows = %d, want 2", got)
+	if got := len(model.profileSettingRows()); got != 3 {
+		t.Fatalf("profile mode rows = %d, want 3", got)
 	}
 	model.configDBFilterMode = profile.DBFilterModeCustom
 	rows := model.profileSettingRows()
-	if len(rows) != 3 {
-		t.Fatalf("custom mode rows = %d, want 3", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("custom mode rows = %d, want 4", len(rows))
 	}
 	if rows[1] != settingDBFilterPattern {
 		t.Fatalf("second row = %v, want pattern", rows[1])
 	}
 }
 
-func TestLoadedProfileConfigOpensSettings(t *testing.T) {
+func TestLoadedProfileConfigFillsConfigTab(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.applyLoadedProfileConfig(profile.Config{
 		DBFilterMode:    profile.DBFilterModeDisabled,
@@ -303,8 +299,8 @@ func TestLoadedProfileConfigOpensSettings(t *testing.T) {
 		AdminPasswd:     "master",
 	})
 
-	if model.modal != modalProfileSettings {
-		t.Fatalf("modal = %v, want settings", model.modal)
+	if model.modal != modalNone || model.configPhase != phaseReady {
+		t.Fatalf("modal/phase = %v/%v, want none/ready", model.modal, model.configPhase)
 	}
 	if model.configDBFilterMode != profile.DBFilterModeDisabled {
 		t.Fatalf("mode = %q", model.configDBFilterMode)
@@ -314,24 +310,75 @@ func TestLoadedProfileConfigOpensSettings(t *testing.T) {
 	}
 }
 
-func TestEditSettingOpensModeSelect(t *testing.T) {
+func configModel() *Model {
 	model := NewModel(context.Background(), nil)
-	model.modal = modalProfileSettings
+	model.width, model.height = 100, 30
+	model.loading = false
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running", Version: "18", URL: "http://demo.lidoo.localhost"}}
+	model.profilePhase = phaseReady
+	model.profileDetail = docker.ProfileDetail{Name: "demo", DockerState: "running", LANPort: 8070}
 	model.configProfileName = "demo"
-	model.configDBFilterMode = profile.DBFilterModeDisabled
-	model.profileSettingsIndex = 0
+	model.applyLoadedProfileConfig(profile.Config{DBFilterMode: profile.DBFilterModeProfile})
+	model.pane, model.tab = paneDetails, tabConfig
+	return model
+}
 
-	if cmd := model.editProfileSetting(); cmd != nil {
-		t.Fatal("editing the mode should not queue a task")
+func TestConfigTabEnterCyclesFilterMode(t *testing.T) {
+	model := configModel()
+	if cmd := model.editProfileSetting(); cmd == nil {
+		t.Fatal("cycling the mode should queue a config task")
 	}
-	if model.modal != modalSelect {
-		t.Fatalf("modal = %v, want select", model.modal)
+	update := model.pendingTask.ConfigUpdate
+	if update == nil || update.DBFilterMode == nil || *update.DBFilterMode != profile.DBFilterModeDisabled {
+		t.Fatalf("update = %+v, want disabled", update)
 	}
-	if len(model.selectItems) != 3 {
-		t.Fatalf("select items = %d, want 3", len(model.selectItems))
+}
+
+func TestConfigTabRowsOpenEditForms(t *testing.T) {
+	model := configModel()
+	model.updateKey(keyMsg("j"))
+	model.updateKey(keyMsg("enter"))
+	if model.modal != modalConfigPassword {
+		t.Fatalf("modal = %v, want master password form", model.modal)
 	}
-	if model.selectItems[model.selectIndex].Value != profile.DBFilterModeDisabled {
-		t.Fatalf("default index points at %q", model.selectItems[model.selectIndex].Value)
+	model.modal = modalNone
+	model.updateKey(keyMsg("j"))
+	model.updateKey(keyMsg("enter"))
+	if model.modal != modalConfigLANPort || model.configLANPortDraft != "8070" {
+		t.Fatalf("modal/draft = %v/%q, want LAN port form with 8070", model.modal, model.configLANPortDraft)
+	}
+}
+
+func TestEKeyJumpsToConfigTab(t *testing.T) {
+	model := navModel()
+	model.updateKey(keyMsg("e"))
+	if model.pane != paneDetails || model.tab != tabConfig {
+		t.Fatalf("pane/tab = %v/%v, want details/config", model.pane, model.tab)
+	}
+}
+
+func TestConfigTabShowsRowsAndPendingRecreation(t *testing.T) {
+	model := configModel()
+	model.profileDetail.PendingRecreation = docker.RecreationStatus{Checked: true, Pending: true, Reason: "LAN port changed"}
+	view := ansi.Strip(model.configTabView(80))
+	for _, want := range []string{"Database filter", "Master password", "LAN port", "8070", "changes waiting", "R recreates the container"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("config tab missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Filter pattern") {
+		t.Fatalf("pattern row should only exist in custom mode:\n%s", view)
+	}
+}
+
+func TestCancelledCustomModeDoesNotChangeDisplayedMode(t *testing.T) {
+	model := configModel()
+	model.applySelectedConfigMode(profile.DBFilterModeCustom)
+	if model.modal != modalConfigPattern {
+		t.Fatalf("modal = %v, want pattern editor", model.modal)
+	}
+	if model.configDBFilterMode != profile.DBFilterModeProfile {
+		t.Fatalf("mode = %q, want unchanged until saved", model.configDBFilterMode)
 	}
 }
 
@@ -385,8 +432,8 @@ func TestSubmitConfigPasswordChangesOnlyPassword(t *testing.T) {
 	if update.DBFilterMode != nil || update.DBFilterPattern != nil {
 		t.Fatalf("password change should not touch other fields: %+v", update)
 	}
-	if model.modal != modalProfileSettings {
-		t.Fatalf("modal = %v, want back to settings", model.modal)
+	if model.modal != modalNone {
+		t.Fatalf("modal = %v, want closed", model.modal)
 	}
 }
 
@@ -486,9 +533,9 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	_ = model.leftView(model.frame())
 	_ = model.rightView(model.frame())
 	_ = model.smallView()
-	_ = model.databaseTabView(80)
+	_ = model.databaseTabView(80, 20)
 
-	for _, modal := range []modalMode{modalProfileSettings, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
+	for _, modal := range []modalMode{modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
 		model.modal = modal
 		_ = model.modalView()
 	}
@@ -991,5 +1038,130 @@ func TestSelectModalWindowsLongLists(t *testing.T) {
 	rendered := ansi.Strip(strings.Join(model.selectModalLines(), "\n"))
 	if !strings.Contains(rendered, "more") {
 		t.Fatalf("long list should show more indicators:\n%s", rendered)
+	}
+}
+
+func dbModel(count int) *Model {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 24
+	model.loading = false
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running", Version: "18", URL: "http://demo.lidoo.localhost"}}
+	model.databasePhase = phaseReady
+	model.databaseInfoPhase = phaseReady
+	model.databaseInfos = make(map[string]odoo.DatabaseInfo)
+	for index := 0; index < count; index++ {
+		name := fmt.Sprintf("db%03d", index)
+		model.databases = append(model.databases, odoo.Database{Logical: name, Physical: "demo__" + name})
+		model.databaseInfos["demo__"+name] = odoo.DatabaseInfo{Size: "60 MB", Available: index%2 == 0}
+	}
+	model.pane, model.tab = paneDetails, tabDatabases
+	return model
+}
+
+func TestDatabaseTableColumns(t *testing.T) {
+	model := dbModel(2)
+	view := ansi.Strip(model.databaseTabView(80, 10))
+	for _, want := range []string{"NAME", "SIZE", "STATE", "60 MB", "● ready", "○ unavailable"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("database table missing %q:\n%s", want, view)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if ansi.StringWidth(line) > 80 {
+			t.Fatalf("line wider than the table: %q", line)
+		}
+	}
+}
+
+func TestDatabaseTableWindowKeepsSelectionVisible(t *testing.T) {
+	model := dbModel(100)
+	model.databaseIndex = 80
+	view := ansi.Strip(model.databaseTabView(80, 8))
+	if !strings.Contains(view, "▌ db080") {
+		t.Fatalf("selected row is not visible:\n%s", view)
+	}
+	if got := len(strings.Split(view, "\n")); got > 8 {
+		t.Fatalf("table has %d lines, want at most 8", got)
+	}
+}
+
+func TestClickSelectsDatabaseRow(t *testing.T) {
+	model := dbModel(30)
+	model.databaseIndex = 25
+	lines := strings.Split(ansi.Strip(model.View()), "\n")
+	row := -1
+	for index, line := range lines {
+		if strings.Contains(line, "db023") {
+			row = index
+		}
+	}
+	if row < 0 {
+		t.Fatalf("db023 not visible:\n%s", strings.Join(lines, "\n"))
+	}
+	model.pane = paneProfiles
+	model.handleLeftClick(60, row)
+	if model.databaseIndex != 23 || model.pane != paneDetails {
+		t.Fatalf("databaseIndex/pane = %d/%v, want 23/details", model.databaseIndex, model.pane)
+	}
+}
+
+func TestClickOnTabLabelOpensTab(t *testing.T) {
+	model := dbModel(1)
+	model.pane, model.tab = paneProfiles, tabLogs
+	lines := strings.Split(ansi.Strip(model.View()), "\n")
+	for y, line := range lines {
+		if index := strings.Index(line, "3 Add-ons"); index >= 0 {
+			model.handleLeftClick(ansi.StringWidth(line[:index])+1, y)
+			break
+		}
+	}
+	if model.tab != tabAddons || model.pane != paneDetails {
+		t.Fatalf("tab/pane = %v/%v, want add-ons/details", model.tab, model.pane)
+	}
+}
+
+func TestAddonWorktreeShowsParent(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.profiles = []docker.ProfileSummary{{Name: "demo"}}
+	model.addonPhase = phaseReady
+	model.addons = []addons.AddonStatus{{Name: "feature", Kind: "worktree", Branch: "feat", Entry: addons.Entry{WorktreeOf: "parent-addon"}}}
+	view := ansi.Strip(model.addonTabView(80, 10))
+	if !strings.Contains(view, "↳ parent-addon") {
+		t.Fatalf("worktree should show its parent:\n%s", view)
+	}
+}
+
+func TestInfoTabListsKeyValues(t *testing.T) {
+	model := configModel()
+	model.tab = tabInfo
+	model.profileDetail.AttachedAddons = []string{"a", "b"}
+	model.profileDetail.Image = "lidoo-odoo:18"
+	model.profileDetail.OdooVersion = "18.0"
+	view := ansi.Strip(model.infoTabView())
+	for _, want := range []string{"State", "URL", "Odoo", "18.0 · lidoo-odoo:18", "Add-ons", "a, b", "DB prefix", "Filestore", "LAN port", "Recreation"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("info tab missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestLogsTabShowsFilterStrip(t *testing.T) {
+	model := configModel()
+	model.tab = tabLogs
+	model.logDatabase = "demo__x"
+	view := ansi.Strip(model.logStrip(80))
+	for _, want := range []string{"level all", "db demo__x", "follow", "/ search", "L fullscreen"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("log strip missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestSlashOpensLogSearch(t *testing.T) {
+	model := configModel()
+	model.tab = tabLogs
+	model.updateKey(keyMsg("/"))
+	if !model.logViewerOpen || !model.logViewerTyping {
+		t.Fatalf("open/typing = %v/%v, want the viewer open in search mode", model.logViewerOpen, model.logViewerTyping)
 	}
 }

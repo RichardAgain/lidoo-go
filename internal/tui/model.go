@@ -43,6 +43,7 @@ const (
 	modalConfigLANPort
 	modalAdminPassword
 	modalFilePicker
+	modalKeys
 )
 
 type selectKind uint8
@@ -136,7 +137,6 @@ type Model struct {
 	tab                    tabID
 	loading                bool
 	err                    error
-	showHelp               bool
 	width                  int
 	height                 int
 	profileRequest         uint64
@@ -913,7 +913,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+r":
 		return m, m.refreshProfiles()
 	case "?":
-		m.showHelp = !m.showHelp
+		m.modal = modalKeys
 	}
 	return m, nil
 }
@@ -1687,6 +1687,8 @@ func (m *Model) refreshProfiles() tea.Cmd {
 
 func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.modal {
+	case modalKeys:
+		m.modal = modalNone
 	case modalConfirm:
 		if msg.Paste {
 			return m, nil
@@ -3264,71 +3266,6 @@ func taskStatus(status string) string {
 	}
 }
 
-func (m *Model) footerView() string {
-	keys := "tab/1-5 details  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
-	if m.onProfiles() && m.selectedProfileName() == "" {
-		keys = "c create  ctrl+r refresh  ? help  q/ctrl+c quit"
-	}
-	if m.onProfiles() && m.selectedProfileName() != "" {
-		keys = "tab/1-5 details  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q/ctrl+c quit"
-	}
-	if m.onTab(tabDatabases) && m.selectedProfileName() != "" {
-		keys = "tab/1-5 details  ↑/↓ databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
-		keys += "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
-	}
-	if m.onTab(tabAddons) {
-		keys = "tab/1-5 details  ↑/↓ add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
-	}
-	if m.showHelp {
-		keys = "tab/1-5 details  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
-		if m.onProfiles() && m.selectedProfileName() != "" {
-			keys = "tab/1-5 details  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
-		}
-		if m.onTab(tabDatabases) && m.selectedProfileName() != "" {
-			keys = "tab/1-5 details  ↑/↓/j/k databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
-			keys += "  L logs  ctrl+r refresh  ? hide help"
-		}
-		if m.onTab(tabAddons) {
-			keys = "tab/1-5 details  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
-		}
-	}
-	if m.onTab(tabConfig) {
-		keys = "tab/1-5 details  enter/e edit LAN port  R recreate  ctrl+r refresh  ? help  q/ctrl+c quit"
-	}
-	if m.taskStarting || m.taskRunning {
-		keys += "  c cancel"
-	}
-	if m.taskStatus != "" {
-		keys += "  · " + m.taskName + ": " + m.taskStatus
-	}
-	return mutedStyle.Render(keys)
-}
-
-func profileActionHints() string {
-	return "enter details  o browser  space run/stop  n new  e settings  L logs  D logs db  x start  r restart  R recreate  s stop  d remove"
-}
-
-func databaseActionHints() string {
-	return "u update  U update-all  d drop  b backup  R restore  p psql  a admin user password"
-}
-
-// databaseEmptyActionHints keeps restore and init reachable when the profile
-// has no databases: restore only needs a dump file, not an existing database.
-func databaseEmptyActionHints(hasSelection bool) string {
-	if hasSelection {
-		return "i init  " + databaseActionHints()
-	}
-	return "i init new database  R restore from dump"
-}
-
-func addonActionHints(hasSelection, hasProfile bool) string {
-	hints := "c clone  w worktree  x remove"
-	if hasSelection {
-		hints += "  f fetch  p pull"
-	}
-	return hints
-}
-
 func modalKeyHints(keys string) string {
 	return mutedStyle.Render(keys)
 }
@@ -3430,6 +3367,8 @@ func (m *Model) modalView() string {
 			mutedStyle.Render("Missing branches are created."),
 			modalKeyHints("tab field  enter create  esc cancel  "+pasteHint),
 		)
+	case modalKeys:
+		lines = m.keysModalLines()
 	case modalSelect:
 		lines = m.selectModalLines()
 	case modalFilePicker:
@@ -3638,20 +3577,7 @@ func (m *Model) smallView() string {
 			lines = append(lines, "", labels, "", m.configTabView(m.width))
 		}
 	}
-	hints := profileActionHints()
-	if m.onTab(tabDatabases) {
-		hints = databaseEmptyActionHints(m.selectedDatabase() != nil)
-	}
-	if m.onTab(tabAddons) {
-		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
-	}
-	if m.onTab(tabConfig) {
-		hints = "tab/1-5 details  enter/e edit LAN port  R recreate"
-	}
-	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
-	if m.showHelp {
-		lines = append(lines, mutedStyle.Render("tab/1-5 details  arrows or j/k move  c cancel task"))
-	}
+	lines = append(lines, "", m.footerLine(m.width))
 	if task := m.taskRegion(m.width, max(3, m.height/2)); len(task) > 0 {
 		contentHeight := max(1, m.height-len(task)-1)
 		content := lipgloss.NewStyle().MaxHeight(contentHeight).Render(strings.Join(lines, "\n"))

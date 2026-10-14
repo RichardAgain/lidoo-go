@@ -535,7 +535,7 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	_ = model.smallView()
 	_ = model.databaseTabView(80, 20)
 
-	for _, modal := range []modalMode{modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
+	for _, modal := range []modalMode{modalKeys, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
 		model.modal = modal
 		_ = model.modalView()
 	}
@@ -1163,5 +1163,87 @@ func TestSlashOpensLogSearch(t *testing.T) {
 	model.updateKey(keyMsg("/"))
 	if !model.logViewerOpen || !model.logViewerTyping {
 		t.Fatalf("open/typing = %v/%v, want the viewer open in search mode", model.logViewerOpen, model.logViewerTyping)
+	}
+}
+
+func TestFooterFitsAndDropsWholeHints(t *testing.T) {
+	model := dbModel(2)
+	model.profiles[0].State = "running"
+	model.addons = []addons.AddonStatus{{Name: "a", Kind: "clone"}}
+	for _, width := range []int{80, 100, 140} {
+		for _, pane := range []focusPane{paneProfiles, paneDetails} {
+			for tab := tabLogs; tab < tabCount; tab++ {
+				model.pane, model.tab = pane, tab
+				line := ansi.Strip(model.footerLine(width))
+				if got := ansi.StringWidth(line); got != width {
+					t.Fatalf("width %d pane %v tab %v: footer is %d wide", width, pane, tab, got)
+				}
+				if !strings.HasSuffix(strings.TrimRight(line, " "), "? all keys") {
+					t.Fatalf("footer must end with the key reference: %q", line)
+				}
+				// Every hint is shown whole or not at all.
+				hints := model.footerHints()
+				shown := 0
+				for _, hint := range hints {
+					if strings.Contains(line, hint.key+" "+hint.desc) {
+						shown++
+					}
+				}
+				if shown == 0 {
+					t.Fatalf("footer shows no complete hint: %q", line)
+				}
+				for index, hint := range hints {
+					if index >= shown && strings.Contains(line, hint.desc) && !strings.Contains(line, hint.key+" "+hint.desc) {
+						t.Fatalf("hint %v is cut mid-way in %q", hint, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestFooterChangesWithFocus(t *testing.T) {
+	model := dbModel(2)
+	model.pane = paneProfiles
+	profileFooter := ansi.Strip(model.footerLine(120))
+	if !strings.Contains(profileFooter, "enter open tabs") || strings.Contains(profileFooter, "update") {
+		t.Fatalf("profile footer = %q", profileFooter)
+	}
+	model.pane, model.tab = paneDetails, tabDatabases
+	detailFooter := ansi.Strip(model.footerLine(120))
+	if !strings.Contains(detailFooter, "u update") || !strings.Contains(detailFooter, "esc back") {
+		t.Fatalf("databases footer = %q", detailFooter)
+	}
+}
+
+func TestQuestionMarkOpensKeyOverlayAndAnyKeyCloses(t *testing.T) {
+	model := dbModel(1)
+	model.pane = paneProfiles
+	model.updateKey(keyMsg("?"))
+	if model.modal != modalKeys {
+		t.Fatalf("modal = %v, want key overlay", model.modal)
+	}
+	view := ansi.Strip(model.View())
+	for _, want := range []string{"Keys", "Navigate", "Profile", "Databases", "Add-ons", "Logs", "Tasks", "any key closes"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("overlay missing %q:\n%s", want, view)
+		}
+	}
+	model.updateKey(keyMsg("x"))
+	if model.modal != modalNone || model.pendingTask != nil {
+		t.Fatalf("any key should close the overlay without acting: modal=%v task=%v", model.modal, model.pendingTask)
+	}
+}
+
+func TestKeyOverlayFitsSmallTerminal(t *testing.T) {
+	model := dbModel(1)
+	model.width, model.height = 80, 24
+	model.modal = modalKeys
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "any key closes") || !strings.Contains(view, "Tasks") {
+		t.Fatalf("overlay is cut off at 80x24:\n%s", view)
+	}
+	if got := len(strings.Split(view, "\n")); got != 24 {
+		t.Fatalf("view has %d lines, want 24", got)
 	}
 }

@@ -49,7 +49,7 @@ func (m *Model) view() string {
 	geometry := m.frame()
 	lines := []string{m.statusLine()}
 	lines = append(lines, m.mainLines(geometry)...)
-	lines = append(lines, m.footerRule(geometry), m.footerView())
+	lines = append(lines, m.footerRule(geometry), m.footerLine(m.width))
 	view := m.fitView(strings.Join(lines, "\n"))
 	if m.modal != modalNone {
 		return m.modalOverlay(view)
@@ -379,27 +379,9 @@ func (m *Model) rightView(geometry frameGeometry) string {
 	default:
 		content = m.infoTabView()
 	}
-	if m.showHelp {
-		content = m.helpView()
-	}
 	content = lipgloss.NewStyle().Width(width + 1).MaxWidth(width + 1).PaddingLeft(1).Height(height).MaxHeight(height).Render(content)
 	lines := append(layout.header, labels, underline, content)
 	return strings.Join(append(lines, layout.task...), "\n")
-}
-
-func (m *Model) helpView() string {
-	return strings.Join([]string{
-		titleStyle.Render("Help"),
-		"New profiles are saved without starting a container; space starts them.",
-		"Settings are saved to .lidoo.json; R recreates the container to apply them.",
-		"Database filters match physical names, e.g. ^smoke__(dev|staging)$.",
-		"admin_passwd protects /web/database; it is not the admin login password.",
-		"The admin password action changes the base.user_admin login via Odoo.",
-		"LAN port: 0 disables; 1–65535 publishes on all IPv4 interfaces.",
-		"Share http://<host-LAN-IP>:<port>; restrict access with your firewall.",
-		"Restore copy requires a new destination; move replaces the destination.",
-		"Missing worktree branches are created; parent/worktree rules still apply.",
-	}, "\n")
 }
 
 const taskOutputLines = 6

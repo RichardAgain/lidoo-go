@@ -60,10 +60,6 @@ const (
 // choosing one" entries in a select modal.
 const selectCustomValue = "\x00custom"
 
-// pasteHint is the explicit paste shortcut shown in every text form, so nobody
-// has to guess whether pasting works.
-const pasteHint = "ctrl+v paste"
-
 type selectItem struct {
 	Label string
 	Value string
@@ -238,6 +234,7 @@ type Model struct {
 	confirmAction          func() tea.Cmd
 	confirmPrompt          string
 	confirmTitle           string
+	confirmVerb            string
 	confirmCancelModal     modalMode
 	confirmForceToggle     bool
 }
@@ -805,7 +802,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.taskProfileName = name
 			m.openConfirm(
 				"Remove profile "+name+"?",
-				"This removes the container, workspace entry, and filestore volume; PostgreSQL data and add-on checkouts are kept.",
+				"Removes the container, workspace entry and filestore volume. PostgreSQL data and add-on checkouts stay.",
+				"remove",
 				modalNone,
 				func() tea.Cmd {
 					return m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})
@@ -978,7 +976,8 @@ func (m *Model) toggleSelectedProfile() tea.Cmd {
 	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: name, Wait: true})
 }
 
-func (m *Model) openConfirm(title, warning string, cancelModal modalMode, action func() tea.Cmd) {
+func (m *Model) openConfirm(title, warning, verb string, cancelModal modalMode, action func() tea.Cmd) {
+	m.confirmVerb = verb
 	m.confirmForceToggle = false
 	m.confirmTitle = title
 	m.confirmPrompt = warning
@@ -1045,8 +1044,9 @@ func (m *Model) openDropConfirmation() {
 		Yes:              true,
 	}
 	m.openConfirm(
-		"Delete database "+databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical})+"?",
-		"This permanently deletes the database and its filestore.",
+		"Drop database "+databaseLabel(odoo.Database{Logical: m.taskDatabaseName, Physical: m.taskDatabasePhysical})+"?",
+		"Permanently deletes the database and its filestore.",
+		"drop",
 		modalNone,
 		func() tea.Cmd { return m.queueTask(request) },
 	)
@@ -1178,7 +1178,7 @@ func (m *Model) startWorktreeAddon() tea.Cmd {
 	}
 	m.selectRequest++
 	m.selectKind = selectAddonWorktreeSource
-	m.selectTitle = "Worktree source add-on"
+	m.selectTitle = "Choose add-on · worktree source"
 	m.selectItems = nil
 	m.selectIndex = 0
 	m.selectErr = nil
@@ -1200,7 +1200,7 @@ func (m *Model) openWorktreeBranchSelect(source string) tea.Cmd {
 	m.selectRequest++
 	m.selectSource = source
 	m.selectKind = selectAddonWorktreeBranch
-	m.selectTitle = "Branch · " + source
+	m.selectTitle = "Choose branch · " + source
 	m.selectItems = nil
 	m.selectIndex = 0
 	m.selectErr = nil
@@ -1223,7 +1223,8 @@ func (m *Model) openRemoveAddonConfirm(name string) {
 	m.removeAddonForce = false
 	m.openConfirm(
 		"Remove add-on "+name+"?",
-		"This removes the checkout/worktree; attached profiles and child worktrees block removal.",
+		"Removes the checkout or worktree. Attached profiles and child worktrees block removal.",
+		"remove",
 		modalNone,
 		func() tea.Cmd {
 			return m.queueTask(taskRequest{
@@ -1739,6 +1740,7 @@ func (m *Model) submitDatabaseForm() tea.Cmd {
 			m.openConfirm(
 				"Restore database "+destination+"?",
 				"Move or overwrite can replace existing database data.",
+				"overwrite",
 				modalNone,
 				func() tea.Cmd { return m.queueRestoreTask() },
 			)

@@ -54,7 +54,7 @@ func TestModalDimsBackgroundInsteadOfHidingIt(t *testing.T) {
 	if !strings.Contains(view, "testing") {
 		t.Fatalf("the dashboard should stay visible behind a modal:\n%s", view)
 	}
-	if !strings.Contains(view, "Clone and register add-on") {
+	if !strings.Contains(view, "Clone add-on") {
 		t.Fatalf("modal should be visible, got %q", view)
 	}
 	lines := strings.Split(raw, "\n")
@@ -87,7 +87,7 @@ func TestModalBorderCarriesTitleAndKeysWithoutWrapping(t *testing.T) {
 			t.Fatalf("top border = %q", lines[0])
 		}
 		bottom := lines[len(lines)-1]
-		if !strings.HasPrefix(bottom, "╰─ ") || !strings.HasSuffix(bottom, "╯") || !strings.Contains(bottom, "y/enter confirm") {
+		if !strings.HasPrefix(bottom, "╰─ ") || !strings.HasSuffix(bottom, "╯") || !strings.Contains(bottom, "y confirm") {
 			t.Fatalf("bottom border = %q", bottom)
 		}
 		for _, line := range lines {
@@ -662,7 +662,7 @@ func TestLogViewerDatabaseFilter(t *testing.T) {
 func TestConfirmRunsActionOnSubmit(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	queued := false
-	model.openConfirm("Drop demo?", "irreversible", modalNone, func() tea.Cmd {
+	model.openConfirm("Drop demo?", "irreversible", "drop", modalNone, func() tea.Cmd {
 		queued = true
 		return nil
 	})
@@ -1645,6 +1645,58 @@ func TestSelectFieldRevealsCustomInput(t *testing.T) {
 	for _, want := range []string{"Odoo version", "○ 19", "image built", "● Custom…", "17.0"} {
 		if !strings.Contains(lines, want) {
 			t.Fatalf("select field missing %q:\n%s", want, lines)
+		}
+	}
+}
+
+func TestConfirmKeysNameTheAction(t *testing.T) {
+	model := dbModel(1)
+	model.width, model.height = 100, 30
+	model.pane = paneProfiles
+	model.updateKey(keyMsg("d"))
+	view := ansi.Strip(model.modalView())
+	if !strings.Contains(view, "y remove") || !strings.Contains(view, "n cancel") || strings.Contains(view, "confirm") {
+		t.Fatalf("remove confirm keys:\n%s", view)
+	}
+	model.modal = modalNone
+	model.pane, model.tab = paneDetails, tabDatabases
+	model.updateKey(keyMsg("d"))
+	if view := ansi.Strip(model.modalView()); !strings.Contains(view, "y drop") || !strings.Contains(view, "Drop database") {
+		t.Fatalf("drop confirm:\n%s", view)
+	}
+	model.updateKey(keyMsg("enter"))
+	if model.pendingTask == nil || model.pendingTask.Kind != taskDrop {
+		t.Fatalf("enter must still confirm: %+v", model.pendingTask)
+	}
+}
+
+func TestModalTitlesUseVerbAndObject(t *testing.T) {
+	model := dbModel(1)
+	model.width, model.height = 100, 30
+	model.taskProfileName, model.taskDatabaseName = "demo", "db000"
+	model.configProfileName = "demo"
+	model.worktreeAddonSource = "enterprise"
+	cases := map[modalMode]string{
+		modalInitDatabase:    "Create database · demo",
+		modalBackupDatabase:  "Back up database · demo/db000",
+		modalRestoreDatabase: "Restore database · demo",
+		modalCloneAddon:      "Clone add-on",
+		modalWorktreeAddon:   "Create worktree · enterprise",
+		modalConfigPassword:  "Master password · demo",
+		modalConfigPattern:   "Database filter pattern · demo",
+		modalConfigLANPort:   "LAN port · demo",
+		modalAdminPassword:   "Admin login password · demo/db000",
+		modalCreateProfile:   "New profile",
+	}
+	for modal, want := range cases {
+		model.modal = modal
+		view := ansi.Strip(model.modalView())
+		first := strings.Split(view, "\n")[0]
+		if !strings.Contains(first, want) {
+			t.Fatalf("modal %v title = %q, want %q", modal, first, want)
+		}
+		if strings.Contains(view, "ctrl+v") {
+			t.Fatalf("modal %v should not advertise ctrl+v:\n%s", modal, view)
 		}
 	}
 }

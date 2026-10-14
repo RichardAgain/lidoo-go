@@ -97,7 +97,7 @@ type keyGroup struct {
 var keyGroups = []keyGroup{
 	{name: "Navigate", hints: []keyHint{
 		{"↑↓ j k", "move"}, {"enter tab → l", "open tabs"}, {"esc tab ← h", "back"}, {"1-5", "open a tab"},
-		{"[ ]", "step tabs"}, {"K J", "other profile"}, {"ctrl+r", "refresh"}, {"q", "quit"},
+		{"[ ]", "step tabs"}, {"K J", "other profile"}, {"ctrl+v", "paste in inputs"}, {"ctrl+r", "refresh"}, {"q", "quit"},
 	}},
 	{name: "Profile", hints: []keyHint{
 		{"space", "start/stop"}, {"x", "start"}, {"s", "stop"}, {"r", "restart"}, {"R", "recreate"},

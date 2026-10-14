@@ -33,14 +33,18 @@ const formBoxWidth = 36
 func (m *Model) modalSpec() modalSpec {
 	switch m.modal {
 	case modalConfirm:
-		spec := modalSpec{title: m.confirmTitle, body: []string{warningStyle.Render(m.confirmPrompt)}, keys: "y/enter confirm  n/esc cancel"}
+		verb := m.confirmVerb
+		if verb == "" {
+			verb = "confirm"
+		}
+		spec := modalSpec{title: m.confirmTitle, body: []string{warningStyle.Render(m.confirmPrompt)}, keys: "y " + verb + "  n cancel"}
 		if m.confirmForceToggle {
 			force := "Force: " + yesNo(m.removeAddonForce)
 			if m.removeAddonForce {
 				force += " — may discard uncommitted changes"
 			}
 			spec.body = append(spec.body, force)
-			spec.keys = "f toggle force  y/enter confirm  n/esc cancel"
+			spec.keys = "f force  y " + verb + "  n cancel"
 		}
 		return spec
 	case modalRunVersion:
@@ -50,9 +54,9 @@ func (m *Model) modalSpec() modalSpec {
 		}
 		return m.formSpec("Run "+m.taskProfileName+" · choose Odoo version", hint, "enter run")
 	case modalInitDatabase:
-		return m.formSpec("Initialize database · "+m.taskProfileName, "", "enter run")
+		return m.formSpec("Create database · "+m.taskProfileName, "", "enter run")
 	case modalBackupDatabase:
-		return m.formSpec("Backup · "+m.taskProfileName+" / "+m.taskDatabaseName, "", "enter run")
+		return m.formSpec("Back up database · "+m.taskProfileName+"/"+m.taskDatabaseName, "", "enter run")
 	case modalRestoreDatabase:
 		hint := mutedStyle.Render("copy: new database · move: replace destination")
 		if m.restoreErr != nil {
@@ -64,7 +68,7 @@ func (m *Model) modalSpec() modalSpec {
 		if m.addonFormErr != nil {
 			hint = errorStyle.Render(m.addonFormErr.Error())
 		}
-		return m.formSpec("Clone and register add-on", hint, "enter clone")
+		return m.formSpec("Clone add-on", hint, "enter clone")
 	case modalWorktreeAddon:
 		hint := mutedStyle.Render("Missing branches are created.")
 		if m.addonFormErr != nil {
@@ -86,7 +90,7 @@ func (m *Model) modalSpec() modalSpec {
 	case modalConfigPattern:
 		return m.formSpec("Database filter pattern · "+m.configProfileName, m.configHint("Matches physical database names."), "enter apply")
 	case modalConfigPassword:
-		return m.formSpec("Odoo master password · "+m.configProfileName, m.configHint("admin_passwd for /web/database; not the login password"), "enter apply")
+		return m.formSpec("Master password · "+m.configProfileName, m.configHint("admin_passwd for /web/database; not the login password"), "enter apply")
 	case modalConfigLANPort:
 		return m.formSpec("LAN port · "+m.configProfileName, m.configHint("0 disables LAN access; R recreates to apply"), "enter apply")
 	case modalAdminPassword:
@@ -94,7 +98,7 @@ func (m *Model) modalSpec() modalSpec {
 		if m.adminPasswordErr != nil {
 			hint = errorStyle.Render(m.adminPasswordErr.Error())
 		}
-		return m.formSpec("Admin password · "+m.taskProfileName+" / "+m.taskDatabaseName, hint, "enter apply")
+		return m.formSpec("Admin login password · "+m.taskProfileName+"/"+m.taskDatabaseName, hint, "enter apply")
 	}
 	return modalSpec{}
 }

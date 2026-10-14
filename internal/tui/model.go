@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -191,6 +192,8 @@ type Model struct {
 	taskCancelRequested    bool
 	interactivePreparing   bool
 	formField              int
+	formInput              textinput.Model
+	formInputKey           formInputKey
 	initDatabaseName       string
 	initModules            string
 	backupDestination      string
@@ -267,6 +270,7 @@ func NewModel(ctx context.Context, service *app.Service) *Model {
 		logViewerViewport: viewport.New(1, 1),
 		databasePhase:     phaseIdle,
 		addonPhase:        phaseIdle,
+		formInput:         newFormInput(),
 		activitySpinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(activeStyle)),
 	}
 }
@@ -1770,123 +1774,11 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				selectFirstIndex(&m.selectIndex, m.selectIndices())
 			}
 		}
-	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
-		if m.modal == modalBackupDatabase && msg.String() == "ctrl+o" {
-			return m, m.startBackupDirectoryPicker()
-		}
-		if m.modal == modalRestoreDatabase {
-			m.restoreErr = nil
-		}
-		switch msg.String() {
-		case "esc":
-			m.modal = modalNone
-		case "enter":
-			return m, m.submitDatabaseForm()
-		case "tab":
-			m.moveFormField(1)
-		case "shift+tab":
-			m.moveFormField(-1)
-		case "backspace", "ctrl+h":
-			m.removeFormText()
-		case "ctrl+u":
-			m.clearFormText()
-		case " ":
-			if !m.toggleFormField() {
-				m.appendFormText(" ")
-			}
-		default:
-			m.appendFormText(keyInsertText(msg))
-		}
-	case modalCloneAddon, modalWorktreeAddon:
-		switch msg.String() {
-		case "esc":
-			m.modal = modalNone
-		case "enter":
-			return m, m.submitAddonForm()
-		case "tab":
-			m.moveFormField(1)
-		case "shift+tab":
-			m.moveFormField(-1)
-		case "backspace", "ctrl+h":
-			m.removeFormText()
-			m.addonFormErr = nil
-		case "ctrl+u":
-			m.clearFormText()
-			m.addonFormErr = nil
-		case " ":
-			if !m.toggleFormField() {
-				m.appendFormText(" ")
-			}
-			m.addonFormErr = nil
-		default:
-			if value := keyInsertText(msg); value != "" {
-				m.appendFormText(value)
-				m.addonFormErr = nil
-			}
-		}
-	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
-		switch msg.String() {
-		case "esc":
-			m.modal = modalNone
-		case "enter":
-			return m, m.submitProfileForm()
-		case "tab":
-			m.moveFormField(1)
-		case "shift+tab":
-			m.moveFormField(-1)
-		case "backspace", "ctrl+h":
-			m.removeFormText()
-			m.configFormErr = nil
-		case "ctrl+u":
-			m.clearFormText()
-			m.configFormErr = nil
-		case " ":
-			if !m.toggleFormField() {
-				m.appendFormText(" ")
-			}
-			m.configFormErr = nil
-		default:
-			if value := keyInsertText(msg); value != "" {
-				m.appendFormText(value)
-				m.configFormErr = nil
-			}
-		}
-	case modalCreateProfile, modalAdminPassword:
-		if m.modal == modalCreateProfile && m.formField == 1 && (msg.String() == "left" || msg.String() == "right") {
-			delta := 1
-			if msg.String() == "left" {
-				delta = -1
-			}
-			m.cycleCreateVersion(delta)
-			m.clearProfileFormErr()
-			return m, nil
-		}
-		switch msg.String() {
-		case "esc":
-			m.modal = modalNone
-		case "enter":
-			return m, m.submitProfileForm()
-		case "tab":
-			m.moveFormField(1)
-		case "shift+tab":
-			m.moveFormField(-1)
-		case "backspace", "ctrl+h":
-			m.removeFormText()
-			m.clearProfileFormErr()
-		case "ctrl+u":
-			m.clearFormText()
-			m.clearProfileFormErr()
-		case " ":
-			if !m.toggleFormField() {
-				m.appendFormText(" ")
-			}
-			m.clearProfileFormErr()
-		default:
-			if value := keyInsertText(msg); value != "" {
-				m.appendFormText(value)
-				m.clearProfileFormErr()
-			}
-		}
+	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase,
+		modalCloneAddon, modalWorktreeAddon,
+		modalConfigPattern, modalConfigPassword, modalConfigLANPort,
+		modalCreateProfile, modalAdminPassword:
+		return m.updateFormKey(msg)
 	}
 	return m, nil
 }
@@ -1956,17 +1848,6 @@ func (m *Model) submitProfileForm() tea.Cmd {
 		return m.submitAdminPasswordForm()
 	}
 	return nil
-}
-
-func (m *Model) clearProfileFormErr() {
-	switch m.modal {
-	case modalCreateProfile:
-		m.createFormErr = nil
-	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
-		m.configFormErr = nil
-	case modalAdminPassword:
-		m.adminPasswordErr = nil
-	}
 }
 
 func (m *Model) submitDatabaseForm() tea.Cmd {
@@ -2044,145 +1925,6 @@ func (m *Model) queueRestoreTask() tea.Cmd {
 	})
 }
 
-func (m *Model) formFieldCount() int {
-	switch m.modal {
-	case modalCloneAddon:
-		return 4
-	case modalWorktreeAddon:
-		return 2
-	case modalInitDatabase:
-		return 2
-	case modalBackupDatabase:
-		return 4
-	case modalRestoreDatabase:
-		return 6
-	case modalCreateProfile:
-		return 2
-	case modalConfigPattern, modalConfigPassword, modalConfigLANPort:
-		return 1
-	case modalAdminPassword:
-		return 2
-	default:
-		return 0
-	}
-}
-
-func (m *Model) moveFormField(delta int) {
-	count := m.formFieldCount()
-	if count == 0 {
-		return
-	}
-	m.formField = (m.formField + delta + count) % count
-}
-
-func (m *Model) toggleFormField() bool {
-	switch m.modal {
-	case modalBackupDatabase:
-		switch m.formField {
-		case 1:
-			formats := []string{"zip", "dump", "folder"}
-			for index, format := range formats {
-				if m.backupFormat == format {
-					m.backupFormat = formats[(index+1)%len(formats)]
-					return true
-				}
-			}
-			m.backupFormat = formats[0]
-			return true
-		case 2:
-			m.backupFilestore = !m.backupFilestore
-			return true
-		case 3:
-			m.backupForce = !m.backupForce
-			return true
-		}
-	case modalRestoreDatabase:
-		switch m.formField {
-		case 2:
-			m.restoreCopy = !m.restoreCopy
-			return true
-		case 3:
-			m.restoreForce = !m.restoreForce
-			return true
-		case 4:
-			m.restoreNeutralize = !m.restoreNeutralize
-			return true
-		}
-	}
-	return false
-}
-
-func (m *Model) formText() *string {
-	switch m.modal {
-	case modalCloneAddon:
-		switch m.formField {
-		case 0:
-			return &m.cloneAddonName
-		case 1:
-			return &m.cloneAddonURL
-		case 2:
-			return &m.cloneAddonDepth
-		case 3:
-			return &m.cloneAddonBranch
-		}
-	case modalWorktreeAddon:
-		switch m.formField {
-		case 0:
-			return &m.worktreeAddonName
-		case 1:
-			return &m.worktreeAddonBranch
-		}
-	case modalInitDatabase:
-		switch m.formField {
-		case 0:
-			return &m.initDatabaseName
-		case 1:
-			return &m.initModules
-		}
-	case modalBackupDatabase:
-		switch m.formField {
-		case 0:
-			return &m.backupDestination
-		}
-	case modalRestoreDatabase:
-		switch m.formField {
-		case 0:
-			return &m.restoreDestination
-		case 1:
-			return &m.restoreSource
-		case 5:
-			return &m.restoreJobs
-		}
-	case modalCreateProfile:
-		switch m.formField {
-		case 0:
-			return &m.createProfileName
-		case 1:
-			return &m.createProfileVersion
-		}
-	case modalConfigPattern:
-		if m.formField == 0 {
-			return &m.configPatternDraft
-		}
-	case modalConfigPassword:
-		if m.formField == 0 {
-			return &m.configPasswordDraft
-		}
-	case modalConfigLANPort:
-		if m.formField == 0 {
-			return &m.configLANPortDraft
-		}
-	case modalAdminPassword:
-		switch m.formField {
-		case 0:
-			return &m.adminPassword
-		case 1:
-			return &m.adminPasswordConfirm
-		}
-	}
-	return nil
-}
-
 // pasteTarget is the text field a paste must land in, or nil when the current
 // view has no text input. Restore and clone forms are plain single-line text,
 // so a paste is just appended at the cursor (always at the end of the value).
@@ -2216,7 +1958,11 @@ func (m *Model) applyClipboardPaste(msg ClipboardContentMsg) {
 	if target == nil || msg.Text == "" {
 		return
 	}
-	*target += msg.Text
+	if m.formText() != nil {
+		m.insertFormText(sanitizePaste(msg.Text))
+	} else {
+		*target += msg.Text
+	}
 	if m.modal == modalSelect {
 		selectFirstIndex(&m.selectIndex, m.selectIndices())
 	}
@@ -2228,28 +1974,7 @@ func (m *Model) applyClipboardPaste(msg ClipboardContentMsg) {
 	m.configFormErr = nil
 	m.restoreErr = nil
 	m.adminPasswordErr = nil
-	m.clearProfileFormErr()
-}
-
-func (m *Model) appendFormText(value string) {
-	input := m.formText()
-	if input != nil {
-		*input += value
-	}
-}
-
-func (m *Model) removeFormText() {
-	input := m.formText()
-	if input != nil {
-		*input = removeLastRune(*input)
-	}
-}
-
-func (m *Model) clearFormText() {
-	input := m.formText()
-	if input != nil {
-		*input = ""
-	}
+	m.clearFormErrors()
 }
 
 func removeLastRune(value string) string {
@@ -3263,17 +2988,6 @@ func (m *Model) profileSettingValue(row profileSettingRow) (string, string, lipg
 		return "LAN port", strconv.Itoa(m.profileDetail.LANPort), textStyle
 	}
 	return "", "", textStyle
-}
-
-func (m *Model) formLine(label, value string, field int, textField bool) string {
-	if textField && m.formField == field {
-		value += "▏"
-	}
-	line := label + ": " + value
-	if m.formField == field {
-		return activeStyle.Render("  " + line)
-	}
-	return "  " + line
 }
 
 func yesNo(value bool) string {

@@ -1078,7 +1078,7 @@ func TestSelectModalWindowsLongLists(t *testing.T) {
 	}
 	model.selectIndex = 30
 
-	rendered := ansi.Strip(strings.Join(model.selectModalSpec().body, "\n"))
+	rendered := ansi.Strip(strings.Join(model.selectModalSpec().render(60), "\n"))
 	if !strings.Contains(rendered, "more") {
 		t.Fatalf("long list should show more indicators:\n%s", rendered)
 	}
@@ -1377,5 +1377,113 @@ func TestRestorePickerTitleNamesTheProfile(t *testing.T) {
 	title := ansi.Strip(model.filePickerModalSpec().title)
 	if !strings.Contains(title, "demo") || strings.HasSuffix(strings.TrimSpace(title), "·") {
 		t.Fatalf("picker title = %q, want the profile name", title)
+	}
+}
+
+func typeText(model *Model, text string) {
+	for _, r := range text {
+		model.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+}
+
+func TestTextInputEditsAtTheCaret(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalCloneAddon
+	typeText(model, "hello")
+	model.updateKey(tea.KeyMsg{Type: tea.KeyLeft})
+	model.updateKey(tea.KeyMsg{Type: tea.KeyLeft})
+	typeText(model, "XY")
+	if model.cloneAddonName != "helXYlo" {
+		t.Fatalf("name = %q, want helXYlo", model.cloneAddonName)
+	}
+	model.updateKey(tea.KeyMsg{Type: tea.KeyHome})
+	typeText(model, ">")
+	model.updateKey(tea.KeyMsg{Type: tea.KeyEnd})
+	typeText(model, "<")
+	if model.cloneAddonName != ">helXYlo<" {
+		t.Fatalf("name = %q, want >helXYlo<", model.cloneAddonName)
+	}
+	model.updateKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	model.updateKey(tea.KeyMsg{Type: tea.KeyCtrlW})
+	if model.cloneAddonName != "" && model.cloneAddonName != ">" {
+		t.Fatalf("name after backspace and word delete = %q", model.cloneAddonName)
+	}
+}
+
+func TestTextInputKeepsValuesWhenFieldsChange(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalCloneAddon
+	typeText(model, "lidoo")
+	model.updateKey(keyMsg("tab"))
+	typeText(model, "git@x")
+	model.updateKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+	typeText(model, "2")
+	if model.cloneAddonName != "lidoo2" || model.cloneAddonURL != "git@x" {
+		t.Fatalf("name/url = %q/%q", model.cloneAddonName, model.cloneAddonURL)
+	}
+}
+
+func TestClipboardPasteLandsAtTheCaret(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.modal = modalCloneAddon
+	typeText(model, "ab")
+	model.updateKey(tea.KeyMsg{Type: tea.KeyLeft})
+	model.applyClipboardPaste(ClipboardContentMsg{Text: "ZZ\n"})
+	if model.cloneAddonName != "aZZb" {
+		t.Fatalf("name = %q, want aZZb", model.cloneAddonName)
+	}
+}
+
+func TestPasswordInputIsMaskedAndPlaceholdersShow(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 30
+	model.modal = modalAdminPassword
+	typeText(model, "s3cret")
+	if model.adminPassword != "s3cret" {
+		t.Fatalf("password = %q", model.adminPassword)
+	}
+	view := ansi.Strip(model.modalView())
+	if strings.Contains(view, "s3cret") || !strings.Contains(view, "••••••") {
+		t.Fatalf("password must be masked:\n%s", view)
+	}
+	model.modal = modalCloneAddon
+	model.formField = 1
+	view = ansi.Strip(model.modalView())
+	if !strings.Contains(view, "add-on name") || !strings.Contains(view, "0 = full") {
+		t.Fatalf("empty fields should show placeholders:\n%s", view)
+	}
+}
+
+func TestTextFieldsAreBoxedWithLabelsOnTheLeft(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 30
+	model.modal = modalCloneAddon
+	lines := strings.Split(ansi.Strip(model.modalView()), "\n")
+	boxes := 0
+	for index, line := range lines {
+		if strings.Contains(line, "Git URL") {
+			if !strings.Contains(lines[index-1], "╭") || !strings.Contains(lines[index+1], "╰") {
+				t.Fatalf("Git URL is not in a three-row box:\n%s", strings.Join(lines, "\n"))
+			}
+		}
+		if strings.Contains(line, "╭") && !strings.HasPrefix(line, "╭") {
+			boxes++
+		}
+	}
+	if boxes != 4 {
+		t.Fatalf("boxes = %d, want 4", boxes)
+	}
+}
+
+func TestFilterBoxShowsPlaceholder(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 30
+	model.modal = modalSelect
+	model.selectTitle = "Pick"
+	model.selectPhase = phaseReady
+	model.selectItems = []selectItem{{Label: "one", Value: "1"}}
+	view := ansi.Strip(model.modalView())
+	if !strings.Contains(view, "type to filter") {
+		t.Fatalf("filter placeholder missing:\n%s", view)
 	}
 }

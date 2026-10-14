@@ -22,7 +22,13 @@ type modalSpec struct {
 	title string
 	body  []string
 	keys  string
+	// render builds the body for the final inner width; wantInner is the width
+	// it would like. Forms use them so the boxes can fill the modal.
+	render    func(inner int) []string
+	wantInner int
 }
+
+const formBoxWidth = 36
 
 func (m *Model) modalSpec() modalSpec {
 	switch m.modal {
@@ -44,74 +50,27 @@ func (m *Model) modalSpec() modalSpec {
 			keys:  "type version  enter run  esc cancel",
 		}
 	case modalInitDatabase:
-		return modalSpec{
-			title: "Initialize database · " + m.taskProfileName,
-			body: []string{
-				m.formLine("database", m.initDatabaseName, 0, true),
-				m.formLine("modules", m.initModules, 1, true),
-			},
-			keys: "tab field  enter run  esc cancel",
-		}
+		return m.formSpec("Initialize database · "+m.taskProfileName, "", "enter run")
 	case modalBackupDatabase:
-		destination := m.backupDestination
-		if destination == "" {
-			destination = "(default backups/<database>_...zip)"
-		}
-		return modalSpec{
-			title: "Backup · " + m.taskProfileName + " / " + m.taskDatabaseName,
-			body: []string{
-				m.formLine("destination", destination, 0, m.formField == 0),
-				m.formLine("format", m.backupFormat, 1, false),
-				m.formLine("filestore", yesNo(m.backupFilestore), 2, false),
-				m.formLine("overwrite", yesNo(m.backupForce), 3, false),
-			},
-			keys: "tab field  ctrl+o folder  space toggle  enter run  esc cancel",
-		}
+		return m.formSpec("Backup · "+m.taskProfileName+" / "+m.taskDatabaseName, "", "enter run")
 	case modalRestoreDatabase:
-		source := m.restoreSource
-		if source == "" {
-			source = "(required)"
-		}
-		destination := m.restoreDestination
-		if destination == "" {
-			destination = "(required)"
-		}
-		body := []string{
-			m.formLine("destination", destination, 0, true),
-			m.formLine("source", source, 1, true),
-			m.formLine("mode", restoreMode(m.restoreCopy), 2, false),
-			m.formLine("overwrite", yesNo(m.restoreForce), 3, false),
-			m.formLine("neutralize", yesNo(m.restoreNeutralize), 4, false),
-			m.formLine("jobs", m.restoreJobs, 5, true),
-		}
+		hint := mutedStyle.Render("copy: new database · move: replace destination")
 		if m.restoreErr != nil {
-			body = append(body, errorStyle.Render(m.restoreErr.Error()))
-		} else {
-			body = append(body, mutedStyle.Render("copy: new database · move: replace destination"))
+			hint = errorStyle.Render(m.restoreErr.Error())
 		}
-		return modalSpec{title: "Restore database · " + m.taskProfileName, body: body, keys: "tab field  space toggle  enter run  esc cancel"}
+		return m.formSpec("Restore database · "+m.taskProfileName, hint, "enter run")
 	case modalCloneAddon:
-		body := []string{
-			m.formLine("name", m.cloneAddonName, 0, true),
-			m.formLine("Git URL", m.cloneAddonURL, 1, true),
-			m.formLine("depth (0 = full)", m.cloneAddonDepth, 2, true),
-			m.formLine("branch (optional)", m.cloneAddonBranch, 3, true),
-		}
+		hint := ""
 		if m.addonFormErr != nil {
-			body = append(body, errorStyle.Render(m.addonFormErr.Error()))
+			hint = errorStyle.Render(m.addonFormErr.Error())
 		}
-		return modalSpec{title: "Clone and register add-on", body: body, keys: "tab field  enter clone  esc cancel"}
+		return m.formSpec("Clone and register add-on", hint, "enter clone")
 	case modalWorktreeAddon:
-		body := []string{
-			m.formLine("worktree name", m.worktreeAddonName, 0, true),
-			m.formLine("branch", m.worktreeAddonBranch, 1, true),
-		}
+		hint := mutedStyle.Render("Missing branches are created.")
 		if m.addonFormErr != nil {
-			body = append(body, errorStyle.Render(m.addonFormErr.Error()))
-		} else {
-			body = append(body, mutedStyle.Render("Missing branches are created."))
+			hint = errorStyle.Render(m.addonFormErr.Error())
 		}
-		return modalSpec{title: "Create worktree · " + m.worktreeAddonSource, body: body, keys: "tab field  enter create  esc cancel"}
+		return m.formSpec("Create worktree · "+m.worktreeAddonSource, hint, "enter create")
 	case modalKeys:
 		return m.keysModalSpec()
 	case modalSelect:
@@ -119,41 +78,64 @@ func (m *Model) modalSpec() modalSpec {
 	case modalFilePicker:
 		return m.filePickerModalSpec()
 	case modalCreateProfile:
-		body := []string{
-			m.formLine("profile name", m.createProfileName, 0, true),
-			m.formLine("Odoo version", m.createProfileVersion, 1, true),
-		}
+		hint := mutedStyle.Render("space starts the profile after creation")
 		if m.createFormErr != nil {
-			body = append(body, errorStyle.Render(m.createFormErr.Error()))
-		} else {
-			body = append(body, mutedStyle.Render("space starts the profile after creation"))
+			hint = errorStyle.Render(m.createFormErr.Error())
 		}
-		return modalSpec{title: "New profile", body: body, keys: "tab field  ←/→ version  type custom  enter create  esc cancel"}
+		return m.formSpec("New profile", hint, "enter create")
 	case modalConfigPattern:
-		body := []string{m.formLine("regular expression", m.configPatternDraft, 0, true)}
-		body = append(body, m.configHint("Matches physical database names."))
-		return modalSpec{title: "Database filter pattern · " + m.configProfileName, body: body, keys: "enter apply  esc back"}
+		return m.formSpec("Database filter pattern · "+m.configProfileName, m.configHint("Matches physical database names."), "enter apply")
 	case modalConfigPassword:
-		body := []string{m.formLine("master password", maskSecret(m.configPasswordDraft), 0, true)}
-		body = append(body, m.configHint("admin_passwd for /web/database; not the login password"))
-		return modalSpec{title: "Odoo master password · " + m.configProfileName, body: body, keys: "enter apply  esc back"}
+		return m.formSpec("Odoo master password · "+m.configProfileName, m.configHint("admin_passwd for /web/database; not the login password"), "enter apply")
 	case modalConfigLANPort:
-		body := []string{m.formLine("host port", m.configLANPortDraft, 0, true)}
-		body = append(body, m.configHint("0 disables LAN access; R recreates to apply"))
-		return modalSpec{title: "LAN port · " + m.configProfileName, body: body, keys: "enter apply  esc back"}
+		return m.formSpec("LAN port · "+m.configProfileName, m.configHint("0 disables LAN access; R recreates to apply"), "enter apply")
 	case modalAdminPassword:
-		body := []string{
-			m.formLine("new password", maskSecret(m.adminPassword), 0, true),
-			m.formLine("confirm", maskSecret(m.adminPasswordConfirm), 1, true),
-		}
+		hint := mutedStyle.Render("Changes the admin login; not admin_passwd.")
 		if m.adminPasswordErr != nil {
-			body = append(body, errorStyle.Render(m.adminPasswordErr.Error()))
-		} else {
-			body = append(body, mutedStyle.Render("Changes the admin login; not admin_passwd."))
+			hint = errorStyle.Render(m.adminPasswordErr.Error())
 		}
-		return modalSpec{title: "Admin password · " + m.taskProfileName + " / " + m.taskDatabaseName, body: body, keys: "tab field  enter apply  esc cancel"}
+		return m.formSpec("Admin password · "+m.taskProfileName+" / "+m.taskDatabaseName, hint, "enter apply")
 	}
 	return modalSpec{}
+}
+
+// formSpec builds a form modal: the fields, one hint or error line, and key
+// hints that follow the focused field.
+func (m *Model) formSpec(title, hint, submit string) modalSpec {
+	fields := m.formFields()
+	labelWidth := 0
+	for _, field := range fields {
+		labelWidth = max(labelWidth, lipgloss.Width(field.label))
+	}
+	return modalSpec{
+		title:     title,
+		wantInner: labelWidth + 2 + formBoxWidth,
+		render: func(inner int) []string {
+			lines := m.formBody(fields, inner)
+			if hint != "" {
+				lines = append(lines, hint)
+			}
+			return lines
+		},
+		keys: m.formKeys(submit),
+	}
+}
+
+// formKeys are the bottom-border hints for the focused field.
+func (m *Model) formKeys(submit string) string {
+	keys := "tab next"
+	if field := m.focusedField(); field != nil {
+		switch field.kind {
+		case fieldToggle:
+			keys += "  space toggle"
+		case fieldChoice:
+			keys += "  space change"
+		}
+	}
+	if m.modal == modalBackupDatabase {
+		keys += "  ctrl+o folder"
+	}
+	return keys + "  " + submit + "  esc cancel"
 }
 
 // configHint is the single line under a config form: the error if any,
@@ -172,12 +154,15 @@ func (m *Model) modalView() string {
 	maxWidth := max(12, min(modalMaxWidth, m.width-2))
 	minWidth := min(modalMinWidth, maxWidth)
 
-	widest := lipgloss.Width(spec.title) + 6
+	widest := max(lipgloss.Width(spec.title)+6, spec.wantInner+4)
 	for _, line := range spec.body {
 		widest = max(widest, lipgloss.Width(line)+4)
 	}
 	width := min(max(widest, minWidth), maxWidth)
 	inner := width - 4
+	if spec.render != nil {
+		spec.body = spec.render(inner)
+	}
 
 	body := make([]string, 0, len(spec.body))
 	for _, line := range spec.body {

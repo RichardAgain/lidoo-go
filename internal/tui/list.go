@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type listFilter struct {
@@ -124,7 +126,7 @@ func (m *Model) filePickerModalSpec() modalSpec {
 		hint = "↑/↓ move  type filter  enter open  ctrl+s use folder  ctrl+h/← up  esc back"
 		empty = "No folders here"
 	}
-	lines := []string{mutedStyle.Render(m.filePickerPath), "Filter: " + m.filePickerFilter.query + "▏"}
+	lines := []string{mutedStyle.Render(m.filePickerPath)}
 	switch m.filePickerPhase {
 	case phaseLoading:
 		lines = append(lines, mutedStyle.Render("Loading…"))
@@ -143,11 +145,11 @@ func (m *Model) filePickerModalSpec() modalSpec {
 	default:
 		lines = append(lines, mutedStyle.Render("not loaded"))
 	}
-	return modalSpec{title: title, body: lines, keys: hint}
+	return m.filteredSpec(title, m.filePickerFilter.query, lines, hint)
 }
 
 func (m *Model) selectModalSpec() modalSpec {
-	lines := []string{"Filter: " + m.selectFilter.query + "▏"}
+	var lines []string
 	switch m.selectPhase {
 	case phaseLoading:
 		lines = append(lines, mutedStyle.Render("Loading options..."))
@@ -170,7 +172,7 @@ func (m *Model) selectModalSpec() modalSpec {
 	if m.selectErr != nil && m.selectPhase == phaseReady {
 		lines = append(lines, errorStyle.Render(m.selectErr.Error()))
 	}
-	return modalSpec{title: m.selectTitle, body: lines, keys: "↑↓ move  type filter  enter select  esc cancel"}
+	return m.filteredSpec(m.selectTitle, m.selectFilter.query, lines, "↑↓ move  type filter  enter select  esc cancel")
 }
 
 func (m *Model) startBackupDirectoryPicker() tea.Cmd {
@@ -198,4 +200,31 @@ func (m *Model) chooseBackupDirectory() {
 	m.backupDestination = filepath.Join(m.filePickerPath, filename)
 	m.modal = modalBackupDatabase
 	m.formField = 0
+}
+
+// filteredSpec puts the bordered "type to filter" input above a list.
+func (m *Model) filteredSpec(title, query string, rows []string, keys string) modalSpec {
+	return modalSpec{
+		title:     title,
+		keys:      keys,
+		wantInner: 56,
+		render: func(inner int) []string {
+			return append(filterBox(query, inner), rows...)
+		},
+	}
+}
+
+// filterBox is a full-width input box; the caret sits at the end of the query.
+func filterBox(query string, width int) []string {
+	textWidth := max(1, width-4)
+	caret := lipgloss.NewStyle().Reverse(true)
+	var content string
+	if query == "" {
+		placeholder := []rune("type to filter")
+		content = caret.Render(string(placeholder[0])) + mutedStyle.Render(string(placeholder[1:]))
+	} else {
+		content = textStyle.Render(ansi.Truncate(query, textWidth-1, "…")) + caret.Render(" ")
+	}
+	content += strings.Repeat(" ", max(0, textWidth-ansi.StringWidth(content)))
+	return textBox("", 0, true, content, width)
 }

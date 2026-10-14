@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"lidoo/internal/addons"
 	"lidoo/internal/docker"
@@ -34,7 +36,7 @@ func TestAddonTableShowsLiveBranch(t *testing.T) {
 	}
 }
 
-func TestModalHidesBackgroundLogs(t *testing.T) {
+func TestModalDimsBackgroundInsteadOfHidingIt(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.width = 120
 	model.height = 40
@@ -43,17 +45,72 @@ func TestModalHidesBackgroundLogs(t *testing.T) {
 	model.profileLogs["testing"] = &profileLogBuffer{container: "Actualizando archivos: 58%"}
 	model.logPhase = phaseReady
 
-	if view := ansi.Strip(model.View()); !strings.Contains(view, "Actualizando archivos: 58%") {
-		t.Fatalf("logs should be visible without a modal, got %q", view)
-	}
-
+	previous := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(previous)
 	model.modal = modalCloneAddon
-	view := ansi.Strip(model.View())
-	if strings.Contains(view, "Actualizando archivos: 58%") {
-		t.Fatalf("background logs should be hidden behind a modal, got %q", view)
+	raw := model.View()
+	view := ansi.Strip(raw)
+	if !strings.Contains(view, "testing") {
+		t.Fatalf("the dashboard should stay visible behind a modal:\n%s", view)
 	}
 	if !strings.Contains(view, "Clone and register add-on") {
 		t.Fatalf("modal should be visible, got %q", view)
+	}
+	lines := strings.Split(raw, "\n")
+	if len(lines) != 40 {
+		t.Fatalf("lines = %d, want 40", len(lines))
+	}
+	for _, line := range lines {
+		if ansi.StringWidth(line) != 120 || !strings.HasPrefix(line, frameBase) {
+			t.Fatalf("backdrop cell not painted: %q", line)
+		}
+	}
+	// The dashboard's own colours (white titles, green state) are stripped.
+	if strings.Contains(lines[0], "38;2;250;250;250") || strings.Contains(lines[3], "38;2;52;211;153") {
+		t.Fatalf("backdrop must be a single dim colour: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "38;2;63;63;70") {
+		t.Fatalf("backdrop should use the dim zinc: %q", lines[0])
+	}
+}
+
+func TestModalBorderCarriesTitleAndKeysWithoutWrapping(t *testing.T) {
+	for _, width := range []int{44, 60, 80} {
+		model := dbModel(1)
+		model.width, model.height = width, 24
+		model.confirmTitle = "Remove a profile with an extremely long name that cannot fit " + strings.Repeat("x", 40)
+		model.confirmPrompt = "Removes things."
+		model.modal = modalConfirm
+		lines := strings.Split(ansi.Strip(model.modalView()), "\n")
+		if !strings.HasPrefix(lines[0], "╭─ ") || !strings.HasSuffix(lines[0], "╮") {
+			t.Fatalf("top border = %q", lines[0])
+		}
+		bottom := lines[len(lines)-1]
+		if !strings.HasPrefix(bottom, "╰─ ") || !strings.HasSuffix(bottom, "╯") || !strings.Contains(bottom, "y/enter confirm") {
+			t.Fatalf("bottom border = %q", bottom)
+		}
+		for _, line := range lines {
+			if ansi.StringWidth(line) != ansi.StringWidth(lines[0]) {
+				t.Fatalf("width %d: ragged modal line %q", width, line)
+			}
+		}
+		if ansi.StringWidth(lines[0]) > width-2 {
+			t.Fatalf("modal wider than the terminal allows: %d", ansi.StringWidth(lines[0]))
+		}
+	}
+}
+
+func TestModalBottomBorderDropsWholeHints(t *testing.T) {
+	bottom := ansi.Strip(modalBottomBorder("tab next  space toggle  ctrl+o folder  enter run  esc cancel", 36))
+	if ansi.StringWidth(bottom) != 36 {
+		t.Fatalf("border width = %d: %q", ansi.StringWidth(bottom), bottom)
+	}
+	if !strings.Contains(bottom, "tab next") || strings.Contains(bottom, "esc cancel") {
+		t.Fatalf("hints should be dropped from the end: %q", bottom)
+	}
+	if strings.Contains(bottom, "ctrl+o") && !strings.Contains(bottom, "ctrl+o folder") {
+		t.Fatalf("hint cut mid-way: %q", bottom)
 	}
 }
 
@@ -978,19 +1035,6 @@ func TestOpenTabControlsLogStream(t *testing.T) {
 	model.stopLogStream()
 }
 
-func TestModalTitleSeparatorAddsRule(t *testing.T) {
-	lines := modalTitleSeparator([]string{"Title", "body"}, 40)
-	if len(lines) != 3 {
-		t.Fatalf("lines = %d, want 3", len(lines))
-	}
-	if !strings.Contains(lines[1], "─") {
-		t.Fatalf("separator = %q", lines[1])
-	}
-	if len(modalTitleSeparator([]string{"only"}, 40)) != 1 {
-		t.Fatal("a single line should be unchanged")
-	}
-}
-
 func TestFitViewClampsWidthAndHeight(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.width = 20
@@ -1034,7 +1078,7 @@ func TestSelectModalWindowsLongLists(t *testing.T) {
 	}
 	model.selectIndex = 30
 
-	rendered := ansi.Strip(strings.Join(model.selectModalLines(), "\n"))
+	rendered := ansi.Strip(strings.Join(model.selectModalSpec().body, "\n"))
 	if !strings.Contains(rendered, "more") {
 		t.Fatalf("long list should show more indicators:\n%s", rendered)
 	}
@@ -1330,7 +1374,7 @@ func TestRestorePickerTitleNamesTheProfile(t *testing.T) {
 	model := dbModel(1)
 	model.prepareRestoreAction()
 	model.filePickerDirectory = false
-	title := ansi.Strip(model.filePickerModalLines()[0])
+	title := ansi.Strip(model.filePickerModalSpec().title)
 	if !strings.Contains(title, "demo") || strings.HasSuffix(strings.TrimSpace(title), "·") {
 		t.Fatalf("picker title = %q, want the profile name", title)
 	}

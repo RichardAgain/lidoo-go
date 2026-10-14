@@ -118,12 +118,12 @@ var keyGroups = []keyGroup{
 
 const keyGroupNameWidth = 11
 
-// keysModalLines lays the key reference out as group names beside wrapped
+// keysModalSpec lays the key reference out as group names beside wrapped
 // key/description pairs. Notes are dropped when the terminal is too short.
-func (m *Model) keysModalLines() []string {
+func (m *Model) keysModalSpec() modalSpec {
 	itemWidth := min(m.width-4, 72) - 6 - keyGroupNameWidth
 	build := func(withNotes bool) []string {
-		lines := []string{titleStyle.Render("Keys")}
+		var lines []string
 		for _, group := range keyGroups {
 			rows := wrapHints(group.hints, itemWidth)
 			for index, row := range rows {
@@ -137,13 +137,13 @@ func (m *Model) keysModalLines() []string {
 				lines = append(lines, strings.Repeat(" ", keyGroupNameWidth)+mutedStyle.Render(group.note))
 			}
 		}
-		return append(lines, "", mutedStyle.Render("any key closes"))
+		return lines
 	}
-	lines := build(true)
-	if len(lines)+2 > m.height-5 {
-		lines = build(false)
+	body := build(true)
+	if len(body)+2 > m.height {
+		body = build(false)
 	}
-	return lines
+	return modalSpec{title: "Keys", body: body, keys: "any key closes"}
 }
 
 // wrapHints packs hints into rows no wider than width.

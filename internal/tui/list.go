@@ -115,7 +115,7 @@ func (m *Model) filteredListLines(indices []int, selected int, label func(int) s
 	return lines
 }
 
-func (m *Model) filePickerModalLines() []string {
+func (m *Model) filePickerModalSpec() modalSpec {
 	title := "Pick a dump · " + m.taskProfileName
 	hint := "↑/↓ move  type filter  enter open/select  ctrl+h/← up  esc cancel"
 	empty := "No folders or .zip/.dump files here"
@@ -124,7 +124,7 @@ func (m *Model) filePickerModalLines() []string {
 		hint = "↑/↓ move  type filter  enter open  ctrl+s use folder  ctrl+h/← up  esc back"
 		empty = "No folders here"
 	}
-	lines := []string{titleStyle.Render(title), mutedStyle.Render(m.filePickerPath), "Filter: " + m.filePickerFilter.query + "▏", ""}
+	lines := []string{mutedStyle.Render(m.filePickerPath), "Filter: " + m.filePickerFilter.query + "▏"}
 	switch m.filePickerPhase {
 	case phaseLoading:
 		lines = append(lines, mutedStyle.Render("Loading…"))
@@ -143,11 +143,11 @@ func (m *Model) filePickerModalLines() []string {
 	default:
 		lines = append(lines, mutedStyle.Render("not loaded"))
 	}
-	return append(lines, "", modalKeyHints(hint))
+	return modalSpec{title: title, body: lines, keys: hint}
 }
 
-func (m *Model) selectModalLines() []string {
-	lines := []string{titleStyle.Render(m.selectTitle), "Filter: " + m.selectFilter.query + "▏"}
+func (m *Model) selectModalSpec() modalSpec {
+	lines := []string{"Filter: " + m.selectFilter.query + "▏"}
 	switch m.selectPhase {
 	case phaseLoading:
 		lines = append(lines, mutedStyle.Render("Loading options..."))
@@ -170,7 +170,7 @@ func (m *Model) selectModalLines() []string {
 	if m.selectErr != nil && m.selectPhase == phaseReady {
 		lines = append(lines, errorStyle.Render(m.selectErr.Error()))
 	}
-	return append(lines, "", modalKeyHints("↑/↓ move  type filter  enter select  esc cancel"))
+	return modalSpec{title: m.selectTitle, body: lines, keys: "↑↓ move  type filter  enter select  esc cancel"}
 }
 
 func (m *Model) startBackupDirectoryPicker() tea.Cmd {

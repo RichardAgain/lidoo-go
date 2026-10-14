@@ -51,8 +51,6 @@ type selectKind uint8
 
 const (
 	selectNone selectKind = iota
-	selectRunProfileVersion
-	selectCreateProfileVersion
 	selectAddonWorktreeSource
 	selectAddonWorktreeBranch
 	selectLogDatabase
@@ -71,13 +69,6 @@ type selectItem struct {
 	Value string
 	Hint  string
 }
-
-type versionPurpose uint8
-
-const (
-	versionForRun versionPurpose = iota
-	versionForCreate
-)
 
 type resourcePhase uint8
 
@@ -167,7 +158,7 @@ type Model struct {
 	profileListOnlyRefresh bool
 	pendingDatabaseRefresh bool
 	modal                  modalMode
-	versionInput           string
+	versionField           selectField
 	taskID                 uint64
 	pendingTask            *taskRequest
 	activeTaskKind         taskKind
@@ -216,7 +207,6 @@ type Model struct {
 	selectErr              error
 	selectRequest          uint64
 	selectSource           string
-	versionPurpose         versionPurpose
 	filePickerPath         string
 	filePickerItems        []files.DirEntry
 	filePickerIndex        int
@@ -225,7 +215,6 @@ type Model struct {
 	filePickerErr          error
 	filePickerPhase        resourcePhase
 	filePickerRequest      uint64
-	createProfileVersion   string
 	createProfileName      string
 	createFormErr          error
 	configProfileName      string
@@ -452,42 +441,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case VersionsLoadedMsg:
-		if msg.RequestID == m.selectRequest && m.modal == modalCreateProfile {
-			m.setVersionSelectItems(msg.Options)
-			if m.createProfileVersion == "" && len(msg.Options) > 0 {
-				m.createProfileVersion = msg.Options[0].Version
-			}
-			return m, nil
+		if msg.RequestID == m.selectRequest && m.versionFormOpen() {
+			m.setVersionItems(msg.Options)
 		}
-		if !m.currentSelectRequest(msg.RequestID) {
-			return m, nil
-		}
-		switch m.selectKind {
-		case selectRunProfileVersion, selectCreateProfileVersion:
-			m.setVersionSelectItems(msg.Options)
-			return m, nil
-		default:
-			return m, nil
-		}
+		return m, nil
 	case VersionsFailedMsg:
-		if msg.RequestID == m.selectRequest && m.modal == modalCreateProfile {
-			m.selectErr = msg.Err
-			m.selectPhase = phaseError
-			return m, nil
+		if msg.RequestID == m.selectRequest && m.versionFormOpen() {
+			// Even when discovery fails, let the operator type a version.
+			m.versionField = selectField{items: []selectItem{{Label: "Custom…", Value: selectCustomValue}}}
+			m.createFormErr = msg.Err
 		}
-		if !m.currentSelectRequest(msg.RequestID) {
-			return m, nil
-		}
-		if m.selectKind == selectRunProfileVersion || m.selectKind == selectCreateProfileVersion {
-			// Even when discovery fails, let the operator type a version by hand.
-			m.selectErr = msg.Err
-			m.selectItems = []selectItem{{Label: "Custom version…", Value: selectCustomValue}}
-			m.selectIndex = 0
-			m.selectPhase = phaseReady
-			return m, nil
-		}
-		m.selectPhase = phaseError
-		m.selectErr = msg.Err
 		return m, nil
 	case ProfileConfigLoadedMsg:
 		if msg.RequestID != m.configRequest || msg.ProfileName != m.selectedProfileName() {
@@ -623,7 +586,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var required *app.ProfileVersionRequiredError
 		if errors.As(msg.Err, &required) {
 			m.finishTask("version required", nil)
-			return m, m.openRunVersionSelect()
+			return m, m.openRunVersionForm()
 		}
 		m.finishTask("failed", msg.Err)
 		if errors.Is(msg.Err, odoo.ErrDatabaseNotFound) && msg.ProfileName == m.selectedProfileName() {
@@ -1295,27 +1258,6 @@ func (m *Model) closeSelect() {
 	m.modal = modalNone
 }
 
-func (m *Model) setVersionSelectItems(options []docker.VersionOption) {
-	items := make([]selectItem, 0, len(options)+1)
-	for _, option := range options {
-		hints := make([]string, 0, 2)
-		if option.Dockerfile {
-			hints = append(hints, "dockerfile")
-		} else {
-			hints = append(hints, "no dockerfile")
-		}
-		if option.Image {
-			hints = append(hints, "image built")
-		}
-		items = append(items, selectItem{Label: option.Version, Value: option.Version, Hint: strings.Join(hints, " · ")})
-	}
-	items = append(items, selectItem{Label: "Custom version…", Value: selectCustomValue})
-	m.selectItems = items
-	selectFirstIndex(&m.selectIndex, m.selectIndices())
-	m.selectErr = nil
-	m.selectPhase = phaseReady
-}
-
 func (m *Model) setAddonSelectItems(statuses []addons.AddonStatus, sourcesOnly bool) {
 	items := make([]selectItem, 0, len(statuses))
 	for _, status := range statuses {
@@ -1364,24 +1306,6 @@ func (m *Model) applySelectChoice() tea.Cmd {
 	m.selectKind = selectNone
 	m.selectItems = nil
 	switch kind {
-	case selectRunProfileVersion:
-		if choice.Value == selectCustomValue {
-			m.modal = modalRunVersion
-			m.versionPurpose = versionForRun
-			m.versionInput = ""
-			return nil
-		}
-		m.modal = modalNone
-		return m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: choice.Value, Wait: true})
-	case selectCreateProfileVersion:
-		if choice.Value == selectCustomValue {
-			m.modal = modalRunVersion
-			m.versionPurpose = versionForCreate
-			m.versionInput = ""
-			return nil
-		}
-		m.openCreateProfileForm(choice.Value)
-		return nil
 	case selectAddonWorktreeSource:
 		m.modal = modalNone
 		return m.openWorktreeBranchSelect(choice.Value)
@@ -1404,69 +1328,8 @@ func (m *Model) applySelectChoice() tea.Cmd {
 	}
 }
 
-func (m *Model) startCreateProfile() tea.Cmd {
-	if m.rejectMutatingAction() {
-		return nil
-	}
-	m.selectRequest++
-	m.selectKind = selectNone
-	m.selectItems = nil
-	m.selectFilter = listFilter{}
-	m.selectErr = nil
-	m.selectPhase = phaseLoading
-	m.openCreateProfileForm("")
-	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
-}
-
-func (m *Model) openRunVersionSelect() tea.Cmd {
-	m.selectRequest++
-	m.selectKind = selectRunProfileVersion
-	m.selectTitle = "Odoo version · " + m.taskProfileName
-	m.selectItems = nil
-	m.selectIndex = 0
-	m.selectErr = nil
-	m.selectPhase = phaseLoading
-	m.modal = modalSelect
-	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
-}
-
-func (m *Model) openCreateProfileForm(version string) {
-	m.createProfileVersion = version
-	m.createProfileName = ""
-	m.createFormErr = nil
-	m.formField = 0
-	m.modal = modalCreateProfile
-}
-
-func (m *Model) cycleCreateVersion(delta int) {
-	count := len(m.selectItems)
-	if count == 0 {
-		return
-	}
-	index := -1
-	for i, item := range m.selectItems {
-		if item.Value == m.createProfileVersion || (item.Value == selectCustomValue && m.createProfileVersion == "") {
-			index = i
-			break
-		}
-	}
-	if index < 0 {
-		if delta > 0 {
-			index = 0
-		} else {
-			index = count - 1
-		}
-	} else {
-		index = (index + delta + count) % count
-	}
-	m.createProfileVersion = m.selectItems[index].Value
-	if m.createProfileVersion == selectCustomValue {
-		m.createProfileVersion = ""
-	}
-}
-
 func (m *Model) submitCreateProfile() tea.Cmd {
-	version := strings.TrimSpace(m.createProfileVersion)
+	version := m.versionField.value()
 	if version == "" {
 		m.createFormErr = errors.New("Odoo version is required")
 		return nil
@@ -1709,30 +1572,6 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.removeAddonForce = !m.removeAddonForce
 			}
 		}
-	case modalRunVersion:
-		switch msg.String() {
-		case "esc":
-			m.modal = modalNone
-		case "enter":
-			version := strings.TrimSpace(m.versionInput)
-			if version == "" {
-				return m, nil
-			}
-			if m.versionPurpose == versionForCreate {
-				m.openCreateProfileForm(version)
-				return m, nil
-			}
-			m.modal = modalNone
-			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version, Wait: true})
-		case "backspace", "ctrl+h":
-			m.versionInput = removeLastRune(m.versionInput)
-		case "ctrl+u":
-			m.versionInput = ""
-		default:
-			if value := keyInsertText(msg); value != "" {
-				m.versionInput += value
-			}
-		}
 	case modalFilePicker:
 		switch msg.String() {
 		case "esc":
@@ -1777,7 +1616,7 @@ func (m *Model) updateModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase,
 		modalCloneAddon, modalWorktreeAddon,
 		modalConfigPattern, modalConfigPassword, modalConfigLANPort,
-		modalCreateProfile, modalAdminPassword:
+		modalCreateProfile, modalRunVersion, modalAdminPassword:
 		return m.updateFormKey(msg)
 	}
 	return m, nil
@@ -1939,8 +1778,6 @@ func (m *Model) pasteTarget() *string {
 		return target
 	}
 	switch m.modal {
-	case modalRunVersion:
-		return &m.versionInput
 	case modalSelect:
 		return &m.selectFilter.query
 	case modalFilePicker:

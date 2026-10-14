@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -8,6 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"lidoo/internal/docker"
 )
 
 // colorBoxIdle is the border of an input that does not have focus.
@@ -130,10 +133,10 @@ func (m *Model) formFields() []formField {
 			textField("Branch", &m.worktreeAddonBranch, "branch"),
 		}
 	case modalCreateProfile:
-		return []formField{
-			textField("Name", &m.createProfileName, "profile name"),
-			textField("Odoo version", &m.createProfileVersion, "18"),
-		}
+		return append([]formField{textField("Name", &m.createProfileName, "profile name")},
+			selectFormFields("Odoo version", &m.versionField, "version")...)
+	case modalRunVersion:
+		return selectFormFields("Odoo version", &m.versionField, "version")
 	case modalConfigPattern:
 		return []formField{textField("Pattern", &m.configPatternDraft, "^smoke__.*$")}
 	case modalConfigPassword:
@@ -341,6 +344,8 @@ func (m *Model) updateFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) submitForm() tea.Cmd {
 	switch m.modal {
+	case modalRunVersion:
+		return m.submitRunVersion()
 	case modalInitDatabase, modalBackupDatabase, modalRestoreDatabase:
 		return m.submitDatabaseForm()
 	case modalCloneAddon, modalWorktreeAddon:
@@ -485,4 +490,63 @@ func (m *Model) selectRows(field formField, labelWidth int, focused bool) []stri
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// versionFormOpen reports whether a form with the Odoo version select is open.
+func (m *Model) versionFormOpen() bool {
+	return m.modal == modalCreateProfile || m.modal == modalRunVersion
+}
+
+// startCreateProfile opens the new-profile form and loads the versions that
+// fill its select.
+func (m *Model) startCreateProfile() tea.Cmd {
+	if m.rejectMutatingAction() {
+		return nil
+	}
+	m.selectRequest++
+	m.versionField = selectField{}
+	m.createProfileName = ""
+	m.createFormErr = nil
+	m.formField = 0
+	m.modal = modalCreateProfile
+	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
+}
+
+// openRunVersionForm asks which Odoo version to run a profile that has none.
+func (m *Model) openRunVersionForm() tea.Cmd {
+	m.selectRequest++
+	m.versionField = selectField{}
+	m.createFormErr = nil
+	m.formField = 0
+	m.modal = modalRunVersion
+	return LoadVersionsCmd(m.ctx, m.service, m.selectRequest)
+}
+
+// setVersionItems fills the version select: each known version with a hint
+// about its Dockerfile and image, then Custom….
+func (m *Model) setVersionItems(options []docker.VersionOption) {
+	items := make([]selectItem, 0, len(options)+1)
+	for _, option := range options {
+		hint := "no Dockerfile"
+		switch {
+		case option.Image:
+			hint = "image built"
+		case option.Dockerfile:
+			hint = "Dockerfile"
+		}
+		items = append(items, selectItem{Label: option.Version, Value: option.Version, Hint: hint})
+	}
+	items = append(items, selectItem{Label: "Custom…", Value: selectCustomValue})
+	m.versionField = selectField{items: items}
+	m.createFormErr = nil
+}
+
+func (m *Model) submitRunVersion() tea.Cmd {
+	version := m.versionField.value()
+	if version == "" {
+		m.createFormErr = errors.New("choose or type an Odoo version")
+		return nil
+	}
+	m.modal = modalNone
+	return m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.taskProfileName, Version: version, Wait: true})
 }

@@ -44,11 +44,11 @@ func (m *Model) modalSpec() modalSpec {
 		}
 		return spec
 	case modalRunVersion:
-		return modalSpec{
-			title: "Odoo version · " + m.taskProfileName,
-			body:  []string{"version: " + activeStyle.Render(m.versionInput+"▏")},
-			keys:  "type version  enter run  esc cancel",
+		hint := mutedStyle.Render("This profile has no Odoo version yet.")
+		if m.createFormErr != nil {
+			hint = errorStyle.Render(m.createFormErr.Error())
 		}
+		return m.formSpec("Run "+m.taskProfileName+" · choose Odoo version", hint, "enter run")
 	case modalInitDatabase:
 		return m.formSpec("Initialize database · "+m.taskProfileName, "", "enter run")
 	case modalBackupDatabase:

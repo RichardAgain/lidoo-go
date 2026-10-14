@@ -235,63 +235,103 @@ func TestStoppedProfileShowsLogMessage(t *testing.T) {
 	}
 }
 
-func TestVersionSelectIncludesCustomOption(t *testing.T) {
+func TestVersionFieldIncludesCustomOption(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.setVersionSelectItems([]docker.VersionOption{
+	model.setVersionItems([]docker.VersionOption{
 		{Version: "18", Dockerfile: true, Image: true},
-		{Version: "17"},
+		{Version: "17", Dockerfile: true},
+		{Version: "16"},
 	})
 
-	if len(model.selectItems) != 3 {
-		t.Fatalf("select items = %d, want 3", len(model.selectItems))
+	items := model.versionField.items
+	if len(items) != 4 {
+		t.Fatalf("items = %d, want 4", len(items))
 	}
-	if model.selectItems[2].Value != selectCustomValue {
-		t.Fatalf("last item value = %q, want custom sentinel", model.selectItems[2].Value)
+	if items[3].Value != selectCustomValue || items[3].Label != "Custom…" {
+		t.Fatalf("last item = %+v, want the custom entry", items[3])
 	}
-	if model.selectItems[0].Label != "18" || model.selectItems[0].Hint != "dockerfile · image built" {
-		t.Fatalf("first item = %+v", model.selectItems[0])
+	if items[0].Hint != "image built" || items[1].Hint != "Dockerfile" || items[2].Hint != "no Dockerfile" {
+		t.Fatalf("hints = %q / %q / %q", items[0].Hint, items[1].Hint, items[2].Hint)
 	}
-	if model.selectItems[1].Hint != "no dockerfile" {
-		t.Fatalf("second item = %+v", model.selectItems[1])
-	}
-	if model.selectPhase != phaseReady {
-		t.Fatalf("select phase = %v, want ready", model.selectPhase)
+	if model.versionField.value() != "18" {
+		t.Fatalf("default version = %q, want the first option", model.versionField.value())
 	}
 }
 
-func TestCreateProfileVersionChoiceOpensForm(t *testing.T) {
+func TestCreateProfileFormLoadsVersionsIntoTheSelect(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.selectKind = selectCreateProfileVersion
-	model.selectPhase = phaseReady
-	model.selectItems = []selectItem{{Label: "18", Value: "18"}}
-	model.selectIndex = 0
-
-	if cmd := model.applySelectChoice(); cmd != nil {
-		t.Fatal("choosing a version should not start a command")
-	}
+	model.startCreateProfile()
 	if model.modal != modalCreateProfile {
 		t.Fatalf("modal = %v, want create profile", model.modal)
 	}
-	if model.createProfileVersion != "18" {
-		t.Fatalf("create version = %q, want 18", model.createProfileVersion)
+	request := model.selectRequest
+	model.Update(VersionsLoadedMsg{RequestID: request, Options: []docker.VersionOption{{Version: "19"}, {Version: "18"}}})
+	if len(model.versionField.items) != 3 || model.versionField.value() != "19" {
+		t.Fatalf("version field = %+v", model.versionField)
+	}
+	// A stale response is ignored.
+	model.Update(VersionsLoadedMsg{RequestID: request - 1, Options: nil})
+	if len(model.versionField.items) != 3 {
+		t.Fatal("stale versions response must be ignored")
 	}
 }
 
-func TestCustomVersionChoiceOpensTextInput(t *testing.T) {
+func TestCreateProfileCustomVersionIsTypedInPlace(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.selectKind = selectCreateProfileVersion
-	model.selectPhase = phaseReady
-	model.selectItems = []selectItem{{Label: "Custom version…", Value: selectCustomValue}}
-	model.selectIndex = 0
+	model.width, model.height = 100, 30
+	model.startCreateProfile()
+	model.Update(VersionsLoadedMsg{RequestID: model.selectRequest, Options: []docker.VersionOption{{Version: "19"}, {Version: "18"}}})
+	typeText(model, "fresh")
+	model.updateKey(keyMsg("tab")) // version select
+	model.updateKey(keyMsg("down"))
+	model.updateKey(keyMsg("down"))
+	if !model.versionField.isCustom() {
+		t.Fatal("down twice should land on Custom…")
+	}
+	if len(model.formFields()) != 3 {
+		t.Fatalf("fields = %d, want name, select and the custom input", len(model.formFields()))
+	}
+	model.updateKey(keyMsg("tab")) // custom input
+	typeText(model, "17.0")
+	if cmd := model.submitForm(); cmd == nil {
+		t.Fatal("a valid form should queue the create task")
+	}
+	if model.pendingTask == nil || model.pendingTask.Version != "17.0" || model.pendingTask.ProfileName != "fresh" {
+		t.Fatalf("pending task = %+v", model.pendingTask)
+	}
+}
 
-	if cmd := model.applySelectChoice(); cmd != nil {
-		t.Fatal("choosing custom version should not start a command")
+func TestCreateProfileVersionSelectNeedsAChoice(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.startCreateProfile()
+	typeText(model, "fresh")
+	if cmd := model.submitCreateProfile(); cmd != nil || model.createFormErr == nil {
+		t.Fatal("submitting before versions load should fail with an error")
 	}
-	if model.modal != modalRunVersion {
-		t.Fatalf("modal = %v, want version input", model.modal)
+}
+
+func TestRunWithoutVersionOpensOneSelectForm(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 30
+	model.taskProfileName = "demo"
+	model.openRunVersionForm()
+	model.Update(VersionsLoadedMsg{RequestID: model.selectRequest, Options: []docker.VersionOption{{Version: "18", Image: true}}})
+	view := ansi.Strip(model.modalView())
+	if !strings.Contains(view, "Run demo · choose Odoo version") || !strings.Contains(view, "● 18") {
+		t.Fatalf("run version form:\n%s", view)
 	}
-	if model.versionPurpose != versionForCreate {
-		t.Fatalf("version purpose = %v, want create", model.versionPurpose)
+	model.updateKey(keyMsg("down"))
+	if !model.versionField.isCustom() || len(model.formFields()) != 2 {
+		t.Fatal("Custom… should reveal an input in the same form")
+	}
+	model.updateKey(keyMsg("tab"))
+	typeText(model, "16")
+	model.updateKey(keyMsg("enter"))
+	if model.pendingTask == nil || model.pendingTask.Kind != taskRun || model.pendingTask.Version != "16" || !model.pendingTask.Wait {
+		t.Fatalf("pending task = %+v, want run 16", model.pendingTask)
+	}
+	if model.modal != modalNone {
+		t.Fatalf("modal = %v, want closed", model.modal)
 	}
 }
 
@@ -299,7 +339,7 @@ func TestCreateProfileRejectsDuplicateName(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.profiles = []docker.ProfileSummary{{Name: "demo"}}
 	model.modal = modalCreateProfile
-	model.createProfileVersion = "18"
+	model.versionField = selectField{items: []selectItem{{Label: "18", Value: "18"}}}
 	model.createProfileName = "demo"
 
 	if cmd := model.submitCreateProfile(); cmd != nil {
@@ -313,7 +353,7 @@ func TestCreateProfileRejectsDuplicateName(t *testing.T) {
 func TestCreateProfileQueuesCreateWithoutRun(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.modal = modalCreateProfile
-	model.createProfileVersion = "18"
+	model.versionField = selectField{items: []selectItem{{Label: "18", Value: "18"}}}
 	model.createProfileName = "fresh"
 
 	cmd := model.submitCreateProfile()

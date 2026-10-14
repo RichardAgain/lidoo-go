@@ -113,9 +113,9 @@ Odoo credentials. Each running profile needs an available host port; Docker reje
 ports already in use. `status` shows the configured port and marks port changes as
 pending recreation. Changing the setting alone does not alter an existing container.
 
-In the TUI, select a profile and navigate to `Config` with `tab` or by clicking
-its tab. Press `enter` or `e` to edit the LAN port, then `R` to recreate the
-container and apply it. This tab currently contains only the LAN port setting.
+In the TUI, select a profile and press `e` (or `5`, or click the `Config` tab).
+Move to the `LAN port` row, press `enter` to edit it, then `R` to recreate the
+container and apply it.
 
 Set `--lan-port 0` and recreate to disable publishing. Accepted values are `0–65535`.
 Different ports on the same IP do not isolate browser cookies between profiles;
@@ -293,8 +293,30 @@ If startup exits or times out, inspect `lidoo logs --name testing`.
 
 ## Interactive TUI
 
-`lidoo tui` (or `go run ./cmd tui`) opens the dashboard. Focus moves with
-`tab`/`←`/`→`; profiles, databases, and add-ons are separate panels.
+`lidoo tui` (or `go run ./cmd tui`) opens the dashboard: a profile list on the
+left and, for the selected profile, a details pane on the right with five tabs
+(`1 Logs`, `2 Databases`, `3 Add-ons`, `4 Info`, `5 Config`). The open tab
+persists while you change profile or move between panes. Press `?` for the full
+key reference; the footer shows the few keys that matter where you are.
+
+Navigation:
+
+| Keys | Action |
+| --- | --- |
+| `↑`/`↓`, `j`/`k` | move: profiles in the list, rows in a tab (scroll in Logs) |
+| `enter`, `tab`, `→`, `l` | focus the details pane |
+| `esc`, `tab`, `←`, `h` | back to the profile list |
+| `1`–`5` | open that tab and focus the details pane |
+| `[` / `]` | previous / next tab (details pane) |
+| `shift+↑`/`shift+↓`, `K`/`J` | previous / next profile without leaving the tab |
+| `o` | open the profile URL in the browser |
+| `?` | key reference; any key closes it |
+| `ctrl+r`, `q` | refresh, quit |
+
+Actions act on the focused pane: `d` removes the profile in the profile list
+and drops the selected database on the Databases tab. Below 72 columns or 14
+rows the profile list stacks above the open tab and the same keys apply. Mouse:
+click a profile, a tab or a row to focus it; the wheel scrolls logs.
 
 Profiles:
 
@@ -303,18 +325,24 @@ Profiles:
   `dockerfile`/`no dockerfile` and `image built`) or type a custom one, then name
   it. The profile is added to workspace state with that version and is **not**
   started; start it later with `space`.
-- `e` opens a settings panel. It lists one row per setting and only the field
-  you edit is persisted, so changing the database filter mode does not touch the
-  master password and vice versa:
-  - **database filter mode** — a select for `profile`, `disabled`, or `custom`.
-  - **filter pattern** — shown only in `custom` mode (the regular expression is
-    matched against physical database names).
-  - **Odoo master password** — `admin_passwd` (`/web/database`), not the admin
+- `e` opens the `Config` tab. Rows are the database filter mode, the filter
+  pattern (only in `custom` mode), the Odoo master password and the LAN port.
+  Only the row you edit is persisted, so changing the filter mode does not
+  touch the master password and vice versa:
+  - **Database filter** — `enter` cycles `profile`, `disabled`, `custom`
+    (`custom` asks for the pattern first).
+  - **Filter pattern** — a regular expression matched against physical
+    database names.
+  - **Master password** — `admin_passwd` (`/web/database`), not the admin
     user's login password.
-  Use `↑`/`↓` to pick a row, `enter` to edit, `esc` to close. The Databases
-  panel then lists exactly the databases that mode exposes.
+  - **LAN port** — `0` disables publishing.
+  `enter` edits the selected row in a small form. When a change needs a new
+  container the tab shows `↻ changes waiting`; `R` recreates the container.
+  The Databases tab then lists exactly the databases the filter mode exposes.
 - `space` toggles run/stop for the selected profile; `x` starts, `s` stops,
-  `r` restarts, `R` recreates, `enter` opens the URL, `d` removes. Actions that
+  `r` restarts, `R` recreates, `o` opens the URL, `d` removes. The list shows a
+green `●` for running, a dim `○` for stopped, a spinner while a task runs on the
+profile and `↻` when recreation is pending. Actions that
   do not apply (starting a running profile, stopping a stopped one) report a
   notice instead of failing. Starting a profile waits until Odoo answers before
   the task reports `completed` (cancel with `c`).
@@ -347,9 +375,11 @@ internal `cache-*` template databases are hidden):
   you had selected; edit `destination` and switch `mode` to `move` to replace an
   existing database.
 
-Press `?` outside a modal to show or hide help, including profile settings,
-LAN access, restore modes, and password distinctions. Modals keep only a short
-hint and their available keys.
+`?` opens the key reference, grouped as Navigate, Profile, Databases, Add-ons,
+Logs and Tasks. Modals keep only a short hint and their available keys.
+
+LAN access, restore modes and the two password kinds are explained next to the
+relevant rows and forms (see [LAN access](#lan-access)).
 
 Selection lists also support type-to-filter: `↑`/`↓` move through matches,
 `enter` selects, `backspace` deletes, and `ctrl+u` clears the filter.
@@ -369,6 +399,9 @@ form.
 
 Add-ons:
 
+- The Add-ons tab lists `NAME`, `BRANCH` and `SOURCE`; a `✓` in the first column
+  marks add-ons attached to the selected profile, and worktrees show
+  `↳ <parent>` as their source.
 - The table's `BRANCH` column is the branch the checkout is **currently** on,
   read from Git on every refresh (so `—` only means the path is not a repository
   or HEAD is detached). It is the same value `lidoo addon list` and
@@ -379,19 +412,18 @@ Add-ons:
   to `<source>-<branch>` with branch slashes replaced by hyphens; `enter`
   creates it directly. Missing branches are created. When no add-on is
   selected, choose a source first.
-- `a` attaches and `d` detaches add-ons for the selected profile, `f` fetches,
+- `enter` attaches or detaches the selected add-on for the profile, `f` fetches,
   `p` pulls, and `x` opens a confirmation for the selected checkout. Press `f`
-  there to toggle force removal of uncommitted changes. The `ATTACHED`
-  column is the checkmark for the selected profile, so attachment is visible
-  without opening anything.
+  there to toggle force removal of uncommitted changes.
 
 Logs:
 
-- The profile panel shows only the container stream inline; Odoo lines are
-  compacted (level gutter, no date/pid, werkzeug access lines summarised with the
+- The Logs tab (`1`) shows only the container stream inline, with a filter strip
+  (`level`, `db`, `follow`); Odoo lines are compacted (level gutter, no date/pid, werkzeug access lines summarised with the
   database name).
-- Task output has its own plain section above the footer; the log panel shrinks
-  to leave room for it. Running tasks show up to 6 **useful** output lines,
+- Task output has its own `── task ──` region at the bottom of the details pane
+  with the task name, elapsed time and `c cancel`; the tab content shrinks to
+  leave room for it. Running tasks show up to 6 **useful** output lines,
   with fewer in small terminals. Finished tasks collapse to a one-line status;
   press `t` to expand or collapse their output. Python traceback frames and
   `*.py:NN: DeprecationWarning` headers are dropped, and carriage-return progress
@@ -401,19 +433,18 @@ Logs:
 - While a form or dialog is open, the dashboard behind it is replaced by a plain
   surface, so live log lines never bleed through the dialog. The log viewer is
   the exception: its pickers stay readable against the lines they filter.
-- The inline panel can be scoped to one database. Press `D` in the Profiles panel
-  (or `d` in the viewer) to get a select with `all databases` plus every database
-  of the profile and every database seen in the log lines. Opening logs from the
-  Databases panel with `L` pre-selects the database there; the panel shows the
-  active `db filter`.
-- `L` opens the fullscreen viewer from any panel. `tab` cycles
+- The Logs tab can be scoped to one database. Press `D` there (or `d` in the
+  viewer) to get a select with `all databases` plus every database of the
+  profile and every database seen in the log lines. Opening logs from the
+  Databases tab with `L` pre-selects the database there; the strip shows the
+  active `db`.
+- `L` opens the fullscreen viewer from anywhere (`/` on the Logs tab opens it
+  ready to search). `tab` cycles
   `container` / `tasks` / `all`, `d` opens the database select (`all` or one
   database), `1`–`4` filter by minimum level (`all`, `info+`, `warn+`, `error`),
   `/` searches, `f` toggles follow, and `g`/`G` jump to top/bottom. Mouse wheel
   and `pgup`/`pgdn` scroll. Each profile keeps its own log buffer; profiles never
   share a stream.
-- Mouse: the wheel scrolls logs, clicking a profile selects it, and clicking the
-  tab bar (`Databases` / `Add-ons` / `Info`) switches panels.
 
 Changes that need a container rebuild stay pending until `R` recreates the
 profile, or the recreate option is chosen in the attach/detach dialog.

@@ -119,11 +119,11 @@ func (m *Model) filteredListLines(indices []int, selected int, label func(int) s
 
 func (m *Model) filePickerModalSpec() modalSpec {
 	title := "Pick a dump · " + m.taskProfileName
-	hint := "↑/↓ move  type filter  enter open/select  ctrl+h/← up  esc cancel"
+	hint := "↑↓ move  enter open/select  esc cancel  ctrl+h up  type filter"
 	empty := "No folders or .zip/.dump files here"
 	if m.filePickerDirectory {
 		title = "Backup destination folder"
-		hint = "↑/↓ move  type filter  enter open  ctrl+s use folder  ctrl+h/← up  esc back"
+		hint = "↑↓ move  enter open  ctrl+s use folder  esc back  ctrl+h up  type filter"
 		empty = "No folders here"
 	}
 	lines := []string{mutedStyle.Render(m.filePickerPath)}

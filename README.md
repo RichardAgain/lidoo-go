@@ -320,11 +320,13 @@ click a profile, a tab or a row to focus it; the wheel scrolls logs.
 
 Profiles:
 
-- `n` (or `c`) creates a profile: choose an Odoo version from a select (the
-  known versions 17/18/19 plus any `docker/Dockerfile.*`; rows are tagged
-  `dockerfile`/`no dockerfile` and `image built`) or type a custom one, then name
-  it. The profile is added to workspace state with that version and is **not**
-  started; start it later with `space`.
+- `n` (or `c`) creates a profile: type its name and pick an Odoo version from
+  the select in the same form (the known versions 17/18/19 plus any
+  `docker/Dockerfile.*`; rows are tagged `image built`, `Dockerfile` or
+  `no Dockerfile`). `Custom…` reveals an input under the list. The profile is
+  added to workspace state with that version and is **not** started; start it
+  later with `space`. Starting a profile that has no version asks for one in the
+  same kind of select.
 - `e` opens the `Config` tab. Rows are the database filter mode, the filter
   pattern (only in `custom` mode), the Odoo master password and the LAN port.
   Only the row you edit is persisted, so changing the filter mode does not
@@ -347,11 +349,15 @@ profile and `↻` when recreation is pending. Actions that
   notice instead of failing. Starting a profile waits until Odoo answers before
   the task reports `completed` (cancel with `c`).
 - Confirmations (remove profile, drop database, move/overwrite restore,
-  remove add-on) use `y`/`enter` to confirm and `n`/`esc` to cancel.
-- Creating a profile opens one form for its name and Odoo version. Use `tab`
-  to switch fields and `←`/`→` in the version field to cycle discovered
-  versions, or type a custom version. `enter` creates the profile without
-  starting it.
+  remove add-on) name the action (`y remove`, `y drop`, `y overwrite`); `enter` also confirms
+  and `n`/`esc` cancel.
+- Forms share one layout: a labelled, bordered box per text field (the caret
+  moves with `←`/`→`, `home`/`end`; `ctrl+w` deletes a word), `[x]` toggles and
+  segmented choices that flip with `space` (choices also with `←`/`→`), and
+  radio lists chosen with `↑`/`↓`. `tab`/`shift+tab` move between fields and
+  `enter` submits. The title sits in the top border and the keys that apply to
+  the focused field in the bottom border; the dashboard stays visible, dimmed,
+  behind the dialog.
 
 Databases (the list follows the profile's database filter mode; click-odoo's
 internal `cache-*` template databases are hidden):
@@ -381,8 +387,9 @@ Logs and Tasks. Modals keep only a short hint and their available keys.
 LAN access, restore modes and the two password kinds are explained next to the
 relevant rows and forms (see [LAN access](#lan-access)).
 
-Selection lists also support type-to-filter: `↑`/`↓` move through matches,
-`enter` selects, `backspace` deletes, and `ctrl+u` clears the filter.
+Selection lists and the file picker have a "type to filter" input: `↑`/`↓` move
+through matches, `enter` selects, `backspace` deletes, and `ctrl+u` clears the
+filter.
 
 In the backup form, `ctrl+o` opens a folders-only destination picker. Type to
 filter, `enter` opens a folder, and `ctrl+s` uses the current folder; `esc`
@@ -391,8 +398,8 @@ or defaults to `<database>.<format>` (`<database>` for folder format), and the
 full destination remains editable in the form.
 
 Text fields (forms and the log search) accept a paste
-from the terminal (`ctrl+v`/`ctrl+shift+v` in most terminals) and `ctrl+v`
-inside the TUI, which reads the system clipboard through the first available
+from the terminal (`ctrl+v`/`ctrl+shift+v` in most terminals) at the caret, and
+`ctrl+v` inside the TUI (listed in the `?` overlay), which reads the system clipboard through the first available
 tool (`wl-paste`, `pbpaste`, `xclip`, `xsel`) and reports a notice when none is
 installed. Pasted line breaks and tabs are dropped instead of submitting the
 form.

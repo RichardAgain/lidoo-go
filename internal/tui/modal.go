@@ -28,7 +28,7 @@ type modalSpec struct {
 	wantInner int
 }
 
-const formBoxWidth = 36
+const formBoxWidth = 46
 
 func (m *Model) modalSpec() modalSpec {
 	switch m.modal {
@@ -90,7 +90,7 @@ func (m *Model) modalSpec() modalSpec {
 	case modalConfigPattern:
 		return m.formSpec("Database filter pattern · "+m.configProfileName, m.configHint("Matches physical database names."), "enter apply")
 	case modalConfigPassword:
-		return m.formSpec("Master password · "+m.configProfileName, m.configHint("admin_passwd for /web/database; not the login password"), "enter apply")
+		return m.formSpec("Master password · "+m.configProfileName, m.configHint("For /web/database, not the Odoo login"), "enter apply")
 	case modalConfigLANPort:
 		return m.formSpec("LAN port · "+m.configProfileName, m.configHint("0 disables LAN access; R recreates to apply"), "enter apply")
 	case modalAdminPassword:
@@ -127,7 +127,10 @@ func (m *Model) formSpec(title, hint, submit string) modalSpec {
 
 // formKeys are the bottom-border hints for the focused field.
 func (m *Model) formKeys(submit string) string {
-	keys := "tab next"
+	keys := ""
+	if m.formFieldCount() > 1 {
+		keys = "tab next"
+	}
 	if field := m.focusedField(); field != nil {
 		switch field.kind {
 		case fieldToggle:
@@ -141,7 +144,7 @@ func (m *Model) formKeys(submit string) string {
 	if m.modal == modalBackupDatabase {
 		keys += "  ctrl+o folder"
 	}
-	return keys + "  " + submit + "  esc cancel"
+	return strings.TrimSpace(keys + "  " + submit + "  esc cancel")
 }
 
 // configHint is the single line under a config form: the error if any,

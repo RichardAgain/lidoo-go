@@ -80,6 +80,7 @@ func TestTaskOutputDropsPythonTracebackNoise(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.taskName = "update"
 	model.taskStatus = "completed"
+	model.taskExpanded = true
 	model.taskOutput = strings.Join([]string{
 		"loading addons",
 		`/usr/lib/python3/odoo/tools/func.py:42: DeprecationWarning: call of deprecated method`,
@@ -91,7 +92,7 @@ func TestTaskOutputDropsPythonTracebackNoise(t *testing.T) {
 		`database "testing__ipm_2026-09-25_20-13-47" updated`,
 	}, "\n")
 
-	view := ansi.Strip(model.taskView())
+	view := ansi.Strip(strings.Join(model.taskRegion(80, 20), "\n"))
 	if !strings.Contains(view, `database "testing__ipm_2026-09-25_20-13-47" updated`) {
 		t.Fatalf("the result line must be visible, got %q", view)
 	}
@@ -107,9 +108,10 @@ func TestTaskOutputCollapsesCarriageReturnProgress(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.taskName = "clone add-on"
 	model.taskStatus = "completed"
+	model.taskExpanded = true
 	model.taskOutput = "Enumerating objects: 10%\rEnumerating objects: 58%\rEnumerating objects: 100%\r"
 
-	view := ansi.Strip(model.taskView())
+	view := ansi.Strip(strings.Join(model.taskRegion(80, 20), "\n"))
 	if !strings.Contains(view, "Enumerating objects: 100%") {
 		t.Fatalf("progress should keep its last update, got %q", view)
 	}
@@ -127,9 +129,9 @@ func TestTaskViewShowsRunningTitleAndTruncation(t *testing.T) {
 		model.taskOutput += fmt.Sprintf("step %d\n", index)
 	}
 
-	view := ansi.Strip(model.taskView())
-	if !strings.Contains(view, "Running task") {
-		t.Fatalf("a running task should say so, got %q", view)
+	view := ansi.Strip(strings.Join(model.taskRegion(80, 20), "\n"))
+	if !strings.Contains(view, "c cancel") {
+		t.Fatalf("a running task should offer cancel, got %q", view)
 	}
 	if !strings.Contains(view, "older output above") {
 		t.Fatalf("truncated output should be marked, got %q", view)
@@ -142,22 +144,22 @@ func TestTaskViewShowsRunningTitleAndTruncation(t *testing.T) {
 	}
 }
 
-func TestProfileFocusShowsLogsWithoutLogTab(t *testing.T) {
+func TestProfileFocusShowsLogs(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.loading = false
 	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
 	model.profileLogs["testing"] = &profileLogBuffer{container: "profile log output"}
 	model.logPhase = phaseReady
 
-	view := ansi.Strip(model.rightView(60))
+	view := ansi.Strip(model.rightView(model.frame()))
 	if !strings.Contains(view, "profile log output") {
 		t.Fatalf("profile focus should show logs, got %q", view)
 	}
 	if strings.Contains(view, "Profile details") {
 		t.Fatalf("profile focus should not show profile details, got %q", view)
 	}
-	if strings.Contains(view, "Log") {
-		t.Fatalf("log tab should be removed, got %q", view)
+	if !strings.Contains(view, "1 Logs") {
+		t.Fatalf("tab bar should list the Logs tab, got %q", view)
 	}
 }
 
@@ -481,8 +483,8 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	model.configAdminPasswd = "master"
 
 	_ = model.View()
-	_ = model.leftView(40)
-	_ = model.rightView(80)
+	_ = model.leftView(model.frame())
+	_ = model.rightView(model.frame())
 	_ = model.smallView()
 	_ = model.databaseTabView(80)
 
@@ -584,18 +586,63 @@ func TestLogDatabaseSelectItemsIncludeAll(t *testing.T) {
 	}
 }
 
-func TestProfileIndexAtRow(t *testing.T) {
-	if got := profileIndexAtRow(2, 3); got != 0 {
-		t.Fatalf("row 2 = %d, want 0", got)
+func manyProfiles(count int) []docker.ProfileSummary {
+	profiles := make([]docker.ProfileSummary, count)
+	for index := range profiles {
+		profiles[index] = docker.ProfileSummary{Name: fmt.Sprintf("profile-%02d", index), State: "exited", Version: "18"}
 	}
-	if got := profileIndexAtRow(8, 3); got != 1 {
-		t.Fatalf("row 8 = %d, want 1", got)
+	return profiles
+}
+
+func TestProfileListKeepsSelectionVisible(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 24
+	model.loading = false
+	model.profiles = manyProfiles(40)
+	for _, index := range []int{0, 7, 20, 39, 3} {
+		model.profileIndex = index
+		view := ansi.Strip(model.View())
+		if !strings.Contains(view, fmt.Sprintf("▌ ○ profile-%02d", index)) {
+			t.Fatalf("selection %d is not visible:\n%s", index, view)
+		}
+		if got := len(strings.Split(view, "\n")); got != 24 {
+			t.Fatalf("view has %d lines, want 24", got)
+		}
 	}
-	if got := profileIndexAtRow(100, 3); got != 2 {
-		t.Fatalf("row 100 = %d, want 2 (clamped)", got)
+}
+
+func TestClickSelectsProfileRow(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 24
+	model.loading = false
+	model.profiles = manyProfiles(5)
+	lines := strings.Split(ansi.Strip(model.View()), "\n")
+	row := -1
+	for index, line := range lines {
+		if strings.Contains(line, "profile-03") {
+			row = index
+		}
 	}
-	if got := profileIndexAtRow(0, 0); got != -1 {
-		t.Fatalf("no profiles = %d, want -1", got)
+	if row < 0 {
+		t.Fatalf("profile-03 not rendered:\n%s", strings.Join(lines, "\n"))
+	}
+	model.handleLeftClick(5, row)
+	if model.profileIndex != 3 {
+		t.Fatalf("profileIndex = %d, want 3", model.profileIndex)
+	}
+}
+
+func TestSinglePendingRecreationShowsInRowAndHeader(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 24
+	model.loading = false
+	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running", Version: "18", URL: "http://demo.lidoo.localhost", PendingRecreation: docker.RecreationStatus{Checked: true, Pending: true}}}
+	view := ansi.Strip(model.View())
+	if strings.Count(view, "↻") < 2 {
+		t.Fatalf("pending recreation should show in the row and the header:\n%s", view)
+	}
+	if !strings.Contains(view, "http://demo.lidoo.localhost") {
+		t.Fatalf("header should show the URL:\n%s", view)
 	}
 }
 
@@ -732,8 +779,8 @@ func TestCKeyCancelsTaskWithoutQuitting(t *testing.T) {
 func TestEmptyStateWhenNoProfiles(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.loading = false
-	view := ansi.Strip(model.rightView(60))
-	if !strings.Contains(view, "create your first container") {
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "No profiles yet · n to create one") {
 		t.Fatalf("empty state = %q", view)
 	}
 }

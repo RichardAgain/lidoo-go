@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -196,6 +197,7 @@ type Model struct {
 	taskNotice             string
 	taskOutput             string
 	taskExpanded           bool
+	taskStartedAt          time.Time
 	taskStarting           bool
 	taskRunning            bool
 	taskCancelRequested    bool
@@ -912,6 +914,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.interactivePreparing = true
 				m.taskName = "psql " + profileName + "/" + database.Logical
 				m.taskStatus = "preparing"
+				m.taskStartedAt = time.Now()
 				m.taskErr = nil
 				m.err = nil
 				return m, PrepareDatabaseShellCmd(m.ctx, m.service, profileName, database.Logical)
@@ -951,44 +954,40 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleLeftClick(x, y int) tea.Cmd {
-	leftWidth := m.width / 3
-	if leftWidth < 24 {
-		leftWidth = 24
+	if m.width < 72 || m.height < 14 {
+		return nil
 	}
-	if leftWidth > 40 {
-		leftWidth = 40
-	}
-
-	if x < leftWidth {
-		index := profileIndexAtRow(y, len(m.profiles))
-		if index < 0 {
+	geometry := m.frame()
+	if x < geometry.leftWidth {
+		// Rows start under the status line, the pane title and a blank row.
+		index := m.profileWindowStart() + y - 3
+		if y < 3 || index < 0 || index >= len(m.profiles) || y-3 >= m.profileListBudget() {
 			return nil
 		}
 		if index != m.profileIndex {
-			m.focus = focusProfiles
 			m.profileIndex = index
 			m.profileListOnlyRefresh = false
-			return m.beginProfileResources()
+			cmd := m.setFocus(focusProfiles)
+			return tea.Batch(cmd, m.beginProfileResources())
 		}
 		return m.setFocus(focusProfiles)
 	}
 
-	reached := x - (leftWidth + 2)
-	header := m.rightViewHeaderLines()
-	if y == header {
-		if reached < 15 {
-			return m.setFocus(focusDatabases)
+	tabY := 1 + m.profileHeaderLines()
+	reached := x - (geometry.leftWidth + 2)
+	if y == tabY {
+		offset := 1
+		for index, tab := range detailTabs {
+			width := lipgloss.Width(tab.key + " " + tab.name)
+			if reached >= offset && reached < offset+width {
+				return m.setFocus(focusArea(index))
+			}
+			offset += width + m.tabGap()
 		}
-		if reached < 28 {
-			return m.setFocus(focusAddons)
-		}
-		if reached < 38 {
-			return m.setFocus(focusInfo)
-		}
-		return m.setFocus(focusConfig)
+		return nil
 	}
 
-	rowStart := header + 6
+	rowStart := tabY + 2 + 2 // tab bar, underline, table header and rule
 	if m.databasePhase == phaseUnavailable || m.databasePhase == phaseError {
 		rowStart += 2
 	}
@@ -1004,44 +1003,6 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 		}
 	}
 	return nil
-}
-
-// rightViewHeaderLines counts the warning lines rightView prepends before the
-// tab bar (plus the blank separator when any warning is present).
-func (m *Model) rightViewHeaderLines() int {
-	count := 0
-	if m.loading {
-		count++
-	}
-	if m.err != nil {
-		count++
-	}
-	if m.notice != "" {
-		count++
-	}
-	if m.watcherDisconnected {
-		count++
-	}
-	if count == 0 {
-		return 0
-	}
-	return count + 1
-}
-
-// profileIndexAtRow maps a click row in the left panel to a profile index. Each
-// card is five lines tall plus one blank separator, under a title and blank.
-func profileIndexAtRow(y, count int) int {
-	if count == 0 {
-		return -1
-	}
-	if y < 2 {
-		return 0
-	}
-	index := (y - 2) / 6
-	if index >= count {
-		index = count - 1
-	}
-	return index
 }
 
 func (m *Model) setFocus(area focusArea) tea.Cmd {
@@ -2396,6 +2357,7 @@ func (m *Model) queueTask(request taskRequest) tea.Cmd {
 		m.taskName += " from " + request.AddonSource
 	}
 	m.taskStatus = "starting"
+	m.taskStartedAt = time.Now()
 	m.taskErr = nil
 	m.taskNotice = ""
 	m.taskOutput = ""
@@ -3024,46 +2986,6 @@ func (m *Model) profileIsRunning() bool {
 	return profile != nil && strings.EqualFold(profile.State, "running")
 }
 
-func (m *Model) view() string {
-	if m.logViewerOpen {
-		view := m.logViewerView()
-		if m.modal != modalNone {
-			return m.modalOverlay(m.fitView(view))
-		}
-		return m.fitView(view)
-	}
-	if m.width < 72 || m.height < 14 {
-		view := m.smallView()
-		if m.modal != modalNone {
-			return m.modalOverlay(m.fitView(view))
-		}
-		return m.fitView(view)
-	}
-
-	leftWidth := m.width / 3
-	if leftWidth < 24 {
-		leftWidth = 24
-	}
-	if leftWidth > 40 {
-		leftWidth = 40
-	}
-	rightWidth := m.width - leftWidth - 3
-	if rightWidth < 24 {
-		return m.fitView(m.smallView())
-	}
-
-	mainHeight := m.height - 2 // separator and footer
-	left := lipgloss.NewStyle().Width(leftWidth).MaxWidth(leftWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.leftView(leftWidth))
-	right := lipgloss.NewStyle().Width(rightWidth).MaxWidth(rightWidth).Height(mainHeight).MaxHeight(mainHeight).Render(m.rightView(rightWidth))
-	main := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
-	footer := m.footerView()
-	view := main + "\n" + mutedStyle.Render(strings.Repeat("─", m.width)) + "\n" + footer
-	if m.modal != modalNone {
-		return m.modalOverlay(m.fitView(view))
-	}
-	return m.fitView(view)
-}
-
 // fitView keeps the frame inside the terminal: no line wider than the window
 // (which would wrap and desynchronize Bubble Tea's renderer) and no more lines
 // than the window height. Long task output and log lines are the usual cause of
@@ -3128,90 +3050,6 @@ func blankLines(count, width int) []string {
 		lines[index] = row
 	}
 	return lines
-}
-
-func (m *Model) leftView(width int) string {
-	lines := []string{titleStyle.Render("Profiles")}
-	if len(m.profiles) == 0 {
-		if m.loading {
-			lines = append(lines, mutedStyle.Render("loading..."))
-		} else {
-			lines = append(lines, mutedStyle.Render("no profiles found"))
-		}
-		return strings.Join(lines, "\n")
-	}
-
-	cards := make([]string, 0, len(m.profiles))
-	for index, profile := range m.profiles {
-		cards = append(cards, m.profileCard(width, profile, index == m.profileIndex))
-	}
-	return strings.Join(append(lines, strings.Join(cards, "\n\n")), "\n\n")
-}
-
-func (m *Model) profileCard(width int, profile docker.ProfileSummary, selected bool) string {
-	cardWidth := width - 2
-	if cardWidth < 1 {
-		cardWidth = 1
-	}
-	borderColor := borderStyle
-	if selected {
-		borderColor = inspectedBorderStyle
-		if m.focus == focusProfiles {
-			borderColor = activeBorderStyle
-		}
-	}
-
-	name := profile.Name
-	if selected {
-		name = activeStyle.Render(name)
-	}
-	border := lipgloss.RoundedBorder()
-	borderLine := lipgloss.NewStyle().Foreground(borderColor)
-	horizontal := borderLine.Render(strings.Repeat(border.Top, cardWidth))
-	vertical := borderLine.Render(border.Left)
-	rightVertical := borderLine.Render(border.Right)
-	headerRows := cardRows(cardHeader(name, profileState(profile.State), cardWidth), cardWidth)
-	footerRows := cardRows(m.profileCardStatus(profile), cardWidth)
-	lines := []string{borderLine.Render(border.TopLeft) + horizontal + borderLine.Render(border.TopRight)}
-	for _, row := range headerRows {
-		lines = append(lines, vertical+row+rightVertical)
-	}
-	lines = append(lines, borderLine.Render("├"+strings.Repeat(border.Top, cardWidth)+"┤"))
-	for _, row := range footerRows {
-		lines = append(lines, vertical+row+rightVertical)
-	}
-	lines = append(lines, borderLine.Render(border.BottomLeft)+horizontal+borderLine.Render(border.BottomRight))
-	return strings.Join(lines, "\n")
-}
-
-func cardRows(value string, width int) []string {
-	wrapped := lipgloss.NewStyle().Width(width).Render(value)
-	lines := strings.Split(wrapped, "\n")
-	for index, line := range lines {
-		padding := width - lipgloss.Width(line)
-		if padding > 0 {
-			lines[index] += strings.Repeat(" ", padding)
-		}
-	}
-	return lines
-}
-
-func cardHeader(name, state string, width int) string {
-	gap := width - lipgloss.Width(name) - lipgloss.Width(state)
-	if gap < 1 {
-		gap = 1
-	}
-	return name + strings.Repeat(" ", gap) + state
-}
-
-func (m *Model) profileCardStatus(profile docker.ProfileSummary) string {
-	if m.taskActive() && m.taskProfileName == profile.Name {
-		return activeStyle.Render(taskActionLabel(m.activeTaskKind)) + " " + m.activitySpinner.View()
-	}
-	if profile.PendingRecreation.Pending {
-		return warningStyle.Render("pending recreation ")
-	}
-	return mutedStyle.Render(profile.URL)
 }
 
 func (m *Model) databaseTableRows(width int) string {
@@ -3303,98 +3141,8 @@ func (m *Model) addonRows(width int) string {
 	}
 }
 
-func (m *Model) rightView(width int) string {
-	task := m.taskPane(width)
-	if m.selectedProfileName() == "" && !m.loading && task == "" {
-		height := m.height - 2
-		if height < 1 {
-			height = 1
-		}
-		return lipgloss.NewStyle().
-			Width(width).
-			Height(height).
-			Align(lipgloss.Center, lipgloss.Center).
-			Render("create your first container  ·  press c or n")
-	}
-
-	var content string
-	switch m.focus {
-	case focusProfiles:
-		content = m.logView(width)
-	case focusDatabases:
-		content = m.databaseTabView(width)
-	case focusAddons:
-		content = m.addonTabView(width)
-	case focusConfig:
-		content = m.configTabView()
-	default:
-		content = m.profileDetailView()
-	}
-	if m.selectedProfileName() == "" && !m.loading {
-		content = "create your first container  ·  press c or n"
-	}
-	if m.showHelp {
-		content = strings.Join([]string{
-			titleStyle.Render("Help"),
-			"New profiles are saved without starting a container; space starts them.",
-			"Settings are saved to .lidoo.json; R recreates the container to apply them.",
-			"Database filters match physical names, e.g. ^smoke__(dev|staging)$.",
-			"admin_passwd protects /web/database; it is not the admin login password.",
-			"The admin password action changes the base.user_admin login via Odoo.",
-			"LAN port: 0 disables; 1–65535 publishes on all IPv4 interfaces.",
-			"Share http://<host-LAN-IP>:<port>; restrict access with your firewall.",
-			"Restore copy requires a new destination; move replaces the destination.",
-			"Missing worktree branches are created; parent/worktree rules still apply.",
-		}, "\n")
-	}
-	content = m.tabBar() + "\n\n" + content
-	warnings := make([]string, 0, 4)
-	if m.loading {
-		warnings = append(warnings, mutedStyle.Render("Loading profiles..."))
-	}
-	if m.err != nil {
-		warnings = append(warnings, errorStyle.Render(m.err.Error()))
-	}
-	if m.notice != "" {
-		warnings = append(warnings, warningStyle.Render(m.notice))
-	}
-	if m.watcherDisconnected {
-		warnings = append(warnings, warningStyle.Render("Docker event watcher disconnected"))
-	}
-	if task != "" {
-		height := max(1, m.height-2-m.rightViewHeaderLines()-lipgloss.Height(task)-2)
-		content = lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(content)
-		content += "\n\n" + task
-	}
-	if len(warnings) == 0 {
-		return content
-	}
-	return strings.Join(append(warnings, "", content), "\n")
-}
-
-func (m *Model) tabBar() string {
-	tabs := []struct {
-		name  string
-		focus focusArea
-	}{
-		{name: "Databases", focus: focusDatabases},
-		{name: "Add-ons", focus: focusAddons},
-		{name: "Info", focus: focusInfo},
-		{name: "Config", focus: focusConfig},
-	}
-	labels := make([]string, 0, len(tabs))
-	for _, tab := range tabs {
-		label := "  " + tab.name
-		if m.focus == tab.focus {
-			label = activeStyle.Render("  " + tab.name)
-		}
-		labels = append(labels, label)
-	}
-	return strings.Join(labels, "    ")
-}
-
-func (m *Model) logView(width int) string {
-	return m.logContainer(width, m.logContent())
+func (m *Model) logView(width, height int) string {
+	return m.logContainer(width, height, m.logContent())
 }
 
 func (m *Model) logContent() string {
@@ -3662,20 +3410,10 @@ func (m *Model) logViewerView() string {
 	return header + "\n" + m.logViewerViewport.View() + "\n" + footer
 }
 
-func (m *Model) logContainer(width int, content string) string {
-	height := m.height - 6 - m.rightViewHeaderLines()
-	if task := m.taskPane(width); task != "" {
-		height -= lipgloss.Height(task) + 2
-	}
-	height = max(3, height)
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderStyle).
-		Padding(0, 1)
+func (m *Model) logContainer(width, height int, content string) string {
 	wasBottom := !m.logViewportReady || m.logViewport.AtBottom()
 	m.logViewport.Width = width
-	m.logViewport.Height = height
-	m.logViewport.Style = style
+	m.logViewport.Height = max(1, height)
 	m.logViewport.SetContent(content)
 	if wasBottom {
 		m.logViewport.GotoBottom()
@@ -3731,56 +3469,6 @@ func (m *Model) addonTabView(width int) string {
 	return strings.Join([]string{
 		m.addonRows(width),
 	}, "\n\n")
-}
-
-const taskOutputLines = 6
-
-func (m *Model) taskPane(width int) string {
-	if m.taskStatus == "" || m.taskName == "" {
-		return ""
-	}
-	if !m.taskActive() && !m.interactivePreparing && !m.taskExpanded {
-		suffix := "  " + taskStatus(m.taskStatus) + mutedStyle.Render("  · t expand")
-		name := ansi.Truncate(m.taskName, max(0, width-lipgloss.Width(suffix)), "…")
-		return ansi.Truncate(name+suffix, width, "…")
-	}
-	lines := strings.Split(m.taskView(), "\n")
-	for index, line := range lines {
-		lines[index] = ansi.Truncate(line, width, "…")
-	}
-	if !m.taskActive() && !m.interactivePreparing {
-		lines[0] += mutedStyle.Render("  · t collapse")
-		lines[0] = ansi.Truncate(lines[0], width, "…")
-	}
-	height := max(1, m.height-8-m.rightViewHeaderLines())
-	if len(lines) > height {
-		lines = append(lines[:1], lines[len(lines)-height+1:]...)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *Model) taskView() string {
-	if m.taskStatus == "" || m.taskName == "" {
-		return ""
-	}
-	title := "Latest task"
-	if m.taskActive() {
-		title = "Running task"
-	}
-	lines := []string{titleStyle.Render(title), m.taskName + "  " + taskStatus(m.taskStatus)}
-	if m.taskNotice != "" {
-		lines = append(lines, errorStyle.Render(m.taskNotice))
-	}
-	if m.taskErr != nil {
-		lines = append(lines, errorStyle.Render(m.taskErr.Error()))
-	}
-	if tail, truncated := taskOutputTail(m.taskOutput, taskOutputLines); tail != "" {
-		if truncated {
-			lines = append(lines, mutedStyle.Render("… older output above"))
-		}
-		lines = append(lines, tail)
-	}
-	return strings.Join(lines, "\n")
 }
 
 // taskOutputTail renders the last useful output lines, indented under the task
@@ -4261,20 +3949,21 @@ func (m *Model) smallView() string {
 		lines = append(lines, errorStyle.Render(m.err.Error()))
 	}
 	if len(m.profiles) > 0 {
-		cards := make([]string, 0, len(m.profiles))
+		lines = append(lines, "", mutedStyle.Bold(true).Render("PROFILES"))
 		for index, profile := range m.profiles {
-			cards = append(cards, m.profileCard(m.width, profile, index == m.profileIndex))
+			lines = append(lines, m.profileRow(m.width, profile, index == m.profileIndex, 2))
 		}
-		lines = append(lines, "", titleStyle.Render("Profiles"), strings.Join(cards, "\n\n"))
 	}
-	if m.focus == focusDatabases && m.selectedProfileName() != "" {
-		lines = append(lines, "", m.databaseTabView(m.width))
-	}
-	if m.focus == focusAddons && m.selectedProfileName() != "" {
-		lines = append(lines, "", m.addonTabView(m.width))
-	}
-	if m.focus == focusConfig && m.selectedProfileName() != "" {
-		lines = append(lines, "", m.tabBar(), "", m.configTabView())
+	if m.selectedProfileName() != "" {
+		labels, _ := m.tabBar()
+		switch m.focus {
+		case focusDatabases:
+			lines = append(lines, "", labels, "", m.databaseTabView(m.width))
+		case focusAddons:
+			lines = append(lines, "", labels, "", m.addonTabView(m.width))
+		case focusConfig:
+			lines = append(lines, "", labels, "", m.configTabView())
+		}
 	}
 	hints := profileActionHints()
 	if m.focus == focusDatabases {
@@ -4290,10 +3979,10 @@ func (m *Model) smallView() string {
 	if m.showHelp {
 		lines = append(lines, mutedStyle.Render("tab focus  arrows or j/k move  c cancel task"))
 	}
-	if task := m.taskPane(m.width); task != "" {
-		contentHeight := max(1, m.height-lipgloss.Height(task)-2)
+	if task := m.taskRegion(m.width, max(3, m.height/2)); len(task) > 0 {
+		contentHeight := max(1, m.height-len(task)-1)
 		content := lipgloss.NewStyle().MaxHeight(contentHeight).Render(strings.Join(lines, "\n"))
-		return content + "\n\n" + task
+		return content + "\n" + strings.Join(task, "\n")
 	}
 	return strings.Join(lines, "\n")
 }

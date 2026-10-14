@@ -54,12 +54,27 @@ func (m *Model) footerHints() []keyHint {
 }
 
 // footerLine is the one-row footer: contextual hints on the left and the key
-// reference on the right. Hints that do not fit are dropped whole.
+// reference on the right.
 func (m *Model) footerLine(width int) string {
-	right := keyStyle.Render("?") + " " + mutedStyle.Render("all keys") + " "
+	return hintsLine(width, m.footerHints(), keyHint{"?", "all keys"})
+}
+
+// hintsLine fits hints on one row of the given width, dropping whole hints
+// from the end rather than cutting one. Pinned hints stay right-aligned.
+func hintsLine(width int, hints []keyHint, pinned ...keyHint) string {
+	right := ""
+	for index, hint := range pinned {
+		if index > 0 {
+			right += "   "
+		}
+		right += hint.render()
+	}
+	if right != "" {
+		right += " "
+	}
 	room := width - 1 - lipgloss.Width(right) - 2
 	left := ""
-	for index, hint := range m.footerHints() {
+	for index, hint := range hints {
 		next := hint.render()
 		if index > 0 {
 			next = "   " + next

@@ -942,14 +942,15 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleLeftClick(x, y int) tea.Cmd {
-	if m.width < 72 || m.height < 14 {
-		return nil
-	}
 	geometry := m.frame()
-	if x < geometry.leftWidth {
-		// Rows start under the status line, the pane title and a blank row.
-		index := m.profileWindowStart() + y - 3
-		if y < 3 || index < 0 || index >= len(m.profiles) || y-3 >= m.profileListBudget() {
+	inList := x < geometry.leftWidth
+	if geometry.compact {
+		inList = y < geometry.detailTop
+	}
+	if inList {
+		row := y - geometry.listTop
+		index := m.profileWindowStart() + row
+		if row < 0 || row >= geometry.listRows || index >= len(m.profiles) {
 			return nil
 		}
 		m.focusProfileList()
@@ -964,8 +965,8 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 	if m.selectedProfileName() == "" {
 		return nil
 	}
-	tabY := 1 + m.profileHeaderLines()
-	reached := x - (geometry.leftWidth + 2)
+	tabY := geometry.detailTop + m.profileHeaderLines()
+	reached := x - geometry.detailLeft
 	if y == tabY {
 		offset := 1
 		for index, tab := range detailTabs {
@@ -3169,14 +3170,8 @@ func (m *Model) updateLogViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) logViewerView() string {
-	width := m.width
-	if width < 40 {
-		width = 40
-	}
-	height := m.height
-	if height < 12 {
-		height = 12
-	}
+	width := max(m.width, 40)
+	height := max(m.height, 12)
 
 	sourceLabel := []string{"all", "container", "tasks"}[m.logViewerSource]
 	levelLabel := []string{"all", "info+", "warn+", "error"}[m.logViewerLevel]
@@ -3190,11 +3185,11 @@ func (m *Model) logViewerView() string {
 	} else if m.logViewerSearch != "" {
 		search = m.logViewerSearch
 	}
-	header := titleStyle.Render("Logs · "+m.logViewerProfile) +
-		"   " + mutedStyle.Render("source") + " " + activeStyle.Render(sourceLabel) +
-		"   " + mutedStyle.Render("level") + " " + activeStyle.Render(levelLabel) +
-		"   " + mutedStyle.Render("db") + " " + activeStyle.Render(database) +
-		"   " + mutedStyle.Render("search") + " " + activeStyle.Render(search)
+	header := " " + titleStyle.Render("Logs · "+m.logViewerProfile) +
+		"   " + mutedStyle.Render("source") + " " + secondStyle.Render(sourceLabel) +
+		"   " + mutedStyle.Render("level") + " " + secondStyle.Render(levelLabel) +
+		"   " + mutedStyle.Render("db") + " " + secondStyle.Render(database) +
+		"   " + mutedStyle.Render("search") + " " + secondStyle.Render(search)
 
 	entries := m.filteredLogEntries(m.logViewerProfile)
 	content := renderLogEntries(entries, m.logViewerSource == logSourceAll)
@@ -3202,26 +3197,24 @@ func (m *Model) logViewerView() string {
 		content = mutedStyle.Render("no log lines match the current filters")
 	}
 
-	bodyHeight := height - 6
-	if bodyHeight < 3 {
-		bodyHeight = 3
-	}
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderStyle).
-		Padding(0, 1)
 	wasBottom := !m.logViewerReady || m.logViewerViewport.AtBottom()
-	m.logViewerViewport.Width = width - 4
-	m.logViewerViewport.Height = bodyHeight
-	m.logViewerViewport.Style = style
+	m.logViewerViewport.Width = width - 2
+	m.logViewerViewport.Height = max(3, height-3) // header, rule and footer
 	m.logViewerViewport.SetContent(content)
 	if m.logViewerFollow || wasBottom {
 		m.logViewerViewport.GotoBottom()
 	}
 	m.logViewerReady = true
 
-	footer := mutedStyle.Render("esc close  tab source  d db  / search  1 all  2 info+  3 warn+  4 error  f follow  g/G top/bottom  ↑/↓/wheel scroll")
-	return header + "\n" + m.logViewerViewport.View() + "\n" + footer
+	body := strings.Split(m.logViewerViewport.View(), "\n")
+	for index, line := range body {
+		body[index] = " " + line
+	}
+	footer := hintsLine(width, []keyHint{
+		{"esc", "close"}, {"tab", "source"}, {"d", "db"}, {"/", "search"}, {"1-4", "level"},
+		{"f", "follow"}, {"g/G", "top/bottom"}, {"↑↓", "scroll"},
+	})
+	return header + "\n" + ruleStyle.Render(strings.Repeat("─", width)) + "\n" + strings.Join(body, "\n") + "\n" + footer
 }
 
 func (m *Model) logContainer(width, height int, content string) string {
@@ -3266,8 +3259,19 @@ func taskStatus(status string) string {
 	}
 }
 
+// modalKeyHints renders "key description" pairs separated by two spaces: the
+// key in bold body text, the description muted.
 func modalKeyHints(keys string) string {
-	return mutedStyle.Render(keys)
+	hints := make([]string, 0, 8)
+	for _, part := range strings.Split(keys, "  ") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, desc, _ := strings.Cut(part, " ")
+		hints = append(hints, keyHint{key, desc}.render())
+	}
+	return strings.Join(hints, "  ")
 }
 
 func (m *Model) modalView() string {
@@ -3493,7 +3497,7 @@ func modalTitleSeparator(lines []string, width int) []string {
 	if separatorWidth < 1 {
 		separatorWidth = 1
 	}
-	separator := lipgloss.NewStyle().Foreground(activeBorderStyle).Render(strings.Repeat("─", separatorWidth))
+	separator := ruleStyle.Render(strings.Repeat("─", separatorWidth))
 	return append([]string{lines[0], separator}, lines[1:]...)
 }
 
@@ -3550,40 +3554,6 @@ func restoreMode(copyDatabase bool) string {
 		return "copy"
 	}
 	return "move"
-}
-
-func (m *Model) smallView() string {
-	lines := []string{titleStyle.Render("Lidoo"), mutedStyle.Render("Terminal too small for the full layout")}
-	if m.loading {
-		lines = append(lines, mutedStyle.Render("Loading profiles..."))
-	}
-	if m.err != nil {
-		lines = append(lines, errorStyle.Render(m.err.Error()))
-	}
-	if len(m.profiles) > 0 {
-		lines = append(lines, "", mutedStyle.Bold(true).Render("PROFILES"))
-		for index, profile := range m.profiles {
-			lines = append(lines, m.profileRow(m.width, profile, index == m.profileIndex, 2))
-		}
-	}
-	if m.selectedProfileName() != "" {
-		labels, _ := m.tabBar()
-		switch m.tab {
-		case tabDatabases:
-			lines = append(lines, "", labels, "", m.databaseTabView(m.width, max(3, m.height/2)))
-		case tabAddons:
-			lines = append(lines, "", labels, "", m.addonTabView(m.width, max(3, m.height/2)))
-		case tabConfig:
-			lines = append(lines, "", labels, "", m.configTabView(m.width))
-		}
-	}
-	lines = append(lines, "", m.footerLine(m.width))
-	if task := m.taskRegion(m.width, max(3, m.height/2)); len(task) > 0 {
-		contentHeight := max(1, m.height-len(task)-1)
-		content := lipgloss.NewStyle().MaxHeight(contentHeight).Render(strings.Join(lines, "\n"))
-		return content + "\n" + strings.Join(task, "\n")
-	}
-	return strings.Join(lines, "\n")
 }
 
 func databaseLabel(database odoo.Database) string {

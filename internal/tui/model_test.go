@@ -532,7 +532,6 @@ func TestViewsRenderWithoutPanic(t *testing.T) {
 	_ = model.View()
 	_ = model.leftView(model.frame())
 	_ = model.rightView(model.frame())
-	_ = model.smallView()
 	_ = model.databaseTabView(80, 20)
 
 	for _, modal := range []modalMode{modalKeys, modalConfigPattern, modalConfigPassword, modalAdminPassword, modalSelect, modalCreateProfile, modalFilePicker} {
@@ -1245,5 +1244,84 @@ func TestKeyOverlayFitsSmallTerminal(t *testing.T) {
 	}
 	if got := len(strings.Split(view, "\n")); got != 24 {
 		t.Fatalf("view has %d lines, want 24", got)
+	}
+}
+
+func TestCompactLayoutStacksListAboveTab(t *testing.T) {
+	for _, size := range [][2]int{{60, 24}, {100, 12}, {72, 13}} {
+		model := dbModel(3)
+		model.width, model.height = size[0], size[1]
+		model.profiles = manyProfiles(3)
+		model.profiles[0].URL = "http://profile-00.lidoo.localhost"
+		model.pane = paneProfiles
+		view := ansi.Strip(model.View())
+		lines := strings.Split(view, "\n")
+		if len(lines) != size[1] {
+			t.Fatalf("%v: %d lines, want %d", size, len(lines), size[1])
+		}
+		rowOf := func(text string) int {
+			for index, line := range lines {
+				if strings.Contains(line, text) {
+					return index
+				}
+			}
+			return -1
+		}
+		list, tabs := rowOf("profile-00"), rowOf("1 Logs")
+		if list < 0 || tabs < 0 || list >= tabs {
+			t.Fatalf("%v: list row %d should be above the tab bar row %d:\n%s", size, list, tabs, view)
+		}
+		if !strings.Contains(lines[len(lines)-1], "? all keys") {
+			t.Fatalf("%v: footer missing:\n%s", size, view)
+		}
+		for _, line := range lines {
+			if ansi.StringWidth(line) > size[0] {
+				t.Fatalf("%v: line wider than the terminal: %q", size, line)
+			}
+		}
+	}
+}
+
+func TestCompactClicksSelectProfileAndTab(t *testing.T) {
+	model := dbModel(3)
+	model.width, model.height = 60, 24
+	model.profiles = manyProfiles(3)
+	model.pane, model.tab = paneProfiles, tabLogs
+	lines := strings.Split(ansi.Strip(model.View()), "\n")
+	for y, line := range lines {
+		if strings.Contains(line, "profile-02") {
+			model.handleLeftClick(8, y)
+		}
+	}
+	if model.profileIndex != 2 || model.pane != paneProfiles {
+		t.Fatalf("profileIndex/pane = %d/%v, want 2/profiles", model.profileIndex, model.pane)
+	}
+	lines = strings.Split(ansi.Strip(model.View()), "\n")
+	for y, line := range lines {
+		if index := strings.Index(line, "2 Databases"); index >= 0 {
+			model.handleLeftClick(ansi.StringWidth(line[:index])+2, y)
+		}
+	}
+	if model.tab != tabDatabases || model.pane != paneDetails {
+		t.Fatalf("tab/pane = %v/%v, want databases/details", model.tab, model.pane)
+	}
+}
+
+func TestFullscreenLogsHaveNoBox(t *testing.T) {
+	model := dbModel(1)
+	model.openLogViewer()
+	view := ansi.Strip(model.View())
+	if strings.ContainsAny(view, "╭╮╰╯│") {
+		t.Fatalf("fullscreen logs should not be boxed:\n%s", view)
+	}
+	if !strings.Contains(view, "Logs · demo") || !strings.Contains(view, "esc close") {
+		t.Fatalf("fullscreen logs lost their header or footer:\n%s", view)
+	}
+}
+
+func TestModalKeyHintsKeepText(t *testing.T) {
+	const keys = "tab field  enter run  esc cancel  ctrl+v paste"
+	if got := ansi.Strip(modalKeyHints(keys)); got != keys {
+		t.Fatalf("hints = %q, want %q", got, keys)
 	}
 }

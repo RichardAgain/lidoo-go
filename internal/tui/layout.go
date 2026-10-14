@@ -11,46 +11,78 @@ import (
 	"lidoo/internal/docker"
 )
 
-// frameGeometry describes the two-pane frame: a status row on top, the
-// profile list and the detail pane side by side, then a rule and the footer.
+// frameGeometry describes the frame: a status row on top, the profile list and
+// the detail pane, then the footer. Wide terminals put the two panes side by
+// side around a separator; narrow ones stack the list above the detail pane.
+// All y values are screen rows.
 type frameGeometry struct {
-	leftWidth  int // profile pane width; the separator sits in the next column
-	rightWidth int // detail pane content width (after the separator and a space)
-	mainHeight int // rows between the status line and the footer rule
+	compact      bool
+	leftWidth    int // profile list width
+	rightWidth   int // detail pane width, including its one-column left pad
+	detailLeft   int // x of the first detail column
+	mainHeight   int // side-by-side only: rows between the status line and the footer rule
+	listTop      int // y of the first profile row
+	listRows     int // profile rows that fit
+	detailTop    int // y of the profile header
+	detailHeight int // rows available to the detail pane
 }
 
-const frameChromeRows = 3 // status line, footer rule, footer
+const (
+	frameChromeRows = 3 // status line, footer rule, footer
+	compactMinWidth = 72
+	compactMinRows  = 14
+)
+
+func (m *Model) compact() bool {
+	return m.width < compactMinWidth || m.height < compactMinRows
+}
 
 func (m *Model) frame() frameGeometry {
+	if m.compact() {
+		// Status line and footer frame a short profile list, a rule, then
+		// the detail pane.
+		listRows := min(max(len(m.profiles), 1), max(1, (m.height-8)/3))
+		detailTop := 1 + listRows + 1
+		return frameGeometry{
+			compact:      true,
+			leftWidth:    m.width,
+			rightWidth:   max(1, m.width-1),
+			detailLeft:   1,
+			listTop:      1,
+			listRows:     listRows,
+			detailTop:    detailTop,
+			detailHeight: max(1, m.height-1-detailTop),
+		}
+	}
 	leftWidth := min(max(m.width/4, 26), 34)
+	mainHeight := max(1, m.height-frameChromeRows)
 	return frameGeometry{
-		leftWidth:  leftWidth,
-		rightWidth: max(1, m.width-leftWidth-2),
-		mainHeight: max(1, m.height-frameChromeRows),
+		leftWidth:    leftWidth,
+		rightWidth:   max(1, m.width-leftWidth-2),
+		detailLeft:   leftWidth + 2,
+		mainHeight:   mainHeight,
+		listTop:      3,
+		listRows:     max(1, mainHeight-2),
+		detailTop:    1,
+		detailHeight: mainHeight,
 	}
 }
 
 func (m *Model) view() string {
-	if m.logViewerOpen {
-		view := m.logViewerView()
-		if m.modal != modalNone {
-			return m.modalOverlay(m.fitView(view))
-		}
-		return m.fitView(view)
+	var view string
+	switch {
+	case m.logViewerOpen:
+		view = m.logViewerView()
+	case m.compact():
+		view = m.compactView()
+	default:
+		geometry := m.frame()
+		lines := []string{m.statusLine()}
+		lines = append(lines, m.mainLines(geometry)...)
+		lines = append(lines, m.footerRule(geometry), m.footerLine(m.width))
+		view = strings.Join(lines, "\n")
 	}
-	if m.width < 72 || m.height < 14 {
-		view := m.smallView()
-		if m.modal != modalNone {
-			return m.modalOverlay(m.fitView(view))
-		}
-		return m.fitView(view)
-	}
-
-	geometry := m.frame()
-	lines := []string{m.statusLine()}
-	lines = append(lines, m.mainLines(geometry)...)
-	lines = append(lines, m.footerRule(geometry), m.footerLine(m.width))
-	view := m.fitView(strings.Join(lines, "\n"))
+	view = m.fitView(view)
 	if m.modal != modalNone {
 		return m.modalOverlay(view)
 	}
@@ -59,7 +91,7 @@ func (m *Model) view() string {
 
 // mainLines joins the profile list and the detail pane around the separator.
 func (m *Model) mainLines(geometry frameGeometry) []string {
-	if len(m.profiles) == 0 && !m.loading && m.taskRegion(m.width, 3) == nil {
+	if m.noProfiles() {
 		return centeredLines("No profiles yet · n to create one", m.width, geometry.mainHeight)
 	}
 	left := fitLines(strings.Split(m.leftView(geometry), "\n"), geometry.leftWidth, geometry.mainHeight)
@@ -70,6 +102,27 @@ func (m *Model) mainLines(geometry frameGeometry) []string {
 		lines[index] = left[index] + separator + " " + right[index]
 	}
 	return lines
+}
+
+// compactView stacks the profile list above the open tab for narrow or short
+// terminals.
+func (m *Model) compactView() string {
+	geometry := m.frame()
+	lines := []string{m.statusLine()}
+	if m.noProfiles() {
+		lines = append(lines, centeredLines("No profiles yet · n to create one", m.width, max(1, m.height-2))...)
+		return strings.Join(append(lines, m.footerLine(m.width)), "\n")
+	}
+	lines = append(lines, fitLines(strings.Split(m.leftView(geometry), "\n"), m.width, geometry.listRows)...)
+	lines = append(lines, ruleStyle.Render(strings.Repeat("─", m.width)))
+	for _, line := range fitLines(strings.Split(m.rightView(geometry), "\n"), geometry.rightWidth, geometry.detailHeight) {
+		lines = append(lines, " "+line)
+	}
+	return strings.Join(append(lines, m.footerLine(m.width)), "\n")
+}
+
+func (m *Model) noProfiles() bool {
+	return len(m.profiles) == 0 && !m.loading && m.taskRegion(m.width, 3) == nil
 }
 
 func centeredLines(message string, width, height int) []string {
@@ -146,9 +199,9 @@ func (m *Model) profilesFocused() bool {
 	return m.pane == paneProfiles
 }
 
-// profileListBudget is how many profile rows fit under the pane title.
+// profileListBudget is how many profile rows fit in the list.
 func (m *Model) profileListBudget() int {
-	return max(1, m.frame().mainHeight-2)
+	return m.frame().listRows
 }
 
 // profileWindowStart is the first visible profile; the window always contains
@@ -158,12 +211,15 @@ func (m *Model) profileWindowStart() int {
 }
 
 func (m *Model) leftView(geometry frameGeometry) string {
-	title := " " + mutedStyle.Bold(true).Render("PROFILES")
-	budget := m.profileListBudget()
-	if len(m.profiles) > budget {
-		title += " " + dimStyle.Render(fmt.Sprintf("%d/%d", m.profileIndex+1, len(m.profiles)))
+	budget := geometry.listRows
+	var lines []string
+	if !geometry.compact {
+		title := " " + mutedStyle.Bold(true).Render("PROFILES")
+		if len(m.profiles) > budget {
+			title += " " + dimStyle.Render(fmt.Sprintf("%d/%d", m.profileIndex+1, len(m.profiles)))
+		}
+		lines = []string{title, ""}
 	}
-	lines := []string{title, ""}
 	if len(m.profiles) == 0 {
 		if m.loading {
 			lines = append(lines, " "+mutedStyle.Render("loading..."))
@@ -352,12 +408,12 @@ type detailLayout struct {
 
 func (m *Model) detailLayout(geometry frameGeometry) detailLayout {
 	layout := detailLayout{header: m.profileHeader()}
-	layout.task = m.taskRegion(geometry.rightWidth-1, geometry.mainHeight/2)
+	layout.task = m.taskRegion(geometry.rightWidth-1, geometry.detailHeight/2)
 	for index := range layout.task {
 		layout.task[index] = " " + layout.task[index]
 	}
 	layout.contentWidth = max(1, geometry.rightWidth-1)
-	layout.contentHeight = max(1, geometry.mainHeight-len(layout.header)-2-len(layout.task))
+	layout.contentHeight = max(1, geometry.detailHeight-len(layout.header)-2-len(layout.task))
 	return layout
 }
 

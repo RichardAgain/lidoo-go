@@ -104,9 +104,9 @@ func (m *Model) filteredListLines(indices []int, selected int, label func(int) s
 	}
 	for _, index := range indices[start:end] {
 		if index == selected {
-			lines = append(lines, activeStyle.Render("> "+label(index)))
+			lines = append(lines, activeStyle.Render("▌ "+label(index)))
 		} else {
-			lines = append(lines, "  "+label(index))
+			lines = append(lines, "  "+textStyle.Render(label(index)))
 		}
 	}
 	if end < len(indices) {

@@ -143,7 +143,7 @@ func profileRunning(state string) bool {
 
 // profilesFocused reports whether the profile list owns the keyboard.
 func (m *Model) profilesFocused() bool {
-	return m.focus == focusProfiles
+	return m.pane == paneProfiles
 }
 
 // profileListBudget is how many profile rows fit under the pane title.
@@ -301,7 +301,7 @@ var detailTabs = []detailTab{
 
 // activeTab maps the focus area to the tab shown in the detail pane.
 func (m *Model) activeTab() int {
-	return int(m.focus)
+	return int(m.tab)
 }
 
 // tabGap is the space between tab labels; it tightens on narrow terminals so
@@ -353,14 +353,14 @@ func (m *Model) rightView(geometry frameGeometry) string {
 
 	width--
 	var content string
-	switch m.focus {
-	case focusProfiles:
+	switch m.tab {
+	case tabLogs:
 		content = m.logView(width, contentHeight)
-	case focusDatabases:
+	case tabDatabases:
 		content = m.databaseTabView(width)
-	case focusAddons:
+	case tabAddons:
 		content = m.addonTabView(width)
-	case focusConfig:
+	case tabConfig:
 		content = m.configTabView()
 	default:
 		content = m.profileDetailView()

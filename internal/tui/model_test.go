@@ -18,7 +18,7 @@ import (
 
 func TestAddonTableShowsLiveBranch(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.focus = focusAddons
+	model.pane, model.tab = paneDetails, tabAddons
 	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
 	model.addonPhase = phaseReady
 	model.addons = []addons.AddonStatus{
@@ -59,7 +59,7 @@ func TestModalHidesBackgroundLogs(t *testing.T) {
 
 func TestAddonTableLabelsAttachedColumn(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.focus = focusAddons
+	model.pane, model.tab = paneDetails, tabAddons
 	model.profiles = []docker.ProfileSummary{{Name: "testing", State: "running"}}
 	model.addonPhase = phaseReady
 	model.addons = []addons.AddonStatus{
@@ -548,7 +548,7 @@ func TestRunToggleWaitsForReadiness(t *testing.T) {
 
 func TestFilePickerSelectsDump(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.focus = focusDatabases
+	model.pane, model.tab = paneDetails, tabDatabases
 	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
 	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
 	model.databaseIndex = 0
@@ -648,7 +648,7 @@ func TestSinglePendingRecreationShowsInRowAndHeader(t *testing.T) {
 
 func TestRestoreDefaultDestinationIsFresh(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.focus = focusDatabases
+	model.pane, model.tab = paneDetails, tabDatabases
 	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
 	model.databases = []odoo.Database{{Logical: "demo_db", Physical: "demo__demo_db"}}
 	model.databaseIndex = 0
@@ -692,7 +692,7 @@ func TestRestoreCopyRejectsExistingDestination(t *testing.T) {
 
 func TestRestoreWorksWithoutExistingDatabases(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.focus = focusDatabases
+	model.pane, model.tab = paneDetails, tabDatabases
 	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running"}}
 	model.databases = nil
 	model.databasePhase = phaseEmpty
@@ -725,7 +725,7 @@ func TestRestoreWorksWithoutExistingDatabases(t *testing.T) {
 
 func TestRestoreNeedsSelectedProfile(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.focus = focusDatabases
+	model.pane, model.tab = paneDetails, tabDatabases
 	model.profiles = nil
 	model.databasePhase = phaseEmpty
 
@@ -785,14 +785,151 @@ func TestEmptyStateWhenNoProfiles(t *testing.T) {
 	}
 }
 
-func TestMoveFocusStaysOnProfilesWhenEmpty(t *testing.T) {
-	model := NewModel(context.Background(), nil)
-	model.focus = focusDatabases
-
-	model.moveFocus(1)
-	if model.focus != focusProfiles {
-		t.Fatalf("focus = %v, want profiles", model.focus)
+func keyMsg(key string) tea.KeyMsg {
+	switch key {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "shift+up":
+		return tea.KeyMsg{Type: tea.KeyShiftUp}
+	case "shift+down":
+		return tea.KeyMsg{Type: tea.KeyShiftDown}
 	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+}
+
+func navModel() *Model {
+	model := NewModel(context.Background(), nil)
+	model.loading = false
+	model.profiles = manyProfiles(3)
+	return model
+}
+
+func TestEnterDetailsAndLeave(t *testing.T) {
+	for _, enter := range []string{"enter", "tab", "right", "l"} {
+		model := navModel()
+		model.updateKey(keyMsg(enter))
+		if model.pane != paneDetails {
+			t.Fatalf("%s: pane = %v, want details", enter, model.pane)
+		}
+		for _, leave := range []string{"esc", "tab", "left", "h"} {
+			model.pane = paneDetails
+			model.updateKey(keyMsg(leave))
+			if model.pane != paneProfiles {
+				t.Fatalf("%s: pane = %v, want profiles", leave, model.pane)
+			}
+		}
+	}
+}
+
+func TestNumberKeysOpenTabAndFocusDetails(t *testing.T) {
+	model := navModel()
+	model.updateKey(keyMsg("3"))
+	if model.pane != paneDetails || model.tab != tabAddons {
+		t.Fatalf("pane/tab = %v/%v, want details/add-ons", model.pane, model.tab)
+	}
+	model.updateKey(keyMsg("esc"))
+	model.updateKey(keyMsg("enter"))
+	if model.tab != tabAddons {
+		t.Fatalf("tab = %v, want the open tab to persist", model.tab)
+	}
+}
+
+func TestBracketsStepTabs(t *testing.T) {
+	model := navModel()
+	model.updateKey(keyMsg("2"))
+	model.updateKey(keyMsg("]"))
+	if model.tab != tabAddons {
+		t.Fatalf("tab = %v, want add-ons", model.tab)
+	}
+	model.updateKey(keyMsg("["))
+	model.updateKey(keyMsg("["))
+	if model.tab != tabLogs {
+		t.Fatalf("tab = %v, want logs", model.tab)
+	}
+	model.updateKey(keyMsg("["))
+	if model.tab != tabConfig {
+		t.Fatalf("tab = %v, want wrap to config", model.tab)
+	}
+}
+
+func TestProfileSwitchKeepsTabAndFocus(t *testing.T) {
+	model := navModel()
+	model.updateKey(keyMsg("2"))
+	for _, key := range []string{"shift+down", "J"} {
+		model.updateKey(keyMsg(key))
+	}
+	if model.profileIndex != 2 || model.pane != paneDetails || model.tab != tabDatabases {
+		t.Fatalf("index/pane/tab = %d/%v/%v", model.profileIndex, model.pane, model.tab)
+	}
+	model.updateKey(keyMsg("shift+up"))
+	model.updateKey(keyMsg("K"))
+	if model.profileIndex != 0 {
+		t.Fatalf("index = %d, want 0", model.profileIndex)
+	}
+}
+
+func TestProfilePaneArrowsChangeProfile(t *testing.T) {
+	model := navModel()
+	model.updateKey(keyMsg("j"))
+	model.updateKey(keyMsg("down"))
+	if model.profileIndex != 2 || model.pane != paneProfiles {
+		t.Fatalf("index/pane = %d/%v", model.profileIndex, model.pane)
+	}
+}
+
+func TestActionsFollowTheFocusedPane(t *testing.T) {
+	model := navModel()
+	model.profiles[0].State = "running"
+	model.databases = []odoo.Database{{Logical: "a", Physical: "p__a"}}
+	model.databasePhase = phaseReady
+
+	model.updateKey(keyMsg("2"))
+	model.updateKey(keyMsg("d"))
+	if model.modal != modalConfirm || !strings.Contains(model.confirmTitle, "database") {
+		t.Fatalf("d on the Databases tab should confirm a drop, got %q", model.confirmTitle)
+	}
+	model.modal = modalNone
+
+	model.updateKey(keyMsg("esc"))
+	model.updateKey(keyMsg("d"))
+	if model.modal != modalConfirm || !strings.Contains(model.confirmTitle, "Remove profile") {
+		t.Fatalf("d on the profile pane should confirm a profile removal, got %q", model.confirmTitle)
+	}
+}
+
+func TestDetailsCannotBeFocusedWithoutProfiles(t *testing.T) {
+	model := NewModel(context.Background(), nil)
+	model.updateKey(keyMsg("enter"))
+	model.updateKey(keyMsg("3"))
+	if model.pane != paneProfiles {
+		t.Fatalf("pane = %v, want profiles", model.pane)
+	}
+}
+
+func TestOpenTabControlsLogStream(t *testing.T) {
+	model := navModel()
+	model.profiles[0].State = "running"
+	model.updateKey(keyMsg("2"))
+	if model.logCancel != nil {
+		t.Fatal("log stream should stop when the Logs tab is left")
+	}
+	model.updateKey(keyMsg("1"))
+	if model.logCancel == nil {
+		t.Fatal("log stream should start when the Logs tab opens")
+	}
+	model.stopLogStream()
 }
 
 func TestModalTitleSeparatorAddsRule(t *testing.T) {

@@ -25,17 +25,6 @@ import (
 	"lidoo/internal/profile"
 )
 
-type focusArea uint8
-
-const (
-	focusProfiles focusArea = iota
-	focusDatabases
-	focusAddons
-	focusInfo
-	focusConfig
-	focusAreaCount
-)
-
 type modalMode uint8
 
 const (
@@ -145,7 +134,8 @@ type Model struct {
 	databaseIndex          int
 	addons                 []addons.AddonStatus
 	addonIndex             int
-	focus                  focusArea
+	pane                   focusPane
+	tab                    tabID
 	loading                bool
 	err                    error
 	showHelp               bool
@@ -340,7 +330,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profileDetail = msg.Detail
 		m.profileDetailErr = nil
 		m.updateProfileSummary(msg.Detail)
-		if m.focus == focusProfiles && !m.profileIsRunning() {
+		if m.tab == tabLogs && !m.profileIsRunning() {
 			m.setProfileLogsUnavailable(msg.ProfileName)
 		}
 		return m, m.afterProfileDetailLoaded()
@@ -497,7 +487,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.configProfileName = msg.ProfileName
 		m.applyLoadedProfileConfig(msg.Config)
-		if m.focus == focusConfig {
+		if m.onTab(tabConfig) {
 			m.configLANPortDraft = strconv.Itoa(msg.Config.LANPort)
 			m.formField = 0
 			m.modal = modalConfigLANPort
@@ -753,7 +743,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.focus == focusProfiles {
+	if m.tab == tabLogs {
 		switch msg.String() {
 		case "pgup", "pgdown", "f", "b", "ctrl+u", "ctrl+d":
 			var cmd tea.Cmd
@@ -762,26 +752,17 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if cmd, handled := m.navigationKey(msg.String()); handled {
+		return m, cmd
+	}
+
 	switch msg.String() {
 	case "q":
 		return m, tea.Quit
-	case "tab", "right", "l":
-		return m, m.moveFocus(1)
-	case "shift+tab", "left", "h":
-		return m, m.moveFocus(-1)
-	case "up", "k":
-		return m, m.moveFocusedSelection(-1)
-	case "down", "j":
-		return m, m.moveFocusedSelection(1)
 	case "enter":
-		if m.focus == focusProfiles {
-			profile := m.selectedProfile()
-			if profile != nil {
-				return m, OpenProfileURLCmd(profile.URL)
-			}
-		} else if m.focus == focusConfig {
+		if m.onTab(tabConfig) {
 			return m, m.openProfileConfig()
-		} else if m.focus == focusAddons {
+		} else if m.onTab(tabAddons) {
 			addon := m.selectedAddon()
 			profileName := m.selectedProfileName()
 			if addon == nil || profileName == "" || m.rejectMutatingAction() {
@@ -796,29 +777,29 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 	case "x":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if m.onProfiles() && m.selectedProfileName() != "" {
 			if m.profileIsRunning() {
 				m.notice = "profile " + m.selectedProfileName() + " is already running"
 				return m, nil
 			}
 			return m, m.queueTask(taskRequest{Kind: taskRun, ProfileName: m.selectedProfileName(), Wait: true})
-		} else if m.focus == focusAddons {
+		} else if m.onTab(tabAddons) {
 			return m, m.startRemoveAddon()
 		}
 	case "r":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if m.onProfiles() && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskRestart, ProfileName: m.selectedProfileName()})
 		}
 		return m, m.refreshProfiles()
 	case "R":
-		if (m.focus == focusProfiles || m.focus == focusConfig) && m.selectedProfileName() != "" {
+		if (m.onProfiles() || m.onTab(tabConfig)) && m.selectedProfileName() != "" {
 			return m, m.queueTask(taskRequest{Kind: taskRecreate, ProfileName: m.selectedProfileName()})
 		}
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			return m, m.startRestorePicker()
 		}
 	case "s":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if m.onProfiles() && m.selectedProfileName() != "" {
 			if !m.profileIsRunning() {
 				m.notice = "profile " + m.selectedProfileName() + " is not running"
 				return m, nil
@@ -826,12 +807,12 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.queueTask(taskRequest{Kind: taskStop, ProfileName: m.selectedProfileName()})
 		}
 	case " ":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if m.onProfiles() && m.selectedProfileName() != "" {
 			return m, m.toggleSelectedProfile()
 		}
 	case "L":
 		if m.selectedProfileName() != "" {
-			if m.focus == focusDatabases {
+			if m.onTab(tabDatabases) {
 				if database := m.selectedDatabase(); database != nil {
 					m.logDatabase = database.Physical
 				}
@@ -839,11 +820,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openLogViewer()
 		}
 	case "D":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if (m.onProfiles() || m.onTab(tabLogs)) && m.selectedProfileName() != "" {
 			return m, m.openLogDatabaseSelect()
 		}
 	case "d":
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
+		if m.onProfiles() && m.selectedProfileName() != "" {
 			if m.rejectMutatingAction() {
 				return m, nil
 			}
@@ -857,54 +838,54 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m.queueTask(taskRequest{Kind: taskRemove, ProfileName: name})
 				},
 			)
-		} else if m.focus == focusDatabases {
+		} else if m.onTab(tabDatabases) {
 			m.openDropConfirmation()
 		}
 	case "a", "A":
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			m.openAdminPasswordForm()
 		}
 	case "c":
-		if m.focus == focusProfiles {
+		if m.onProfiles() {
 			return m, m.startCreateProfile()
 		}
-		if m.focus == focusAddons {
+		if m.onTab(tabAddons) {
 			m.openCloneAddonForm()
 		}
 	case "w":
-		if m.focus == focusAddons {
+		if m.onTab(tabAddons) {
 			return m, m.startWorktreeAddon()
 		}
 	case "n":
-		if m.focus == focusProfiles {
+		if m.onProfiles() {
 			return m, m.startCreateProfile()
 		}
 	case "e":
-		if m.focus == focusProfiles || m.focus == focusConfig {
+		if m.onProfiles() || m.onTab(tabConfig) {
 			return m, m.openProfileConfig()
 		}
 	case "f":
-		if m.focus == focusAddons {
+		if m.onTab(tabAddons) {
 			return m, m.queueSelectedAddonTask(taskFetchAddon)
 		}
 	case "i":
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			m.openInitForm()
 		}
 	case "u":
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			return m, m.queueSelectedDatabaseTask(taskUpdate, false)
 		}
 	case "U":
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			return m, m.queueSelectedDatabaseTask(taskUpdate, true)
 		}
 	case "b":
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			m.openBackupForm()
 		}
 	case "p":
-		if m.focus == focusDatabases {
+		if m.onTab(tabDatabases) {
 			if m.rejectMutatingAction() {
 				return m, nil
 			}
@@ -919,7 +900,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = nil
 				return m, PrepareDatabaseShellCmd(m.ctx, m.service, profileName, database.Logical)
 			}
-		} else if m.focus == focusAddons {
+		} else if m.onTab(tabAddons) {
 			return m, m.queueSelectedAddonTask(taskPullAddon)
 		}
 	case "ctrl+r":
@@ -945,7 +926,7 @@ func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		return m, m.handleLeftClick(msg.X, msg.Y)
 	}
-	if m.focus == focusProfiles {
+	if m.tab == tabLogs {
 		var cmd tea.Cmd
 		m.logViewport, cmd = m.logViewport.Update(msg)
 		return m, cmd
@@ -964,15 +945,18 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 		if y < 3 || index < 0 || index >= len(m.profiles) || y-3 >= m.profileListBudget() {
 			return nil
 		}
-		if index != m.profileIndex {
-			m.profileIndex = index
-			m.profileListOnlyRefresh = false
-			cmd := m.setFocus(focusProfiles)
-			return tea.Batch(cmd, m.beginProfileResources())
+		m.focusProfileList()
+		if index == m.profileIndex {
+			return nil
 		}
-		return m.setFocus(focusProfiles)
+		m.profileIndex = index
+		m.profileListOnlyRefresh = false
+		return m.beginProfileResources()
 	}
 
+	if m.selectedProfileName() == "" {
+		return nil
+	}
 	tabY := 1 + m.profileHeaderLines()
 	reached := x - (geometry.leftWidth + 2)
 	if y == tabY {
@@ -980,43 +964,28 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 		for index, tab := range detailTabs {
 			width := lipgloss.Width(tab.key + " " + tab.name)
 			if reached >= offset && reached < offset+width {
-				return m.setFocus(focusArea(index))
+				return m.openTab(tabID(index))
 			}
 			offset += width + m.tabGap()
 		}
 		return nil
 	}
 
+	m.focusDetails()
 	rowStart := tabY + 2 + 2 // tab bar, underline, table header and rule
 	if m.databasePhase == phaseUnavailable || m.databasePhase == phaseError {
 		rowStart += 2
 	}
 	row := y - rowStart
-	switch m.focus {
-	case focusDatabases:
-		if row >= 0 && row < len(m.databases) && row != m.databaseIndex {
+	switch m.tab {
+	case tabDatabases:
+		if row >= 0 && row < len(m.databases) {
 			m.databaseIndex = row
 		}
-	case focusAddons:
+	case tabAddons:
 		if row >= 0 && row < len(m.addons) {
 			m.addonIndex = row
 		}
-	}
-	return nil
-}
-
-func (m *Model) setFocus(area focusArea) tea.Cmd {
-	if m.focus == area {
-		return nil
-	}
-	previous := m.focus
-	m.focus = area
-	if area == focusProfiles {
-		return m.beginLogLoad()
-	}
-	if previous == focusProfiles {
-		m.stopLogStream()
-		m.logRequest++
 	}
 	return nil
 }
@@ -1514,7 +1483,7 @@ func (m *Model) openProfileConfig() tea.Cmd {
 	m.selectRequest++
 	m.selectKind = selectConfigDBFilterMode
 	m.selectTitle = "Database filter mode · " + profileName
-	if m.focus == focusConfig {
+	if m.onTab(tabConfig) {
 		m.selectTitle = "LAN port · " + profileName
 	}
 	m.selectItems = nil
@@ -2675,6 +2644,9 @@ func (m *Model) setProfiles(profiles []docker.ProfileSummary) {
 			m.profileIndex = index
 		}
 	}
+	if len(m.profiles) == 0 {
+		m.focusProfileList()
+	}
 }
 
 func (m *Model) refreshProfileResources() tea.Cmd {
@@ -2691,7 +2663,7 @@ func (m *Model) refreshProfileResources() tea.Cmd {
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
 	}
-	if m.focus == focusProfiles {
+	if m.tab == tabLogs {
 		commands = append(commands, m.refreshLogLoad())
 	}
 	return tea.Batch(commands...)
@@ -2751,7 +2723,7 @@ func (m *Model) beginProfileResources() tea.Cmd {
 		LoadDatabasesCmd(m.ctx, m.service, profileName, m.profileRequest),
 		LoadAddonsCmd(m.ctx, m.service, profileName, m.profileRequest),
 	}
-	if m.focus == focusProfiles {
+	if m.tab == tabLogs {
 		commands = append(commands, m.beginLogLoad())
 	}
 	return tea.Batch(commands...)
@@ -2781,7 +2753,7 @@ func (m *Model) handleInvalidation(invalidation app.ProfileInvalidation) tea.Cmd
 		m.databaseErr = nil
 	}
 	commands := []tea.Cmd{LoadProfileDetailCmd(m.ctx, m.service, invalidation.ProfileName, m.profileRequest)}
-	if m.focus == focusProfiles {
+	if m.tab == tabLogs {
 		if invalidation.Kind == app.ProfileRuntimeUnavailable {
 			m.setProfileLogsUnavailable(invalidation.ProfileName)
 		} else {
@@ -2873,13 +2845,6 @@ func (m *Model) stopLogStream() {
 	m.logPendingOutput = ""
 }
 
-func (m *Model) moveFocus(delta int) tea.Cmd {
-	if m.selectedProfileName() == "" {
-		return m.setFocus(focusProfiles)
-	}
-	return m.setFocus(focusArea((int(m.focus) + delta + int(focusAreaCount)) % int(focusAreaCount)))
-}
-
 func (m *Model) beginDatabaseInfosLoad() tea.Cmd {
 	m.databaseRequest++
 	if m.databaseInfoPhase != phaseReady {
@@ -2891,25 +2856,6 @@ func (m *Model) beginDatabaseInfosLoad() tea.Cmd {
 		return nil
 	}
 	return LoadDatabaseInfosCmd(m.ctx, m.service, m.selectedProfileName(), append([]odoo.Database(nil), m.databases...), m.databaseRequest)
-}
-
-func (m *Model) moveFocusedSelection(delta int) tea.Cmd {
-	changed := false
-	switch m.focus {
-	case focusProfiles:
-		changed = m.moveIndex(&m.profileIndex, len(m.profiles), delta)
-		if changed {
-			m.profileListOnlyRefresh = false
-			return m.beginProfileResources()
-		}
-	case focusDatabases:
-		m.moveIndex(&m.databaseIndex, len(m.databases), delta)
-	case focusAddons:
-		m.moveIndex(&m.addonIndex, len(m.addons), delta)
-	case focusInfo:
-		// Profile information has no independently navigable rows.
-	}
-	return nil
 }
 
 func (m *Model) moveIndex(index *int, count, delta int) bool {
@@ -3572,35 +3518,35 @@ func (m *Model) row(value string, selected bool) string {
 }
 
 func (m *Model) footerView() string {
-	keys := "tab/←/→ focus  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
-	if m.focus == focusProfiles && m.selectedProfileName() == "" {
+	keys := "tab/1-5 details  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+	if m.onProfiles() && m.selectedProfileName() == "" {
 		keys = "c create  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
-	if m.focus == focusProfiles && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+	if m.onProfiles() && m.selectedProfileName() != "" {
+		keys = "tab/1-5 details  ↑/↓ profiles  " + profileActionHints() + "  pgup/pgdn/scroll logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
-	if m.focus == focusDatabases && m.selectedProfileName() != "" {
-		keys = "tab/←/→ focus  ↑/↓ databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
+	if m.onTab(tabDatabases) && m.selectedProfileName() != "" {
+		keys = "tab/1-5 details  ↑/↓ databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
 		keys += "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
-	if m.focus == focusAddons {
-		keys = "tab/←/→ focus  ↑/↓ add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
+	if m.onTab(tabAddons) {
+		keys = "tab/1-5 details  ↑/↓ add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.showHelp {
-		keys = "tab/←/→ focus  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
-		if m.focus == focusProfiles && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
+		keys = "tab/1-5 details  ↑/↓/j/k move  L logs  ctrl+r refresh  q/ctrl+c quit  ? hide help"
+		if m.onProfiles() && m.selectedProfileName() != "" {
+			keys = "tab/1-5 details  ↑/↓/j/k profiles  " + profileActionHints() + "  pgup/pgdn scroll logs  ctrl+r refresh  ? hide help"
 		}
-		if m.focus == focusDatabases && m.selectedProfileName() != "" {
-			keys = "tab/←/→ focus  ↑/↓/j/k databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
+		if m.onTab(tabDatabases) && m.selectedProfileName() != "" {
+			keys = "tab/1-5 details  ↑/↓/j/k databases  " + databaseEmptyActionHints(m.selectedDatabase() != nil)
 			keys += "  L logs  ctrl+r refresh  ? hide help"
 		}
-		if m.focus == focusAddons {
-			keys = "tab/←/→ focus  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
+		if m.onTab(tabAddons) {
+			keys = "tab/1-5 details  ↑/↓/j/k add-ons  enter toggle  " + addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "") + "  L logs  ctrl+r refresh  ? hide help"
 		}
 	}
-	if m.focus == focusConfig {
-		keys = "tab/←/→ focus  enter/e edit LAN port  R recreate  ctrl+r refresh  ? help  q/ctrl+c quit"
+	if m.onTab(tabConfig) {
+		keys = "tab/1-5 details  enter/e edit LAN port  R recreate  ctrl+r refresh  ? help  q/ctrl+c quit"
 	}
 	if m.taskStarting || m.taskRunning {
 		keys += "  c cancel"
@@ -3612,7 +3558,7 @@ func (m *Model) footerView() string {
 }
 
 func profileActionHints() string {
-	return "enter open  space run/stop  n new  e settings  L logs  D logs db  x start  r restart  R recreate  s stop  d remove"
+	return "enter details  o browser  space run/stop  n new  e settings  L logs  D logs db  x start  r restart  R recreate  s stop  d remove"
 }
 
 func databaseActionHints() string {
@@ -3956,28 +3902,28 @@ func (m *Model) smallView() string {
 	}
 	if m.selectedProfileName() != "" {
 		labels, _ := m.tabBar()
-		switch m.focus {
-		case focusDatabases:
+		switch m.tab {
+		case tabDatabases:
 			lines = append(lines, "", labels, "", m.databaseTabView(m.width))
-		case focusAddons:
+		case tabAddons:
 			lines = append(lines, "", labels, "", m.addonTabView(m.width))
-		case focusConfig:
+		case tabConfig:
 			lines = append(lines, "", labels, "", m.configTabView())
 		}
 	}
 	hints := profileActionHints()
-	if m.focus == focusDatabases {
+	if m.onTab(tabDatabases) {
 		hints = databaseEmptyActionHints(m.selectedDatabase() != nil)
 	}
-	if m.focus == focusAddons {
+	if m.onTab(tabAddons) {
 		hints = addonActionHints(m.selectedAddon() != nil, m.selectedProfileName() != "")
 	}
-	if m.focus == focusConfig {
-		hints = "tab focus  enter/e edit LAN port  R recreate"
+	if m.onTab(tabConfig) {
+		hints = "tab/1-5 details  enter/e edit LAN port  R recreate"
 	}
 	lines = append(lines, "", mutedStyle.Render(hints+"  ctrl+r refresh  ? help  q/ctrl+c quit"))
 	if m.showHelp {
-		lines = append(lines, mutedStyle.Render("tab focus  arrows or j/k move  c cancel task"))
+		lines = append(lines, mutedStyle.Render("tab/1-5 details  arrows or j/k move  c cancel task"))
 	}
 	if task := m.taskRegion(m.width, max(3, m.height/2)); len(task) > 0 {
 		contentHeight := max(1, m.height-len(task)-1)

@@ -514,26 +514,20 @@ func TestLogViewerDatabaseFilter(t *testing.T) {
 	}
 }
 
-func TestTypedConfirmRequiresExactName(t *testing.T) {
+func TestConfirmRunsActionOnSubmit(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	queued := false
-	model.openTypedConfirm("irreversible", "demo", func() tea.Cmd {
+	model.openConfirm("Drop demo?", "irreversible", modalNone, func() tea.Cmd {
 		queued = true
 		return nil
 	})
-
-	model.confirmInput = "dem"
-	if cmd := model.submitTypedConfirm(); cmd != nil {
-		t.Fatal("a wrong name should not proceed")
-	}
-	if model.confirmErr == nil || queued {
-		t.Fatal("wrong name should error and not run the action")
+	if model.modal != modalConfirm {
+		t.Fatalf("modal = %v, want confirm", model.modal)
 	}
 
-	model.confirmInput = "demo"
-	model.submitTypedConfirm()
+	model.submitConfirm()
 	if !queued {
-		t.Fatal("exact name should run the action")
+		t.Fatal("submit should run the action")
 	}
 	if model.modal != modalNone {
 		t.Fatalf("modal = %v, want none", model.modal)
@@ -711,7 +705,7 @@ func TestCtrlCQuitsDuringTask(t *testing.T) {
 
 func TestCtrlCQuitsWithModalOpen(t *testing.T) {
 	model := NewModel(context.Background(), nil)
-	model.modal = modalTypedConfirm
+	model.modal = modalConfirm
 
 	_, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {

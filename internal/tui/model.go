@@ -254,18 +254,6 @@ type Model struct {
 	confirmForceToggle     bool
 }
 
-var (
-	titleStyle           = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#5A56E0", Dark: "#7D78F2"})
-	activeStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#4338CA", Dark: "#A5B4FC"})
-	errorStyle           = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#F97068"})
-	mutedStyle           = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#667085", Dark: "#98A2B3"})
-	runningStyle         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#027A48", Dark: "#6CE9A6"})
-	warningStyle         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B54708", Dark: "#FEC84B"})
-	borderStyle          = lipgloss.AdaptiveColor{Light: "#D0D5DD", Dark: "#475467"}
-	activeBorderStyle    = lipgloss.AdaptiveColor{Light: "#7D78F2", Dark: "#A5B4FC"}
-	inspectedBorderStyle = lipgloss.AdaptiveColor{Light: "#A7A7E8", Dark: "#7684B2"}
-)
-
 func NewModel(ctx context.Context, service *app.Service) *Model {
 	if ctx == nil {
 		ctx = context.Background()
@@ -3036,7 +3024,7 @@ func (m *Model) profileIsRunning() bool {
 	return profile != nil && strings.EqualFold(profile.State, "running")
 }
 
-func (m *Model) View() string {
+func (m *Model) view() string {
 	if m.logViewerOpen {
 		view := m.logViewerView()
 		if m.modal != modalNone {

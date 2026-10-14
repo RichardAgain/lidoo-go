@@ -21,6 +21,7 @@ type frameGeometry struct {
 	rightWidth   int // detail pane width, including its one-column left pad
 	detailLeft   int // x of the first detail column
 	mainHeight   int // side-by-side only: rows between the status line and the footer rule
+	bannerRows   int // rows taken by the logo above the profile list, 0 when hidden
 	listTop      int // y of the first profile row
 	listRows     int // profile rows that fit
 	detailTop    int // y of the profile header
@@ -28,10 +29,24 @@ type frameGeometry struct {
 }
 
 const (
-	frameChromeRows = 3 // status line, footer rule, footer
+	frameChromeRows = 2 // footer rule, footer
 	compactMinWidth = 72
 	compactMinRows  = 14
+
+	// bannerMinListRows is how many profile rows must remain for the logo to show.
+	bannerMinListRows = 6
 )
+
+// logoLines spells "lidoo" above the profile list.
+var logoLines = []string{
+	"██ ██     ██",
+	"██        ██",
+	"██ ██ ██████ ██████ ██████",
+	"██ ██ ██  ██ ██  ██ ██  ██",
+	"██ ██ ██████ ██████ ██████",
+}
+
+const logoWidth = 26
 
 func (m *Model) compact() bool {
 	return m.width < compactMinWidth || m.height < compactMinRows
@@ -42,13 +57,13 @@ func (m *Model) frame() frameGeometry {
 		// Status line and footer frame a short profile list, a rule, then
 		// the detail pane.
 		listRows := min(max(len(m.profiles), 1), max(1, (m.height-8)/3))
-		detailTop := 1 + listRows + 1
+		detailTop := listRows + 1
 		return frameGeometry{
 			compact:      true,
 			leftWidth:    m.width,
 			rightWidth:   max(1, m.width-1),
 			detailLeft:   1,
-			listTop:      1,
+			listTop:      0,
 			listRows:     listRows,
 			detailTop:    detailTop,
 			detailHeight: max(1, m.height-1-detailTop),
@@ -56,14 +71,19 @@ func (m *Model) frame() frameGeometry {
 	}
 	leftWidth := min(max(m.width/4, 26), 34)
 	mainHeight := max(1, m.height-frameChromeRows)
+	bannerRows := 0
+	if mainHeight-2-len(logoLines)-1 >= bannerMinListRows && leftWidth >= logoWidth+1 {
+		bannerRows = len(logoLines) + 1
+	}
 	return frameGeometry{
 		leftWidth:    leftWidth,
 		rightWidth:   max(1, m.width-leftWidth-2),
 		detailLeft:   leftWidth + 2,
 		mainHeight:   mainHeight,
-		listTop:      3,
-		listRows:     max(1, mainHeight-2),
-		detailTop:    1,
+		bannerRows:   bannerRows,
+		listTop:      2 + bannerRows,
+		listRows:     max(1, mainHeight-2-bannerRows),
+		detailTop:    0,
 		detailHeight: mainHeight,
 	}
 }
@@ -77,8 +97,7 @@ func (m *Model) view() string {
 		view = m.compactView()
 	default:
 		geometry := m.frame()
-		lines := []string{m.statusLine()}
-		lines = append(lines, m.mainLines(geometry)...)
+		lines := m.mainLines(geometry)
 		lines = append(lines, m.footerRule(geometry), m.footerLine(m.width))
 		view = strings.Join(lines, "\n")
 	}
@@ -108,9 +127,9 @@ func (m *Model) mainLines(geometry frameGeometry) []string {
 // terminals.
 func (m *Model) compactView() string {
 	geometry := m.frame()
-	lines := []string{m.statusLine()}
+	var lines []string
 	if m.noProfiles() {
-		lines = append(lines, centeredLines("No profiles yet · n to create one", m.width, max(1, m.height-2))...)
+		lines = append(lines, centeredLines("No profiles yet · n to create one", m.width, max(1, m.height-1))...)
 		return strings.Join(append(lines, m.footerLine(m.width)), "\n")
 	}
 	lines = append(lines, fitLines(strings.Split(m.leftView(geometry), "\n"), m.width, geometry.listRows)...)
@@ -153,37 +172,20 @@ func (m *Model) footerRule(geometry frameGeometry) string {
 	return ruleStyle.Render(strings.Repeat("─", geometry.leftWidth) + "┴" + strings.Repeat("─", max(0, m.width-geometry.leftWidth-1)))
 }
 
-// statusLine is the one-row header: app name, counts, a transient message and
-// the Docker event watcher state.
-func (m *Model) statusLine() string {
-	running := 0
-	for _, profile := range m.profiles {
-		if profileRunning(profile.State) {
-			running++
-		}
-	}
-	left := " " + titleStyle.Render("lidoo") + "   " +
-		secondStyle.Render(fmt.Sprintf("%d profiles · %d running", len(m.profiles), running))
-	events := mutedStyle.Render("events ") + runningStyle.Render("●") + " " + secondStyle.Render("live")
-	if m.watcherDisconnected {
-		events = mutedStyle.Render("events ") + warningStyle.Render("disconnected")
-	}
-	events += " "
-	message := ""
+// statusMessage is the transient error, notice or loading text, or a warning
+// when the Docker event watcher is down. It replaces the footer hints.
+func (m *Model) statusMessage() string {
 	switch {
 	case m.err != nil:
-		message = errorStyle.Render(m.err.Error())
+		return errorStyle.Render(m.err.Error())
 	case m.notice != "":
-		message = warningStyle.Render(m.notice)
+		return warningStyle.Render(m.notice)
+	case m.watcherDisconnected:
+		return warningStyle.Render("docker events disconnected")
 	case m.loading:
-		message = mutedStyle.Render("loading profiles…")
+		return mutedStyle.Render("loading profiles…")
 	}
-	room := m.width - lipgloss.Width(left) - lipgloss.Width(events) - 3
-	if message != "" && room > 0 {
-		left += "   " + ansi.Truncate(message, room, "…")
-	}
-	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(events))
-	return left + strings.Repeat(" ", gap) + events
+	return ""
 }
 
 func profileRunning(state string) bool {
@@ -214,11 +216,17 @@ func (m *Model) leftView(geometry frameGeometry) string {
 	budget := geometry.listRows
 	var lines []string
 	if !geometry.compact {
+		if geometry.bannerRows > 0 {
+			for _, line := range logoLines {
+				lines = append(lines, " "+titleStyle.Render(line))
+			}
+			lines = append(lines, "")
+		}
 		title := " " + mutedStyle.Bold(true).Render("PROFILES")
 		if len(m.profiles) > budget {
 			title += " " + dimStyle.Render(fmt.Sprintf("%d/%d", m.profileIndex+1, len(m.profiles)))
 		}
-		lines = []string{title, ""}
+		lines = append(lines, title, "")
 	}
 	if len(m.profiles) == 0 {
 		if m.loading {

@@ -56,6 +56,12 @@ func (m *Model) footerHints() []keyHint {
 // footerLine is the one-row footer: contextual hints on the left and the key
 // reference on the right.
 func (m *Model) footerLine(width int) string {
+	if message := m.statusMessage(); message != "" {
+		pinned := keyHint{"?", "all keys"}.render() + " "
+		room := max(0, width-lipgloss.Width(pinned)-3)
+		left := " " + ansi.Truncate(message, room, "…")
+		return left + strings.Repeat(" ", max(1, width-lipgloss.Width(left)-lipgloss.Width(pinned))) + pinned
+	}
 	return hintsLine(width, m.footerHints(), keyHint{"?", "all keys"})
 }
 

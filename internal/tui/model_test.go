@@ -1325,3 +1325,13 @@ func TestModalKeyHintsKeepText(t *testing.T) {
 		t.Fatalf("hints = %q, want %q", got, keys)
 	}
 }
+
+func TestRestorePickerTitleNamesTheProfile(t *testing.T) {
+	model := dbModel(1)
+	model.prepareRestoreAction()
+	model.filePickerDirectory = false
+	title := ansi.Strip(model.filePickerModalLines()[0])
+	if !strings.Contains(title, "demo") || strings.HasSuffix(strings.TrimSpace(title), "·") {
+		t.Fatalf("picker title = %q, want the profile name", title)
+	}
+}

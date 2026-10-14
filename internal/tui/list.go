@@ -116,7 +116,7 @@ func (m *Model) filteredListLines(indices []int, selected int, label func(int) s
 }
 
 func (m *Model) filePickerModalLines() []string {
-	title := "Restore source · " + m.taskDatabaseName
+	title := "Pick a dump · " + m.taskProfileName
 	hint := "↑/↓ move  type filter  enter open/select  ctrl+h/← up  esc cancel"
 	empty := "No folders or .zip/.dump files here"
 	if m.filePickerDirectory {

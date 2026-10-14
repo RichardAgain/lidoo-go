@@ -130,6 +130,8 @@ func (m *Model) formKeys(submit string) string {
 			keys += "  space toggle"
 		case fieldChoice:
 			keys += "  space change"
+		case fieldSelect:
+			keys += "  ↑↓ choose"
 		}
 	}
 	if m.modal == modalBackupDatabase {

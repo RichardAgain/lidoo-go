@@ -1487,3 +1487,124 @@ func TestFilterBoxShowsPlaceholder(t *testing.T) {
 		t.Fatalf("filter placeholder missing:\n%s", view)
 	}
 }
+
+func backupModel() *Model {
+	model := dbModel(1)
+	model.width, model.height = 100, 30
+	model.pane, model.tab = paneDetails, tabDatabases
+	model.openBackupForm()
+	return model
+}
+
+func TestBackupToggleAndChoiceFields(t *testing.T) {
+	model := backupModel()
+	if model.modal != modalBackupDatabase {
+		t.Fatalf("modal = %v", model.modal)
+	}
+	model.updateKey(keyMsg("tab")) // format (choice)
+	model.updateKey(keyMsg(" "))
+	if model.backupFormat != "dump" {
+		t.Fatalf("format = %q, want dump after space", model.backupFormat)
+	}
+	model.updateKey(keyMsg("right"))
+	if model.backupFormat != "folder" {
+		t.Fatalf("format = %q, want folder after right", model.backupFormat)
+	}
+	model.updateKey(keyMsg("left"))
+	model.updateKey(keyMsg("left"))
+	if model.backupFormat != "zip" {
+		t.Fatalf("format = %q, want zip after two lefts", model.backupFormat)
+	}
+	model.updateKey(keyMsg("tab")) // filestore (toggle)
+	if !model.backupFilestore {
+		t.Fatal("filestore should start on")
+	}
+	model.updateKey(keyMsg(" "))
+	if model.backupFilestore {
+		t.Fatal("space should switch filestore off")
+	}
+	model.updateKey(keyMsg("tab")) // overwrite
+	model.updateKey(keyMsg(" "))
+	if !model.backupForce {
+		t.Fatal("space should switch overwrite on")
+	}
+	view := ansi.Strip(model.modalView())
+	for _, want := range []string{"zip", "dump", "folder", "[ ] include", "[x] replace an existing file"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("backup form missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTextFieldKeepsArrowsForTheCaret(t *testing.T) {
+	model := backupModel()
+	typeText(model, "abc")
+	model.updateKey(keyMsg("left"))
+	typeText(model, "X")
+	if model.backupDestination != "abXc" || model.backupFormat != "zip" {
+		t.Fatalf("destination/format = %q/%q", model.backupDestination, model.backupFormat)
+	}
+}
+
+func TestBackupKeyHintsFollowTheFocusedField(t *testing.T) {
+	model := backupModel()
+	if keys := model.formKeys("enter run"); !strings.Contains(keys, "ctrl+o folder") || strings.Contains(keys, "space") {
+		t.Fatalf("destination keys = %q", keys)
+	}
+	model.formField = 1
+	if keys := model.formKeys("enter run"); !strings.Contains(keys, "space change") {
+		t.Fatalf("format keys = %q", keys)
+	}
+	model.formField = 2
+	if keys := model.formKeys("enter run"); !strings.Contains(keys, "space toggle") {
+		t.Fatalf("toggle keys = %q", keys)
+	}
+}
+
+func TestRestoreModeChoiceFlipsCopyAndMove(t *testing.T) {
+	model := dbModel(1)
+	model.openRestoreForm("/tmp/x.zip")
+	model.formField = 2
+	if !model.restoreCopy {
+		t.Fatal("restore starts as copy")
+	}
+	model.updateKey(keyMsg(" "))
+	if model.restoreCopy {
+		t.Fatal("space should switch to move")
+	}
+}
+
+func TestSelectFieldRevealsCustomInput(t *testing.T) {
+	sel := &selectField{items: []selectItem{
+		{Label: "19", Value: "19", Hint: "image built"},
+		{Label: "18", Value: "18", Hint: "no Dockerfile"},
+		{Label: "Custom…", Value: selectCustomValue},
+	}}
+	if got := len(selectFormFields("Odoo version", sel, "version")); got != 1 {
+		t.Fatalf("fields = %d, want only the select", got)
+	}
+	if sel.value() != "19" {
+		t.Fatalf("value = %q", sel.value())
+	}
+	sel.move(1)
+	sel.move(5) // clamps at the last entry
+	if !sel.isCustom() {
+		t.Fatal("custom should be chosen")
+	}
+	fields := selectFormFields("Odoo version", sel, "version")
+	if len(fields) != 2 || fields[1].kind != fieldText || fields[1].label != "" {
+		t.Fatalf("custom must add an unlabeled input under the list: %+v", fields)
+	}
+	*fields[1].text = " 17.0 "
+	if sel.value() != "17.0" {
+		t.Fatalf("custom value = %q, want 17.0", sel.value())
+	}
+	model := NewModel(context.Background(), nil)
+	model.width, model.height = 100, 30
+	lines := ansi.Strip(strings.Join(model.formBody(fields, 60), "\n"))
+	for _, want := range []string{"Odoo version", "○ 19", "image built", "● Custom…", "17.0"} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("select field missing %q:\n%s", want, lines)
+		}
+	}
+}

@@ -21,7 +21,6 @@ type frameGeometry struct {
 	rightWidth   int // detail pane width, including its one-column left pad
 	detailLeft   int // x of the first detail column
 	mainHeight   int // side-by-side only: rows between the status line and the footer rule
-	bannerRows   int // rows taken by the logo above the profile list, 0 when hidden
 	listTop      int // y of the first profile row
 	listRows     int // profile rows that fit
 	detailTop    int // y of the profile header
@@ -32,21 +31,7 @@ const (
 	frameChromeRows = 2 // footer rule, footer
 	compactMinWidth = 72
 	compactMinRows  = 14
-
-	// bannerMinListRows is how many profile rows must remain for the logo to show.
-	bannerMinListRows = 6
 )
-
-// logoLines spells "lidoo" above the profile list.
-var logoLines = []string{
-	"██ ██     ██",
-	"██        ██",
-	"██ ██ ██████ ██████ ██████",
-	"██ ██ ██  ██ ██  ██ ██  ██",
-	"██ ██ ██████ ██████ ██████",
-}
-
-const logoWidth = 26
 
 func (m *Model) compact() bool {
 	return m.width < compactMinWidth || m.height < compactMinRows
@@ -71,18 +56,13 @@ func (m *Model) frame() frameGeometry {
 	}
 	leftWidth := min(max(m.width/4, 26), 34)
 	mainHeight := max(1, m.height-frameChromeRows)
-	bannerRows := 0
-	if mainHeight-2-len(logoLines)-1 >= bannerMinListRows && leftWidth >= logoWidth+1 {
-		bannerRows = len(logoLines) + 1
-	}
 	return frameGeometry{
 		leftWidth:    leftWidth,
 		rightWidth:   max(1, m.width-leftWidth-2),
 		detailLeft:   leftWidth + 2,
 		mainHeight:   mainHeight,
-		bannerRows:   bannerRows,
-		listTop:      2 + bannerRows,
-		listRows:     max(1, mainHeight-2-bannerRows),
+		listTop:      2,
+		listRows:     max(1, mainHeight-2),
 		detailTop:    0,
 		detailHeight: mainHeight,
 	}
@@ -216,12 +196,6 @@ func (m *Model) leftView(geometry frameGeometry) string {
 	budget := geometry.listRows
 	var lines []string
 	if !geometry.compact {
-		if geometry.bannerRows > 0 {
-			for _, line := range logoLines {
-				lines = append(lines, " "+titleStyle.Render(line))
-			}
-			lines = append(lines, "")
-		}
 		title := " " + mutedStyle.Bold(true).Render("PROFILES")
 		if len(m.profiles) > budget {
 			title += " " + dimStyle.Render(fmt.Sprintf("%d/%d", m.profileIndex+1, len(m.profiles)))
@@ -306,43 +280,6 @@ func (m *Model) spinnerFrame() string {
 	return ansi.Strip(m.activitySpinner.View())
 }
 
-// profileHeaderLines is the number of rows profileHeader produces, including
-// the blank row that separates it from the tab bar.
-func (m *Model) profileHeaderLines() int {
-	if m.selectedProfile() != nil && m.selectedProfile().PendingRecreation.Pending {
-		return 4
-	}
-	return 3
-}
-
-// profileHeader names the selected profile, its state and its URL.
-func (m *Model) profileHeader() []string {
-	profile := m.selectedProfile()
-	if profile == nil {
-		return []string{"", "", ""}
-	}
-	state := mutedStyle.Render("○ " + profileStateText(profile.State))
-	switch {
-	case m.taskActive() && m.taskProfileName == profile.Name:
-		state = activeStyle.Render(m.spinnerFrame() + " " + taskActionLabel(m.activeTaskKind))
-	case profileRunning(profile.State):
-		state = runningStyle.Render("●") + " " + secondStyle.Render(profileStateText(profile.State))
-	}
-	line := titleStyle.Render(profile.Name) + "  " + state
-	if profile.Version != "" {
-		line += "  " + mutedStyle.Render("·") + "  " + secondStyle.Render("Odoo "+profile.Version)
-	}
-	lines := []string{line, mutedStyle.Render(profile.URL)}
-	if profile.PendingRecreation.Pending {
-		note := "↻ pending recreation"
-		if reason := profile.PendingRecreation.Reason; reason != "" {
-			note += " · " + reason
-		}
-		lines = append(lines, warningStyle.Render(note))
-	}
-	return append(lines, "")
-}
-
 func profileStateText(state string) string {
 	if state == "" {
 		return "not created"
@@ -408,20 +345,19 @@ func (m *Model) tabBar() (string, string) {
 // detailLayout splits the detail pane into the profile header, the tab
 // content and the task region.
 type detailLayout struct {
-	header        []string
 	task          []string
 	contentWidth  int
 	contentHeight int
 }
 
 func (m *Model) detailLayout(geometry frameGeometry) detailLayout {
-	layout := detailLayout{header: m.profileHeader()}
+	var layout detailLayout
 	layout.task = m.taskRegion(geometry.rightWidth-1, geometry.detailHeight/2)
 	for index := range layout.task {
 		layout.task[index] = " " + layout.task[index]
 	}
 	layout.contentWidth = max(1, geometry.rightWidth-1)
-	layout.contentHeight = max(1, geometry.detailHeight-len(layout.header)-2-len(layout.task))
+	layout.contentHeight = max(1, geometry.detailHeight-2-len(layout.task))
 	return layout
 }
 
@@ -444,7 +380,7 @@ func (m *Model) rightView(geometry frameGeometry) string {
 		content = m.infoTabView()
 	}
 	content = lipgloss.NewStyle().Width(width + 1).MaxWidth(width + 1).PaddingLeft(1).Height(height).MaxHeight(height).Render(content)
-	lines := append(layout.header, labels, underline, content)
+	lines := []string{labels, underline, content}
 	return strings.Join(append(lines, layout.task...), "\n")
 }
 

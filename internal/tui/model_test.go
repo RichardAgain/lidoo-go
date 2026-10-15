@@ -775,17 +775,14 @@ func TestClickSelectsProfileRow(t *testing.T) {
 	}
 }
 
-func TestSinglePendingRecreationShowsInRowAndHeader(t *testing.T) {
+func TestSinglePendingRecreationShowsInRow(t *testing.T) {
 	model := NewModel(context.Background(), nil)
 	model.width, model.height = 100, 24
 	model.loading = false
 	model.profiles = []docker.ProfileSummary{{Name: "demo", State: "running", Version: "18", URL: "http://demo.lidoo.localhost", PendingRecreation: docker.RecreationStatus{Checked: true, Pending: true}}}
 	view := ansi.Strip(model.View())
-	if strings.Count(view, "↻") < 2 {
-		t.Fatalf("pending recreation should show in the row and the header:\n%s", view)
-	}
-	if !strings.Contains(view, "http://demo.lidoo.localhost") {
-		t.Fatalf("header should show the URL:\n%s", view)
+	if !strings.Contains(view, "↻") {
+		t.Fatalf("pending recreation should show in the row:\n%s", view)
 	}
 }
 

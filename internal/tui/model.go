@@ -930,7 +930,7 @@ func (m *Model) handleLeftClick(x, y int) tea.Cmd {
 	if m.selectedProfileName() == "" {
 		return nil
 	}
-	tabY := geometry.detailTop + m.profileHeaderLines()
+	tabY := geometry.detailTop
 	reached := x - geometry.detailLeft
 	if y == tabY {
 		offset := 1

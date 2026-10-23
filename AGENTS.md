@@ -46,3 +46,13 @@ routing.
 
 Use Conventional Commits (`feat(scope):`, `fix(scope):`, `docs:`, `chore:`),
 one reviewable work unit per commit.
+
+## Criterio ante información faltante
+
+Cuando se delega una tarea, casi nunca vienen todos los detalles: parte está en el mensaje, parte en el código y parte en la cabeza del usuario. Completar los vacíos con suposiciones puede parecer razonable y aun así diferir de lo que el usuario tenía en mente. Ante cualquier vacío:
+
+1. Primero busca la respuesta en el código y en lo ya conversado.
+2. Si sigue faltando información, pregunta al usuario antes de avanzar.
+3. No inventes requisitos ni hagas cambios fuera de lo pedido. Si ves algo que valdría la pena cambiar, menciónalo y espera confirmación.
+
+Cuanto más trabajo se delega, más importa tener claro hasta dónde se puede avanzar solo.
